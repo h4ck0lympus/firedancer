@@ -7,8 +7,9 @@ concurrency:
   group: on-pull-request_${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 jobs:
-  tests:
+  codeql:
     if: github.event.pull_request.draft == false
+<<<<<<< HEAD
     uses: ./.github/workflows/tests.yml
     secrets: inherit
   backtest:
@@ -41,3 +42,8 @@ jobs:
       machine: linux_gcc_icelake,linux_gcc_x86_64
       build_arm: false
       check_run: true
+=======
+    uses: ./.github/workflows/codeql.yml
+    
+
+>>>>>>> b6192ae22 (try custom codeql queries)

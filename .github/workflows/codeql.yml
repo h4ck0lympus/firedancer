@@ -1,9 +1,14 @@
+<<<<<<< HEAD
 name: "CodeQL Nightly Analysis"
+=======
+name: "CodeQL PR Analysis"
+>>>>>>> b6192ae22 (try custom codeql queries)
 
 on:
     workflow_call:
     workflow_dispatch:
 
+<<<<<<< HEAD
 permissions:
   security-events: write
 
@@ -11,6 +16,14 @@ jobs:
   analyze:
     name: Analyze (${{ matrix.language }})
     runs-on: 1T
+=======
+jobs:
+  analyze:
+    name: Analyze (${{matrix.language}})
+    runs-on: 'ubuntu-latest'
+    permissions:
+      security-events: write
+>>>>>>> b6192ae22 (try custom codeql queries)
 
     strategy:
       fail-fast: false
@@ -18,6 +31,7 @@ jobs:
         include:
         - language: c-cpp
           build-mode: manual
+<<<<<<< HEAD
           compiler: clang
           machine: linux_clang_x86_64
           compiler-version: 15.0.6
@@ -65,3 +79,34 @@ jobs:
         with:
           category: "/language:${{ matrix.language }}"
           upload: 'always'
+=======
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+      with:
+        submodules: recursive
+    - name: Install system dependencies
+      shell: bash
+      run: |
+        sudo apt-get install -y gettext autopoint gcc-multilib protobuf-compiler llvm lcov libudev-dev cmake libclang-dev
+    - name: Install dependencies
+      shell: bash
+      run: |
+        echo "y" | ./deps.sh    
+    - name: Initialize CodeQL
+      uses: github/codeql-action/init@v3
+      with:
+        languages: ${{ matrix.language }}
+        build-mode: ${{ matrix.build-mode }}
+        queries: ./contrib/codeql/
+        config: |
+            disable-default-queries: true
+    - if: matrix.build-mode == 'manual'
+      shell: bash
+      run: |
+        MACHINE=linux_clang_noarch64 make -j unit-test
+    - name: Perform CodeQL Analysis
+      uses: github/codeql-action/analyze@v3
+      with:
+        category: "/language:${{matrix.language}}"
+>>>>>>> b6192ae22 (try custom codeql queries)

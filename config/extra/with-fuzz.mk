@@ -1,6 +1,7 @@
 include config/extra/with-handholding.mk
 
 FD_HAS_FUZZ:=1
+CPPFLAGS+=-DFD_HAS_FUZZ=1
 
 CPPFLAGS+=-fno-omit-frame-pointer
 CPPFLAGS+=-fsanitize=fuzzer-no-link

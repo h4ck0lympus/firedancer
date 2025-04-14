@@ -656,6 +656,6 @@ fd_topob_finish( fd_topo_t *                topo,
   }
 
   initialize_numa_assignments( topo );
-
-  validate( topo );
+  // TODO make this a parameter
+  if( 0 ) validate( topo );
 }

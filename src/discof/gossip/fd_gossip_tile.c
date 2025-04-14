@@ -770,6 +770,8 @@ static void
 unprivileged_init( fd_topo_t *      topo,
                    fd_topo_tile_t * tile ) {
   void * scratch = fd_topo_obj_laddr( topo, tile->tile_obj_id );
+  FD_LOG_NOTICE(( "scratch pointer %p", scratch ));
+  FD_LOG_NOTICE(( "obj name %s %lu %lu", topo->objs[ tile->tile_obj_id ].name, topo->objs[ tile->tile_obj_id ].wksp_id, topo->objs[ tile->tile_obj_id ].id ));
 
   if( FD_UNLIKELY( !tile->out_cnt ) ) FD_LOG_ERR(( "gossip tile has no primary output link" ));
 
@@ -780,7 +782,9 @@ unprivileged_init( fd_topo_t *      topo,
   FD_SCRATCH_ALLOC_INIT( l, scratch );
   fd_gossip_tile_ctx_t * ctx = FD_SCRATCH_ALLOC_APPEND( l, alignof(fd_gossip_tile_ctx_t), sizeof(fd_gossip_tile_ctx_t) );
   ctx->gossip = FD_SCRATCH_ALLOC_APPEND( l, fd_gossip_align(), fd_gossip_footprint() );
-  ctx->contact_info_table = fd_contact_info_table_join( fd_contact_info_table_new( FD_SCRATCH_ALLOC_APPEND( l, fd_contact_info_table_align(), fd_contact_info_table_footprint( FD_PEER_KEY_MAX ) ), FD_PEER_KEY_MAX, 0 ) );
+  fd_memset( (void*)_l , 0, fd_ulong_align_up(fd_contact_info_table_align(), fd_contact_info_table_footprint( FD_PEER_KEY_MAX ) ) );
+  void * table_shmem = FD_SCRATCH_ALLOC_APPEND( l, fd_contact_info_table_align(), fd_contact_info_table_footprint( FD_PEER_KEY_MAX ) );
+  ctx->contact_info_table = fd_contact_info_table_join( fd_contact_info_table_new(table_shmem, FD_PEER_KEY_MAX, 0 ) );
 
   if( FD_UNLIKELY( tile->in_cnt > MAX_IN_LINKS ) ) FD_LOG_ERR(( "gossip tile has too many input links" ));
 
@@ -1128,4 +1132,7 @@ fd_topo_run_tile_t fd_tile_gossip = {
   .privileged_init          = privileged_init,
   .unprivileged_init        = unprivileged_init,
   .run                      = stem_run,
+#if FD_TILE_FUZZING
+  .metrics_write            = metrics_write
+#endif
 };

@@ -1133,6 +1133,9 @@ fd_topo_run_tile_t fd_tile_gossip = {
   .unprivileged_init        = unprivileged_init,
   .run                      = stem_run,
 #if FD_TILE_FUZZING
-  .metrics_write            = metrics_write
+  .metrics_write            = metrics_write,
+  .during_housekeeping      = during_housekeeping,
+  .before_credit            = before_credit,
+  .after_credit             = before_credit,
 #endif
 };

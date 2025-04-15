@@ -2,6 +2,7 @@
 #include "../../disco/topo/fd_topob.h"
 #include "../firedancer/config.h"
 #include "../shared/boot/fd_boot.h"
+#include <stdlib.h>
 
 char const * FD_APP_NAME    = "fd_tile_fuzz";
 char const * FD_BINARY_NAME = "fd_tile_fuzz";
@@ -52,12 +53,15 @@ fd_topo_run_tile_t * TILES[] = {
 /* I have no clue why the linker fails if these aren't there. */
 action_t * ACTIONS[] = { NULL };
 
-
 int
 main( int    argc,
       char** argv ) {
   if( FD_UNLIKELY( argc!=2 ) ) FD_LOG_ERR(( "usage: %s <topo_name>", argv[0] ));
-  fd_config_t * config = fd_drv_init( argv[1], CALLBACKS );
-  fd_drv_housekeeping( &config->topo, &config->topo.tiles[ 1 ], TILES, 0 );
+  void * shmem = malloc( fd_drv_footprint() );
+  if( FD_UNLIKELY( !shmem ) ) FD_LOG_ERR(( "malloc failed" ));
+  fd_drv_t * drv = fd_drv_join( fd_drv_join( fd_drv_new( shmem, TILES, CALLBACKS ) ) );
+  if( FD_UNLIKELY( !drv ) ) FD_LOG_ERR(( "creating tile fuzz driver failed" ));
+  fd_drv_init( drv, argv[1] );
+  fd_drv_housekeeping( drv, "gossip", 0 );
   return 0;
 }

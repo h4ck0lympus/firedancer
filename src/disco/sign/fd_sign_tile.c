@@ -213,9 +213,10 @@ privileged_init_sensitive( fd_topo_t *      topo,
 
     /* The stack can be taken over and reorganized by under AddressSanitizer,
      which causes this code to fail.  */
-#if FD_HAS_ASAN
+    // TODO reformat
+#if FD_HAS_ASAN || FD_HAS_FUZZ
   FD_LOG_WARNING(( "!!! SECURITY WARNING !!! YOU ARE RUNNING THE SIGNING TILE "
-                   "WITH ADDRESS SANITIZER ENABLED. THIS CAN LEAK SENSITIVE "
+                   "IN TESTING MODE. THIS CAN LEAK SENSITIVE "
                    "DATA INCLUDING YOUR PRIVATE KEYS INTO CORE DUMPS IF THIS "
                    "PROCESS ABORTS. IT IS HIGHLY ADVISED TO NOT TO RUN IN THIS "
                    "MODE IN PRODUCTION!" ));

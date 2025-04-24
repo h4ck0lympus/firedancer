@@ -794,7 +794,13 @@ unprivileged_init( fd_topo_t *      topo,
     fd_topo_link_t * link = &topo->links[ tile->in_link_id[ in_idx ] ];
     if( 0==strcmp( link->name, "net_gossip" ) ) {
       ctx->in_kind[ in_idx ] = IN_KIND_NET;
+      #ifndef FD_HAS_FUZZ
       fd_net_rx_bounds_init( &ctx->in_links[ in_idx ].net_rx, link->dcache );
+      #else
+      ctx->in_links[ in_idx ].net_rx.base = (ulong)link->dcache;
+      ctx->in_links[ in_idx ].net_rx.pkt_lo = ctx->in_links[ in_idx ].net_rx.base;
+      ctx->in_links[ in_idx ].net_rx.pkt_wmark = ctx->in_links[ in_idx ].net_rx.base + FD_NET_MTU;
+      #endif
       continue;
     } else if( 0==strcmp( link->name, "send_txns" ) ) {
       ctx->in_kind[ in_idx ] = IN_KIND_SEND;
@@ -1132,10 +1138,13 @@ fd_topo_run_tile_t fd_tile_gossip = {
   .privileged_init          = privileged_init,
   .unprivileged_init        = unprivileged_init,
   .run                      = stem_run,
-#if FD_TILE_FUZZING
-  .metrics_write            = metrics_write,
-  .during_housekeeping      = during_housekeeping,
-  .before_credit            = before_credit,
-  .after_credit             = before_credit,
+#ifdef FD_HAS_FUZZ
+  .metrics_write            = (void (*)( void * ))metrics_write,
+  .during_housekeeping      = (void (*)( void * ))during_housekeeping,
+  .before_credit            = (void (*)( void * , fd_stem_context_t * , int * ))NULL,
+  .after_credit             = (void (*)( void *, fd_stem_context_t *, int *, int * ))after_credit,
+  .before_frag              = (int  (*)( void *, ulong, ulong, ulong ))before_frag,
+  .during_frag              = (void (*)( void *, ulong, ulong, ulong, ulong, ulong, ulong ))during_frag,
+  .after_frag               = (void (*)( void *, ulong, ulong, ulong, ulong, ulong, ulong, fd_stem_context_t *))after_frag,
 #endif
 };

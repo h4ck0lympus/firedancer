@@ -119,11 +119,11 @@ topo_is_xdp( fd_topo_t * topo ) {
   return 0;
 }
 
-static void
-add_xdp_rx_link( fd_topo_t *  topo,
-                 char const * link_name,
-                 ulong        net_kind_id,
-                 ulong        depth ) {
+void
+fd_add_xdp_rx_link( fd_topo_t *  topo,
+                    char const * link_name,
+                    ulong        net_kind_id,
+                    ulong        depth ) {
   if( FD_UNLIKELY( !topo || !link_name  ) ) FD_LOG_ERR(( "NULL args" ));
   if( FD_UNLIKELY( strlen( link_name )>=sizeof(topo->links[ topo->link_cnt ].name ) ) ) FD_LOG_ERR(( "link name too long: %s", link_name ));
   if( FD_UNLIKELY( topo->link_cnt>=FD_TOPO_MAX_LINKS ) ) FD_LOG_ERR(( "too many links" ));
@@ -157,7 +157,7 @@ fd_topos_net_rx_link( fd_topo_t *  topo,
                       ulong        net_kind_id,
                       ulong        depth ) {
   if( topo_is_xdp( topo ) ) {
-    add_xdp_rx_link( topo, link_name, net_kind_id, depth );
+    fd_add_xdp_rx_link( topo, link_name, net_kind_id, depth );
     fd_topob_tile_out( topo, "net", net_kind_id, link_name, net_kind_id );
   } else {
     fd_topob_link( topo, link_name, "net_umem", depth, FD_NET_MTU, 64 );

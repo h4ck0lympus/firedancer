@@ -31,4 +31,13 @@ fd_drv_init( fd_drv_t * drv, char* topo_name );
 
 void
 fd_drv_housekeeping( fd_drv_t * drv, char * tile_name, int backpressured );
+
+void
+fd_drv_send( fd_drv_t * drv,
+             char     * from,
+             char     * to,
+             ulong      in_idx,
+             ulong      sig,
+             uchar    * data,
+             ulong      data_sz );
 #endif /* HEADER_fd_src_app_tilefuzz_driver_h */

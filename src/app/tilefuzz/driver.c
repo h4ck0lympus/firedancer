@@ -1,12 +1,15 @@
 #include <fcntl.h>
 #include <unistd.h>
 #include <stdlib.h>
+#include <stdio.h>
+#include <string.h>
 
 #include "../../disco/topo/fd_topob.h"
 #include "../../disco/topo/fd_pod_format.h"
 #include "../../disco/metrics/fd_metrics.h"
 #include "../firedancer/config.h"
 #include "driver.h"
+#include "../../disco/net/fd_net_tile.h" /* fd_topos_net_tiles */
 
 // TODO consider making this more like an FD object with new, join, ...
 
@@ -92,6 +95,10 @@ isolated_gossip_topo( config_t * config, fd_topo_obj_callbacks_t * callbacks[] )
   fd_topob_tile_in ( topo, "gossip", 0UL, "metric_in", "sign_gossip",  0UL, FD_TOPOB_UNRELIABLE, FD_TOPOB_UNPOLLED );
   fd_topob_tile_out( topo, "gossip", 0UL, "gossip_sign", 0UL );
 
+  fd_topob_wksp    ( topo, "net_gossip" );
+  fd_topob_link    ( topo, "net_gossip", "net_gossip", 128UL, 2048UL, 1UL ); // TODO check params
+  fd_topob_tile_in ( topo, "gossip", 0UL, "metric_in", "net_gossip",   0UL, FD_TOPOB_UNRELIABLE, FD_TOPOB_POLLED );
+
   fd_topo_obj_t * poh_shred_obj = fd_topob_obj( topo, "fseq", "gossip" );
   FD_TEST( fd_pod_insertf_ulong( topo->props, poh_shred_obj->id, "poh_shred" ) );
   fd_topob_tile_uses( topo, gossip_tile, poh_shred_obj, FD_SHMEM_JOIN_MODE_READ_WRITE );
@@ -113,11 +120,11 @@ back_wksps( fd_topo_t * topo, fd_topo_obj_callbacks_t * callbacks[] ) {
     }
     ulong align = cb->align( topo, obj );
 
-    FD_LOG_NOTICE(( "obj %s %lu %lu %lu %lu", obj->name, obj->wksp_id, obj->footprint, obj->offset, align ));
     obj->wksp_id = obj->id;
     topo->workspaces[ obj->wksp_id ].wksp = aligned_alloc( align, obj->footprint );
-    FD_LOG_NOTICE(( "wksp pointer %p", (void*)topo->workspaces[ obj->wksp_id ].wksp ));
     obj->offset = 0UL;
+    FD_LOG_NOTICE(( "obj %s %lu %lu %lu %lu", obj->name, obj->wksp_id, obj->footprint, obj->offset, align ));
+    FD_LOG_NOTICE(( "wksp pointer %p", (void*)topo->workspaces[ obj->wksp_id ].wksp ));
     /* ~equivalent to fd_topo_wksp_new in a world of real workspaces */
     if( FD_UNLIKELY( cb->new ) ) { /* only saw this null for tiles */
       cb->new( topo, obj );
@@ -129,7 +136,6 @@ back_wksps( fd_topo_t * topo, fd_topo_obj_callbacks_t * callbacks[] ) {
      the wksp id checks.  I haven't looked into why they are needed */
   for( ulong i=0UL; i<topo->link_cnt; i++ ) {
     fd_topo_link_t * link = &topo->links[ i ];
-
     link->mcache = fd_mcache_join( fd_topo_obj_laddr( topo, link->mcache_obj_id ) );
     FD_TEST( link->mcache );
     /* only saw this false for tile code */
@@ -184,12 +190,14 @@ init_tiles( fd_drv_t * drv ) {
     fd_topo_run_tile_t * run_tile = tile_topo_to_run( drv, topo_tile );
     run_tile->privileged_init( &drv->config.topo, topo_tile );
     run_tile->unprivileged_init( &drv->config.topo, topo_tile );
+    fd_metrics_register( topo_tile->metrics ); // TODO check if this is correct in a one thread world
   }
 }
 
 void
 fd_drv_init( fd_drv_t * drv,
              char* topo_name ) {
+  FD_LOG_NOTICE(( "fd_drv_init" ));
   /* fd_config_t is too large to be on the stack, so we use a static
      variable. */
   fd_config_t * config = &drv->config;
@@ -234,28 +242,69 @@ fd_drv_housekeeping( fd_drv_t * drv,
 #endif
 }
 
-// FD_FN_UNUSED void
-// fd_drv_send( fd_topo_t * topo,
-//              fd_topo_tile_t * tile,
-//              fd_topo_run_tile_t ** tiles,
-//              uchar* payload,
-//              ulong payload_sz ) {
-//   // TODO precompute name to tile mapping (or pass tile in directly)
-//   fd_topo_run_tile_t * target = NULL;
-//   for( ulong i=0UL; tiles[ i ]; i++ ) {
-//     if( 0==strcmp( tile->name, tiles[ i ]->name ) ) target = tiles[ i ];
-//   }
-//   /* We could consider to do this branchless with accessing
-//      STEM macros by name (requires redef before undef in stem */
-//   void * ctx = fd_topo_obj_laddr( topo, tile->tile_obj_id );
-//   // TODO do addressing by name and specify from->to with names
-//   // for getting the link and the mcache with name addressing
-//
-//   // fd_stem_context_t stem = { ... }
-// #ifdef FD_HAS_FUZZ
-//   if( FD_LIKELY( target->before_credit( ctx,  );
-// #else
-//   (void)topo; (void) tile; (void) tiles; (void) payload; (void) payload_sz; (void) ctx;
-//   FD_LOG_ERR(( "requires compilation with FD_HAS_FUZZ" ));
-// #endif
-// }
+
+void
+fd_drv_send( fd_drv_t * drv,
+             char     * from,
+             char     * to,
+             ulong      in_idx,
+             ulong      sig,
+             uchar    * data,
+             ulong      data_sz ) {
+  fd_topo_t * topo = &drv->config.topo;
+  fd_topo_link_t * link = NULL;
+
+  // TODO this is not quite correct, e.g. for rstart_gossi
+  for( ulong i = 0UL; i < topo->link_cnt; i++ ) {
+    char *name = topo->links[i].name;
+
+    char *underscore = strchr(name, '_');
+    ulong front_len  = (ulong)(underscore - name);
+    ulong back_len   = strlen(underscore + 1);
+
+    if( FD_UNLIKELY( strncmp(from, name,           front_len) == 0 &&
+                     strncmp(to,   underscore + 1, back_len)  == 0 ) ) {
+      link = &topo->links[i];
+      break;
+    }
+  }
+  if( FD_UNLIKELY( !link ) ) {
+    FD_LOG_ERR(("No suitable link found for from='%s' to='%s'", from, to));
+  }
+  fd_topo_run_tile_t * to_run_tile  = find_run_tile( drv, to );
+  fd_topo_tile_t * to_topo_tile = find_topo_tile( drv, to );
+  void * ctx = fd_topo_obj_laddr( &drv->config.topo, to_topo_tile->tile_obj_id );
+  ulong fake_seq=0UL;
+  ulong fake_cr_avail=0UL;
+  fd_stem_context_t fake_stem = {
+    .mcaches=&link->mcache,
+    .seqs=&fake_seq,
+    .depths=&link->depth,
+    .cr_avail=&fake_cr_avail,
+    .cr_decrement_amount=0UL
+  };
+  int charge_busy_before = 0;
+  fd_memcpy( link->dcache, data, data_sz );
+  #ifdef FD_HAS_FUZZ
+  if( to_run_tile->before_credit ) {
+    to_run_tile->before_credit( ctx, &fake_stem, &charge_busy_before );
+  }
+  if( FD_LIKELY( !charge_busy_before ) ) {
+    if( to_run_tile->after_credit ) {
+      to_run_tile->after_credit( ctx, &fake_stem, NULL, &charge_busy_before );
+    }
+  }
+  if( to_run_tile->before_frag ) {
+    int filter = to_run_tile->before_frag( ctx, in_idx, fake_seq, sig );
+    if( FD_UNLIKELY( filter ) ) return;
+  }
+  if( FD_LIKELY( to_run_tile->during_frag ) ) {
+    to_run_tile->during_frag( ctx, in_idx, fake_seq, sig, 0, data_sz, 0UL );
+  }
+  if( FD_LIKELY( to_run_tile->after_frag ) ) {
+    to_run_tile->after_frag( ctx, in_idx, fake_seq, sig, data_sz, 0UL, 0UL, &fake_stem );
+  }
+  #else
+    FD_LOG_ERR(( "requires compilation with FD_HAS_FUZZ" ));
+  #endif
+}

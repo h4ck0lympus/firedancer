@@ -508,7 +508,12 @@ typedef struct {
   ulong (*rlimit_file_cnt_fn      )( fd_topo_t const * topo, fd_topo_tile_t const * tile );
 #ifdef FD_HAS_FUZZ
   void (*metrics_write            )( void * ctx );
+  void (*before_credit            )( void * ctx, fd_stem_context_t * stem, int * charge_busy );
   void (*during_housekeeping      )( void * ctx );
+  void (*after_credit             )( void * ctx, fd_stem_context_t * stem, int * opt_poll_in, int * charge_busy );
+  int  (*before_frag              )( void * ctx, ulong in_idx, ulong seq, ulong sig );
+  void (*during_frag              )( void * ctx, ulong in_idx, ulong seq, ulong sig, ulong chunk, ulong sz, ulong ctl );
+  void (*after_frag               )( void * ctx, ulong in_idx, ulong seq, ulong sig, ulong sz, ulong tsorig, ulong tspub, fd_stem_context_t * stem );
 #endif
 } fd_topo_run_tile_t;
 

@@ -89,6 +89,12 @@ fd_topos_net_rx_link( fd_topo_t *  topo,
                       ulong        net_kind_id,
                       ulong        depth );
 
+void
+fd_add_xdp_rx_link( fd_topo_t *  topo,
+                    char const * link_name,
+                    ulong        net_kind_id,
+                    ulong        depth );
+
 /* fd_topob_tile_in_net registers a net TX link with all net tiles. */
 
 void

@@ -13,6 +13,7 @@
 
 extern fd_topo_run_tile_t fd_tile_gossip;
 extern fd_topo_run_tile_t fd_tile_sign;
+extern fd_topo_run_tile_t fd_tile_shred;
 
 FD_FN_CONST ulong
 fd_drv_footprint( void ) {
@@ -100,6 +101,66 @@ isolated_gossip_topo( config_t * config, fd_topo_obj_callbacks_t * callbacks[] )
   fd_topo_obj_t * poh_shred_obj = fd_topob_obj( topo, "fseq", "gossip" );
   FD_TEST( fd_pod_insertf_ulong( topo->props, poh_shred_obj->id, "poh_shred" ) );
   fd_topob_tile_uses( topo, gossip_tile, poh_shred_obj, FD_SHMEM_JOIN_MODE_READ_WRITE );
+  fd_topob_finish( topo, callbacks );
+}
+
+static void
+isolated_shred_topo( config_t * config, fd_topo_obj_callbacks_t * callbacks[] ) {
+  fd_topo_t * topo = &config->topo;
+  fd_topob_new( &config->topo, config->name );
+  fd_topob_wksp( topo, "metric_in" );
+  fd_topob_wksp( topo, "shred" );
+  fd_topo_tile_t * shred_tile = fd_topob_tile( topo, "shred", "shred", "metric_in", 0UL, 0, 0 );
+
+  strncpy( shred_tile->shred.identity_key_path, config->paths.identity_key, sizeof(shred_tile->shred.identity_key_path) );
+  shred_tile->shred.depth = 1UL;
+  /* We might not need so much for testing, but this is the default.
+     If we ever want to save memory, then consider lowering it. */
+  config->tiles.shred.max_pending_shred_sets = 16384; // 2^14
+  shred_tile->shred.fec_resolver_depth = config->tiles.shred.max_pending_shred_sets;
+  shred_tile->shred.expected_shred_version = config->consensus.expected_shred_version;
+  shred_tile->shred.shred_listen_port = 123;
+  shred_tile->shred.larger_shred_limits_per_block = 0;
+  shred_tile->shred.adtl_dest.ip = 123;
+  shred_tile->shred.adtl_dest.port = 123;
+
+  /* TODO setup fake links
+    - shred_store
+    - shred_net
+    - shred_sign
+    - sign_shred
+    The following are semi-optional
+    - net_shred
+    - poh_shred
+    - stake_out
+    - crds_shred
+    - sign_shred
+    - repair_shred
+  */
+
+  fd_topob_wksp    ( topo, "shred_store" );
+  fd_topob_link    ( topo, "shred_store", "shred_store", 128UL, 2048UL, 1UL );
+  fd_topob_tile_out ( topo, "shred", 0UL, "shred_store", 0UL );
+
+  fd_topob_wksp    ( topo, "shred_net" );
+  fd_topob_link    ( topo, "shred_net", "shred_net", 128UL, 2048UL, 1UL );
+  fd_topob_tile_out ( topo, "shred", 0UL,  "shred_net", 0UL );
+
+  fd_topob_wksp( topo, "sign" );
+  fd_topo_tile_t * sign_tile = fd_topob_tile( topo, "sign", "sign", "metric_in", 0UL, 0, 1 );
+  strncpy( sign_tile->sign.identity_key_path, config->paths.identity_key, sizeof(sign_tile->sign.identity_key_path) );
+
+  fd_topob_wksp    ( topo, "shred_sign" );
+  fd_topob_link    ( topo, "shred_sign", "shred_sign", 128UL, 2048UL, 1UL );
+  fd_topob_tile_in ( topo, "sign", 0UL, "metric_in", "shred_sign", 0UL, FD_TOPOB_UNRELIABLE, FD_TOPOB_POLLED );
+  fd_topob_wksp    ( topo, "sign_shred" );
+  fd_topob_link    ( topo, "sign_shred", "sign_shred", 128UL, 64UL, 1UL );
+  fd_topob_tile_out( topo, "sign", 0UL, "sign_shred", 0UL );
+  fd_topob_tile_in ( topo, "shred", 0UL, "metric_in", "sign_shred",  0UL, FD_TOPOB_UNRELIABLE, FD_TOPOB_UNPOLLED );
+  fd_topob_tile_out( topo, "shred", 0UL, "shred_sign", 0UL );
+
+
+
   fd_topob_finish( topo, callbacks );
 }
 
@@ -204,10 +265,13 @@ fd_drv_init( fd_drv_t * drv,
   char * identity_path = "/tmp/keypair.json";
   create_tmp_file( identity_path, "[71,60,17,94,167,87,207,120,61,120,160,233,173,197,58,217,214,218,153,228,116,222,11,211,184,155,118,23,42,117,197,60,201,89,130,105,44,12,187,216,103,89,109,137,91,248,55,31,16,61,21,117,107,68,142,67,230,247,42,14,74,30,158,201]" );
   strcpy( config->paths.identity_key, identity_path );
+  config->consensus.expected_shred_version = 64475;
 
-  char * isolated_gossip_name = "isolated_gossip";
-  if( FD_LIKELY( 0==strcmp( topo_name, isolated_gossip_name ) ) ) {
+  if( FD_LIKELY( 0==strcmp( topo_name, "isolated_gossip") ) ) {
     isolated_gossip_topo( config, drv->callbacks );
+  }
+  else if( FD_LIKELY( 0==strcmp( topo_name, "isolated_shred" ) ) ) {
+    isolated_shred_topo( config, drv->callbacks );
   } else {
     FD_LOG_ERR(( "unknown topology name %s", topo_name ));
   }

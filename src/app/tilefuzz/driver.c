@@ -1,13 +1,11 @@
 #include <fcntl.h>
 #include <unistd.h>
 #include <stdlib.h>
-#include <stdio.h>
 #include <string.h>
 
 #include "../../disco/topo/fd_topob.h"
 #include "../../disco/topo/fd_pod_format.h"
 #include "../../disco/metrics/fd_metrics.h"
-#include "../firedancer/config.h"
 #include "driver.h"
 #include "../../disco/net/fd_net_tile.h" /* fd_topos_net_tiles */
 
@@ -71,7 +69,7 @@ isolated_gossip_topo( config_t * config, fd_topo_obj_callbacks_t * callbacks[] )
   fd_topob_wksp( topo, "gossip" );
   fd_topo_tile_t * gossip_tile = fd_topob_tile( topo, "gossip", "gossip", "metric_in", 0UL, 0, 0 );
 
-  strncpy( gossip_tile->gossip.identity_key_path, config->consensus.identity_path, sizeof(gossip_tile->gossip.identity_key_path) );
+  strncpy( gossip_tile->gossip.identity_key_path, config->paths.identity_key, sizeof(gossip_tile->gossip.identity_key_path) );
   gossip_tile->gossip.gossip_listen_port     = 42;
   gossip_tile->gossip.ip_addr                = (uint)(1<<24 | 1<<16 | 1<<8 | 1);
   gossip_tile->gossip.expected_shred_version = 50093UL;
@@ -84,7 +82,7 @@ isolated_gossip_topo( config_t * config, fd_topo_obj_callbacks_t * callbacks[] )
 
   fd_topob_wksp( topo, "sign" );
   fd_topo_tile_t * sign_tile = fd_topob_tile( topo, "sign", "sign", "metric_in", 0UL, 0, 1 );
-  strncpy( sign_tile->sign.identity_key_path, config->consensus.identity_path, sizeof(sign_tile->sign.identity_key_path) );
+  strncpy( sign_tile->sign.identity_key_path, config->paths.identity_key, sizeof(sign_tile->sign.identity_key_path) );
 
   fd_topob_wksp    ( topo, "gossip_sign" );
   fd_topob_link    ( topo, "gossip_sign", "gossip_sign", 128UL, 2048UL, 1UL );
@@ -180,7 +178,6 @@ tile_topo_to_run( fd_drv_t * drv, fd_topo_tile_t * topo_tile ) {
   return find_run_tile( drv, topo_tile->name );
 }
 
-
 static void
 init_tiles( fd_drv_t * drv ) {
   FD_LOG_NOTICE(( "tile cnt: %lu", drv->config.topo.tile_cnt ));
@@ -204,9 +201,9 @@ fd_drv_init( fd_drv_t * drv,
 
   strcpy( config->name, "tile_fuzz_driver" );
 
-  char * consensus_identity_path = "/tmp/keypair.json";
-  create_tmp_file( consensus_identity_path, "[71,60,17,94,167,87,207,120,61,120,160,233,173,197,58,217,214,218,153,228,116,222,11,211,184,155,118,23,42,117,197,60,201,89,130,105,44,12,187,216,103,89,109,137,91,248,55,31,16,61,21,117,107,68,142,67,230,247,42,14,74,30,158,201]" );
-  strcpy( config->consensus.identity_path, consensus_identity_path );
+  char * identity_path = "/tmp/keypair.json";
+  create_tmp_file( identity_path, "[71,60,17,94,167,87,207,120,61,120,160,233,173,197,58,217,214,218,153,228,116,222,11,211,184,155,118,23,42,117,197,60,201,89,130,105,44,12,187,216,103,89,109,137,91,248,55,31,16,61,21,117,107,68,142,67,230,247,42,14,74,30,158,201]" );
+  strcpy( config->paths.identity_key, identity_path );
 
   char * isolated_gossip_name = "isolated_gossip";
   if( FD_LIKELY( 0==strcmp( topo_name, isolated_gossip_name ) ) ) {
@@ -226,8 +223,8 @@ fd_drv_housekeeping( fd_drv_t * drv,
   // TODO precompute name to tile mapping (or pass tile in directly)
   fd_topo_tile_t *     topo_tile = find_topo_tile( drv, tile_name );
   fd_topo_run_tile_t * run_tile  = find_run_tile( drv, tile_name );
-  /* We could consider to do this branchless with accessing
-   * STEM macros by name (requires redef before undef in stem */
+  /* We could consider doing this branchless with accessing
+     STEM macros by name (requires redef before undef in stem */
   void * ctx = fd_topo_obj_laddr( &drv->config.topo, topo_tile->tile_obj_id );
 #ifdef FD_HAS_FUZZ
   if( FD_LIKELY( run_tile->metrics_write ) ) run_tile->metrics_write( ctx );
@@ -272,7 +269,7 @@ fd_drv_send( fd_drv_t * drv,
     FD_LOG_ERR(("No suitable link found for from='%s' to='%s'", from, to));
   }
   fd_topo_run_tile_t * to_run_tile  = find_run_tile( drv, to );
-  fd_topo_tile_t * to_topo_tile = find_topo_tile( drv, to );
+  fd_topo_tile_t *     to_topo_tile = find_topo_tile( drv, to );
   void * ctx = fd_topo_obj_laddr( &drv->config.topo, to_topo_tile->tile_obj_id );
   ulong fake_seq=0UL;
   ulong fake_cr_avail=0UL;

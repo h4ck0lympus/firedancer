@@ -1,8 +1,6 @@
 #include "driver.h"
-#include "../../disco/topo/fd_topob.h"
-#include "../firedancer/config.h"
-#include "../shared/boot/fd_boot.h"
 #include <stdlib.h>
+#include "../shared/fd_action.h"
 
 char const * FD_APP_NAME    = "fd_tile_fuzz";
 char const * FD_BINARY_NAME = "fd_tile_fuzz";

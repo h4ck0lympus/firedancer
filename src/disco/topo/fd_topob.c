@@ -657,5 +657,9 @@ fd_topob_finish( fd_topo_t *                topo,
 
   initialize_numa_assignments( topo );
   // TODO make this a parameter
-  if( 0 ) validate( topo );
+#ifndef FD_HAS_FUZZ
+  validate( topo );
+#else
+  (void)validate;
+#endif
 }

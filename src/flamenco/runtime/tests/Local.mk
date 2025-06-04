@@ -10,6 +10,7 @@ $(call add-objs,harness/fd_exec_sol_compat,fd_flamenco_test)
 SOL_COMPAT_FLAGS:=-Wl,--undefined=fd_types_vt_by_name
 $(call make-unit-test,test_exec_sol_compat,test_exec_sol_compat,fd_flamenco_test fd_flamenco fd_funk fd_ballet fd_util fd_disco,$(SECP256K1_LIBS))
 $(call make-shared,libfd_exec_sol_compat.so,harness/fd_exec_sol_compat,fd_flamenco_test fd_flamenco fd_funk fd_ballet fd_util fd_disco,$(SECP256K1_LIBS) $(SOL_COMPAT_FLAGS))
+$(call make-shared,libfd_exec_light_interp.so,harness/fd_vm_angr_harness,fd_flamenco fd_ballet fd_util)
 
 endif
 endif

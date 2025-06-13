@@ -4,7 +4,7 @@
 #include <string.h>
 
 #include "../../disco/topo/fd_topob.h"
-#include "../../disco/topo/fd_pod_format.h"
+#include "../../util/pod/fd_pod_format.h"
 #include "../../disco/metrics/fd_metrics.h"
 #include "driver.h"
 #include "../../disco/net/fd_net_tile.h" /* fd_topos_net_tiles */

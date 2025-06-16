@@ -1129,13 +1129,21 @@ unprivileged_init( fd_topo_t *      topo,
 #endif
       continue; /* only net_rx needs to be set in this case. */ }
     else if( FD_LIKELY( !strcmp( link->name, "poh_shred"    ) ) ) ctx->in_kind[ i ] = IN_KIND_POH;
-    else if( FD_LIKELY( !strcmp( link->name, "stake_out"    ) ) ) ctx->in_kind[ i ] = IN_KIND_STAKE;
-    else if( FD_LIKELY( !strcmp( link->name, "crds_shred"   ) ) ) ctx->in_kind[ i ] = IN_KIND_CONTACT;
+    else if( FD_LIKELY( !strcmp( link->name, "stake_out"    ) ) ) {
+      FD_LOG_NOTICE(( "stake_out: %lu", i ));
+      ctx->in_kind[ i ] = IN_KIND_STAKE;
+    }
+    else if( FD_LIKELY( !strcmp( link->name, "crds_shred"   ) ) ) {
+      FD_LOG_NOTICE(( "crds_shred: %lu", i ));
+      ctx->in_kind[ i ] = IN_KIND_CONTACT;
+    }
     else if( FD_LIKELY( !strcmp( link->name, "sign_shred"   ) ) ) ctx->in_kind[ i ] = IN_KIND_SIGN;
     else if( FD_LIKELY( !strcmp( link->name, "repair_shred" ) ) ) ctx->in_kind[ i ] = IN_KIND_REPAIR;
     else FD_LOG_ERR(( "shred tile has unexpected input link %lu %s", i, link->name ));
 
     ctx->in[ i ].mem    = link_wksp->wksp;
+    // return ((ulong)dcache - (ulong)base) >> FD_CHUNK_LG_SZ;
+    FD_LOG_NOTICE(( "%lu", ((ulong)link->dcache - (ulong)ctx->in[i].mem) >> FD_CHUNK_LG_SZ ));
     ctx->in[ i ].chunk0 = fd_dcache_compact_chunk0( ctx->in[ i ].mem, link->dcache );
     ctx->in[ i ].wmark  = fd_dcache_compact_wmark ( ctx->in[ i ].mem, link->dcache, link->mtu );
   }

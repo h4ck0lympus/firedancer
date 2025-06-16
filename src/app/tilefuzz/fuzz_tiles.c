@@ -2,6 +2,7 @@
 #include "../../util/fd_util_base.h"
 #include "driver.h"
 #include "../shared/fd_action.h"
+#include "../../disco/shred/fd_stake_ci.h"
 
 
 extern fd_topo_obj_callbacks_t fd_obj_cb_mcache;
@@ -58,6 +59,34 @@ action_t * ACTIONS[] = { NULL };
 fd_drv_t * drv;
 
 
+/* From HERE(1) just copied from stake ci tests consider moving to
+   common place */
+
+#define SLOTS_PER_EPOCH 1000 /* Just for testing */
+
+static fd_stake_weight_msg_t *
+generate_stake_msg( uchar *      _buf,
+                    ulong        epoch,
+                    char const * stakers ) {
+  fd_stake_weight_msg_t *buf = fd_type_pun( _buf );
+
+  buf->epoch          = epoch;
+  buf->start_slot     = epoch * SLOTS_PER_EPOCH;
+  buf->slot_cnt       = SLOTS_PER_EPOCH;
+  buf->staked_cnt     = strlen(stakers);
+  buf->excluded_stake = 0UL;
+
+  ulong i = 0UL;
+  for(; *stakers; stakers++, i++ ) {
+    memset( buf->weights[i].key.uc, *stakers, sizeof(fd_pubkey_t) );
+    buf->weights[i].stake = 1000UL/(i+1UL);
+  }
+  return fd_type_pun( _buf );
+}
+
+/* To HERE(1) */
+
+
 FD_FN_UNUSED static int
 init( int  *   argc,
       char *** argv,
@@ -67,6 +96,13 @@ init( int  *   argc,
   if( FD_UNLIKELY( !shmem ) ) FD_LOG_ERR(( "malloc failed" ));
   drv = fd_drv_join( fd_drv_new( shmem, TILES, CALLBACKS ) );
   fd_drv_init( drv, topo_name );
+  /* setup stake ci for shred */
+  if( 0==strcmp( "isolated_shred", topo_name ) ) {
+    /* ehh, the api is not nice for this link */
+    uchar stake_msg[ FD_STAKE_CI_STAKE_MSG_SZ ];
+    generate_stake_msg( stake_msg, 0UL, "ABCDEF" );
+    fd_drv_send( drv, "stake", "out", 2, 0UL, stake_msg, /* tight upper-bound okay */ FD_STAKE_CI_STAKE_MSG_SZ );
+  }
   return 0;
 }
 
@@ -84,8 +120,9 @@ FD_FN_UNUSED static int
 fuzz_gossip( uchar const * data,
              ulong         size ) {
   uchar should_call_housekeeping = *CONSUME(1);
+  /* These probabilities have no deeper meaning.  Just put here for
+     testing */
   uchar is_backpressured = !(should_call_housekeeping % 4);
-  /* this probability has no deeper justification, just put here for testing */
   if( FD_UNLIKELY( should_call_housekeeping > 25 ) ) {
     fd_drv_housekeeping( drv, "gossip", is_backpressured );
     /* we could consider calling sign's housekeeping here too, but
@@ -99,10 +136,10 @@ fuzz_gossip( uchar const * data,
 FD_FN_UNUSED static int
 fuzz_shred( uchar const * data,
             ulong         size ) {
-  // TODO replace with shred
   uchar should_call_housekeeping = *CONSUME(1);
+  /* These probabilities have no deeper meaning.  Just put here for
+     testing */
   uchar is_backpressured = !(should_call_housekeeping % 4);
-  /* this probability has no deeper justification, just put here for testing */
   if( FD_UNLIKELY( should_call_housekeeping > 25 ) ) {
     fd_drv_housekeeping( drv, "shred", is_backpressured );
   }

@@ -130,7 +130,7 @@ isolated_shred_topo( config_t * config, fd_topo_obj_callbacks_t * callbacks[] ) 
   shred_tile->shred.adtl_dest.port = 123;
   shred_tile->shred.depth = 65536UL;
 
-  /* TODO setup fake links
+  /* TODO setup all fake links
     - shred_store
     - shred_net
     - shred_sign
@@ -146,8 +146,8 @@ isolated_shred_topo( config_t * config, fd_topo_obj_callbacks_t * callbacks[] ) 
 
   /* TODO explore using less memory for the tiles that are purely
           mocks */
+  /* TODO explore saving memory by using just one wksp for all links */
   fd_topob_wksp    ( topo, "shred_store" );
-  // fd_topob_link    ( topo, "shred_store", "shred_store", 65536UL, 2048UL, 1UL );
   fd_topob_link( topo, "shred_store",  "shred_store",  65536UL, 4UL*FD_SHRED_STORE_MTU, 4UL+config->tiles.shred.max_pending_shred_sets );
   fd_topob_tile_out( topo, "shred", 0UL, "shred_store", 0UL );
 
@@ -162,16 +162,28 @@ isolated_shred_topo( config_t * config, fd_topo_obj_callbacks_t * callbacks[] ) 
   fd_topob_wksp    ( topo, "shred_sign" );
   fd_topob_link    ( topo, "shred_sign", "shred_sign", 128UL, 32UL, 1UL );
   fd_topob_tile_in ( topo, "sign", 0UL, "metric_in", "shred_sign", 0UL, FD_TOPOB_UNRELIABLE, FD_TOPOB_POLLED );
+
   fd_topob_wksp    ( topo, "sign_shred" );
   fd_topob_link    ( topo, "sign_shred", "sign_shred", 128UL, 64UL, 1UL );
   fd_topob_tile_out( topo, "sign", 0UL, "sign_shred", 0UL );
   fd_topob_tile_in ( topo, "shred", 0UL, "metric_in", "sign_shred",  0UL, FD_TOPOB_UNRELIABLE, FD_TOPOB_UNPOLLED );
   fd_topob_tile_out( topo, "shred", 0UL, "shred_sign", 0UL );
+  /* I don't think we need sign in for this topology right now, but not
+     sure.  Recheck, when we have mcache_publish hooking, and shred
+     needs verify. */
 
   fd_topob_wksp    ( topo, "net_shred" );
   fd_topob_link    ( topo, "net_shred", "net_shred", 128UL, 2048UL, 1UL ); // TODO check params
   fd_topob_tile_in ( topo, "shred", 0UL, "metric_in", "net_shred",   0UL, FD_TOPOB_UNRELIABLE, FD_TOPOB_POLLED );
 
+  /* aka stake_out */
+  fd_topob_wksp    ( topo, "stake_out" );
+  fd_topob_link    ( topo, "stake_out", "stake_out", 128UL, 40UL + 40200UL * 40UL, 1UL );
+  fd_topob_tile_in ( topo, "shred",  0UL, "metric_in", "stake_out", 0UL, FD_TOPOB_RELIABLE,     FD_TOPOB_POLLED );
+
+  fd_topob_wksp    ( topo, "crds_shred" );
+  fd_topob_link    ( topo, "crds_shred", "crds_shred", 128UL, 8UL + 40200UL * 38UL, 1UL );
+  fd_topob_tile_in ( topo, "shred", 0, "metric_in", "crds_shred", 0UL, FD_TOPOB_RELIABLE, FD_TOPOB_POLLED );
 
   /* mock for  `  if( FD_UNLIKELY( !bank_cnt && !replay_cnt ) ) FD_LOG_ERR(( "0 bank/replay tiles" )); */
   fd_topob_wksp    ( topo, "replay" );
@@ -328,6 +340,8 @@ fd_drv_housekeeping( fd_drv_t * drv,
 }
 
 
+/* TODO wrong API design for stake_out, and links with multiple
+        multiple consumers */
 void
 fd_drv_send( fd_drv_t * drv,
              char     * from,
@@ -355,6 +369,10 @@ fd_drv_send( fd_drv_t * drv,
   }
   if( FD_UNLIKELY( !link ) ) {
     FD_LOG_ERR(("No suitable link found for from='%s' to='%s'", from, to));
+  }
+  // TODO hack fix for API design TODO comment
+  if( FD_UNLIKELY( 0==strcmp( "out", to ) ) ) {
+    to = "shred";
   }
   fd_topo_run_tile_t * to_run_tile  = find_run_tile( drv, to );
   fd_topo_tile_t *     to_topo_tile = find_topo_tile( drv, to );
@@ -384,7 +402,8 @@ fd_drv_send( fd_drv_t * drv,
     if( FD_UNLIKELY( filter ) ) return;
   }
   if( FD_LIKELY( to_run_tile->during_frag ) ) {
-    to_run_tile->during_frag( ctx, in_idx, fake_seq, sig, 0, data_sz, 0UL );
+    /* TODO derive the 4 properly */
+    to_run_tile->during_frag( ctx, in_idx, fake_seq, sig, 4UL, data_sz, 0UL );
   }
   if( FD_LIKELY( to_run_tile->after_frag ) ) {
     to_run_tile->after_frag( ctx, in_idx, fake_seq, sig, data_sz, 0UL, 0UL, &fake_stem );

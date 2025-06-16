@@ -123,6 +123,7 @@ isolated_shred_topo( config_t * config, fd_topo_obj_callbacks_t * callbacks[] ) 
   shred_tile->shred.larger_shred_limits_per_block = 0;
   shred_tile->shred.adtl_dest.ip = 123;
   shred_tile->shred.adtl_dest.port = 123;
+  shred_tile->shred.depth = 65536UL;
 
   /* TODO setup fake links
     - shred_store
@@ -138,20 +139,23 @@ isolated_shred_topo( config_t * config, fd_topo_obj_callbacks_t * callbacks[] ) 
     - repair_shred
   */
 
+  /* TODO explore using less memory for the tiles that are purely
+          mocks */
   fd_topob_wksp    ( topo, "shred_store" );
-  fd_topob_link    ( topo, "shred_store", "shred_store", 128UL, 2048UL, 1UL );
-  fd_topob_tile_out ( topo, "shred", 0UL, "shred_store", 0UL );
+  // fd_topob_link    ( topo, "shred_store", "shred_store", 65536UL, 2048UL, 1UL );
+  fd_topob_link( topo, "shred_store",  "shred_store",  65536UL, 4UL*FD_SHRED_STORE_MTU, 4UL+config->tiles.shred.max_pending_shred_sets );
+  fd_topob_tile_out( topo, "shred", 0UL, "shred_store", 0UL );
 
   fd_topob_wksp    ( topo, "shred_net" );
-  fd_topob_link    ( topo, "shred_net", "shred_net", 128UL, 2048UL, 1UL );
-  fd_topob_tile_out ( topo, "shred", 0UL,  "shred_net", 0UL );
+  fd_topob_link    ( topo, "shred_net",  "shred_net", 128UL, 2048UL, 1UL );
+  fd_topob_tile_out( topo, "shred", 0UL, "shred_net", 0UL );
 
   fd_topob_wksp( topo, "sign" );
   fd_topo_tile_t * sign_tile = fd_topob_tile( topo, "sign", "sign", "metric_in", 0UL, 0, 1 );
   strncpy( sign_tile->sign.identity_key_path, config->paths.identity_key, sizeof(sign_tile->sign.identity_key_path) );
 
   fd_topob_wksp    ( topo, "shred_sign" );
-  fd_topob_link    ( topo, "shred_sign", "shred_sign", 128UL, 2048UL, 1UL );
+  fd_topob_link    ( topo, "shred_sign", "shred_sign", 128UL, 32UL, 1UL );
   fd_topob_tile_in ( topo, "sign", 0UL, "metric_in", "shred_sign", 0UL, FD_TOPOB_UNRELIABLE, FD_TOPOB_POLLED );
   fd_topob_wksp    ( topo, "sign_shred" );
   fd_topob_link    ( topo, "sign_shred", "sign_shred", 128UL, 64UL, 1UL );
@@ -159,7 +163,10 @@ isolated_shred_topo( config_t * config, fd_topo_obj_callbacks_t * callbacks[] ) 
   fd_topob_tile_in ( topo, "shred", 0UL, "metric_in", "sign_shred",  0UL, FD_TOPOB_UNRELIABLE, FD_TOPOB_UNPOLLED );
   fd_topob_tile_out( topo, "shred", 0UL, "shred_sign", 0UL );
 
-
+  /* mock for  `  if( FD_UNLIKELY( !bank_cnt && !replay_cnt ) ) FD_LOG_ERR(( "0 bank/replay tiles" )); */
+  fd_topob_wksp    ( topo, "replay" );
+  fd_topo_tile_t * replay_tile = fd_topob_tile( topo, "replay", "replay", "metric_in", 0UL, 0, 1 );
+  (void)replay_tile;
 
   fd_topob_finish( topo, callbacks );
 }
@@ -168,6 +175,7 @@ isolated_shred_topo( config_t * config, fd_topo_obj_callbacks_t * callbacks[] ) 
    following it closely */
 static void
 back_wksps( fd_topo_t * topo, fd_topo_obj_callbacks_t * callbacks[] ) {
+  ulong keyswitch_obj_id = ULONG_MAX;
   for( ulong i=0UL; i<topo->obj_cnt; i++ ) {
     fd_topo_obj_t * obj = &topo->objs[ i ];
     fd_topo_obj_callbacks_t * cb = NULL;
@@ -188,6 +196,9 @@ back_wksps( fd_topo_t * topo, fd_topo_obj_callbacks_t * callbacks[] ) {
     if( FD_UNLIKELY( cb->new ) ) { /* only saw this null for tiles */
       cb->new( topo, obj );
     }
+    if( FD_UNLIKELY( 0== strcmp( obj->name, "keyswitch" ) ) ) {
+      keyswitch_obj_id = obj->id;
+    }
     // TODO add ASAN and MSAN poisoned memory before and after
   }
 
@@ -206,6 +217,7 @@ back_wksps( fd_topo_t * topo, fd_topo_obj_callbacks_t * callbacks[] ) {
 
   for( ulong i=0UL; i<topo->tile_cnt; i++ ) {
     fd_topo_tile_t * tile = &topo->tiles[ i ];
+    tile->keyswitch_obj_id = keyswitch_obj_id;
 
     tile->metrics = fd_metrics_join( fd_topo_obj_laddr( topo, tile->metrics_obj_id ) );
     FD_TEST( tile->metrics );
@@ -241,9 +253,11 @@ tile_topo_to_run( fd_drv_t * drv, fd_topo_tile_t * topo_tile ) {
 
 static void
 init_tiles( fd_drv_t * drv ) {
-  FD_LOG_NOTICE(( "tile cnt: %lu", drv->config.topo.tile_cnt ));
   for( ulong i=0UL; i<drv->config.topo.tile_cnt; i++ ) {
-    FD_LOG_NOTICE(( "tile name: %s", drv->config.topo.tiles[ i ].name ));
+    /* TODO Hack fix for shred_topo: move to isolated_shred_topo */
+    if( FD_UNLIKELY( 0==strcmp( drv->config.topo.tiles[i].name, "replay" ))) {
+      continue;
+    }
     fd_topo_tile_t * topo_tile = &drv->config.topo.tiles[ i ];
     fd_topo_run_tile_t * run_tile = tile_topo_to_run( drv, topo_tile );
     run_tile->privileged_init( &drv->config.topo, topo_tile );
@@ -291,7 +305,7 @@ fd_drv_housekeeping( fd_drv_t * drv,
      STEM macros by name (requires redef before undef in stem */
   void * ctx = fd_topo_obj_laddr( &drv->config.topo, topo_tile->tile_obj_id );
 #ifdef FD_HAS_FUZZ
-  if( FD_LIKELY( run_tile->metrics_write ) ) run_tile->metrics_write( ctx );
+  if( FD_LIKELY( run_tile->metrics_write ) ) run_tile->during_housekeeping( ctx );
   if( FD_LIKELY( !backpressured ) ) {
     if( FD_LIKELY( run_tile->metrics_write ) ) run_tile->metrics_write( ctx );
   }

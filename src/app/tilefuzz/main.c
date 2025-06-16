@@ -43,11 +43,13 @@ fd_topo_obj_callbacks_t * CALLBACKS[] = {
 extern fd_topo_run_tile_t fd_tile_gossip;
 extern fd_topo_run_tile_t fd_tile_shred;
 extern fd_topo_run_tile_t fd_tile_sign;
+extern fd_topo_run_tile_t fd_tile_replay;
 
 fd_topo_run_tile_t * TILES[] = {
   &fd_tile_gossip,
   &fd_tile_sign,
   &fd_tile_shred,
+  &fd_tile_replay,
   NULL
 };
 /* I have no clue why the linker fails if these aren't there. */
@@ -69,7 +71,8 @@ main( int    argc,
     ulong net_sig = 5UL << 32UL;
     fd_drv_send( drv, "net", "gossip", 1, net_sig, data, 8 );
   }
-  else if (strcmp( argv[1], "isolated_sign" ) == 0) {
+  else if (strcmp( argv[1], "isolated_shred" ) == 0) {
+    fd_drv_housekeeping( drv, "shred", 0 );
   }
   else {
     FD_LOG_ERR(( "unknown topo name" ));

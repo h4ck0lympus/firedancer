@@ -552,9 +552,9 @@ during_frag( fd_shred_ctx_t * ctx,
         ctx->batch_cnt++;
       }
     }
-  } else if( FD_UNLIKELY( ctx->in_kind[ in_idx ]==IN_KIND_NET ) ) {
+  } else if( FD_LIKELY( ctx->in_kind[ in_idx ]==IN_KIND_NET ) ) {
     /* The common case, from the net tile.  The FEC resolver API does
-       not present a prepare/commit model. If we get overrun between
+       not present a prepare/commit model.  If we get overrun between
        when the FEC resolver verifies the signature and when it stores
        the local copy, we could end up storing and retransmitting
        garbage.  Instead we copy it locally, sadly, and only give it to
@@ -1076,6 +1076,7 @@ unprivileged_init( fd_topo_t *      topo,
   if( FD_UNLIKELY( expected_shred_version > USHORT_MAX ) ) FD_LOG_ERR(( "invalid shred version %lu", expected_shred_version ));
   FD_LOG_INFO(( "Using shred version %hu", (ushort)expected_shred_version ));
 
+  FD_LOG_NOTICE(("keyswitch_obj_id %lu", tile->keyswitch_obj_id ));
   ctx->keyswitch = fd_keyswitch_join( fd_topo_obj_laddr( topo, tile->keyswitch_obj_id ) );
   FD_TEST( ctx->keyswitch );
 
@@ -1260,4 +1261,11 @@ fd_topo_run_tile_t fd_tile_shred = {
   .privileged_init          = privileged_init,
   .unprivileged_init        = unprivileged_init,
   .run                      = stem_run,
+#ifdef FD_HAS_FUZZ
+  .metrics_write            = (void (*)( void * ))metrics_write,
+  .during_housekeeping      = (void (*)( void * ))during_housekeeping,
+  .before_frag              = (int  (*)( void *, ulong, ulong, ulong ))before_frag,
+  .during_frag              = (void (*)( void *, ulong, ulong, ulong, ulong, ulong, ulong ))during_frag,
+  .after_frag               = (void (*)( void *, ulong, ulong, ulong, ulong, ulong, ulong, fd_stem_context_t *))after_frag,
+#endif
 };

@@ -552,6 +552,7 @@ fd_topo_tile_name_cnt( fd_topo_t const * topo,
   ulong cnt = 0;
   for( ulong i=0; i<topo->tile_cnt; i++ ) {
     if( FD_UNLIKELY( !strcmp( topo->tiles[ i ].name, name ) ) ) cnt++;
+    FD_LOG_NOTICE(( "tile %lu has name %s", i, topo->tiles[ i ].name ) );
   }
   return cnt;
 }

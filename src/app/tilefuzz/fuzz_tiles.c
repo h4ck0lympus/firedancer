@@ -1,6 +1,7 @@
 #include <stdlib.h>
 #include "../../util/fd_util.h"
 #include "driver.h"
+#include "../shared/fd_action.h"
 
 
 extern fd_topo_obj_callbacks_t fd_obj_cb_mcache;
@@ -73,8 +74,8 @@ LLVMFuzzerInitialize( int  *   argc,
   __x;                                     \
   }))
 
-int
-LLVMFuzzerTestOneInput( uchar const * data,
+FD_FN_UNUSED static int
+fuzz_gossip( uchar const * data,
                         ulong         size ) {
   uchar should_call_housekeeping = *CONSUME(1);
   /* this probability has no deeper justification, just put here for testing */
@@ -88,6 +89,31 @@ LLVMFuzzerTestOneInput( uchar const * data,
   ulong net_sig = 5UL << 32UL;
   fd_drv_send( drv, "net", "gossip", 1, net_sig, (uchar *)data, 8 );
   return 0 /* Input succeeded.  Keep it if it found new coverage. */;
+}
+
+FD_FN_UNUSED static int
+fuzz_shred(
+  uchar const * data,
+  ulong         size ) {
+
+  uchar should_call_housekeeping = *CONSUME(1);
+  /* this probability has no deeper justification, just put here for testing */
+  if( FD_UNLIKELY( should_call_housekeeping > 25 ) ) {
+    fd_drv_housekeeping( drv, "gossip", 0 );
+  }
+  int is_backpressured = *CONSUME(1);
+  if ( FD_UNLIKELY( is_backpressured > 25 ) ) {
+    fd_drv_housekeeping( drv, "gossip", 1 );
+  }
+  ulong net_sig = 5UL << 32UL;
+  fd_drv_send( drv, "net", "gossip", 1, net_sig, (uchar *)data, 8 );
+  return 0 /* Input succeeded.  Keep it if it found new coverage. */;
+}
+
+int
+LLVMFuzzerTestOneInput( uchar const * data,
+                        ulong         size ) {
+  return fuzz_gossip( data, size );
 }
 
 #undef CONSUME

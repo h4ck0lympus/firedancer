@@ -85,6 +85,7 @@ main( int    argc,
     strcpy((char *) data, "ABCDEFG" );
     ulong net_sig = 5UL << 32UL;
     fd_drv_send( drv, "net", "gossip", 1, net_sig, data, 8 );
+<<<<<<< HEAD
     free(data);
   } else if (strcmp( argv[1], "isolated_shred" ) == 0) {
     fd_drv_housekeeping( drv, "shred", 0 );

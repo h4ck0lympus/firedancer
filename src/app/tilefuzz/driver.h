@@ -14,6 +14,9 @@ typedef struct fd_drv_private fd_drv_t;
 ulong
 fd_drv_footprint( void );
 
+FD_FN_CONST ulong
+fd_drv_align( void );
+
 void *
 fd_drv_new( void * shmem, fd_topo_run_tile_t ** tiles, fd_topo_obj_callbacks_t ** callbacks );
 

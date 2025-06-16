@@ -59,7 +59,7 @@ int
 main( int    argc,
       char** argv ) {
   if( FD_UNLIKELY( argc!=2 ) ) FD_LOG_ERR(( "usage: %s <topo_name>", argv[0] ));
-  void * shmem = malloc( fd_drv_footprint() );
+  void * shmem = aligned_alloc( fd_drv_align(), fd_drv_footprint() );
   if( FD_UNLIKELY( !shmem ) ) FD_LOG_ERR(( "malloc failed" ));
   fd_drv_t * drv = fd_drv_join( fd_drv_new( shmem, TILES, CALLBACKS ) );
   if( FD_UNLIKELY( !drv ) ) FD_LOG_ERR(( "creating tile fuzz driver failed" ));

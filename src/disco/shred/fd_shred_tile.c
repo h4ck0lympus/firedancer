@@ -360,7 +360,6 @@ during_frag( fd_shred_ctx_t * ctx,
              ulong            chunk,
              ulong            sz,
              ulong            ctl ) {
-
   ctx->skip_frag = 0;
 
   ctx->tsorig = fd_frag_meta_ts_comp( fd_tickcount() );
@@ -1120,7 +1119,14 @@ unprivileged_init( fd_topo_t *      topo,
     fd_topo_wksp_t const * link_wksp = &topo->workspaces[ topo->objs[ link->dcache_obj_id ].wksp_id ];
 
     if( FD_LIKELY(      !strcmp( link->name, "net_shred"    ) ) ) { ctx->in_kind[ i ] = IN_KIND_NET;
+      FD_LOG_NOTICE(( "Using net_shred link %lu %s", i, link->name ));
+#ifndef FD_HAS_FUZZ
       fd_net_rx_bounds_init( &ctx->in[ i ].net_rx, link->dcache );
+#else
+      ctx->in[ i ].net_rx.base = (ulong)link->dcache;
+      ctx->in[ i ].net_rx.pkt_lo = ctx->in[ i ].net_rx.base;
+      ctx->in[ i ].net_rx.pkt_wmark = ctx->in[ i ].net_rx.base + FD_NET_MTU;
+#endif
       continue; /* only net_rx needs to be set in this case. */ }
     else if( FD_LIKELY( !strcmp( link->name, "poh_shred"    ) ) ) ctx->in_kind[ i ] = IN_KIND_POH;
     else if( FD_LIKELY( !strcmp( link->name, "stake_out"    ) ) ) ctx->in_kind[ i ] = IN_KIND_STAKE;

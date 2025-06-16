@@ -1,5 +1,5 @@
 #include <stdlib.h>
-#include "../../util/fd_util.h"
+#include "../../util/fd_util_base.h"
 #include "driver.h"
 #include "../shared/fd_action.h"
 
@@ -41,10 +41,14 @@ fd_topo_obj_callbacks_t * CALLBACKS[] = {
 
 extern fd_topo_run_tile_t fd_tile_gossip;
 extern fd_topo_run_tile_t fd_tile_sign;
+extern fd_topo_run_tile_t fd_tile_shred;
+extern fd_topo_run_tile_t fd_tile_replay;
 
 fd_topo_run_tile_t * TILES[] = {
     &fd_tile_gossip,
     &fd_tile_sign,
+    &fd_tile_shred,
+    &fd_tile_replay,
     NULL
 };
 
@@ -53,14 +57,16 @@ action_t * ACTIONS[] = { NULL };
 
 fd_drv_t * drv;
 
-int
-LLVMFuzzerInitialize( int  *   argc,
-                      char *** argv ) {
+
+FD_FN_UNUSED static int
+init( int  *   argc,
+      char *** argv,
+      char * topo_name ) {
   (void)argc; (void)argv;
-  void * shmem = malloc( fd_drv_footprint() );
+  void * shmem = aligned_alloc( fd_drv_align(),  fd_drv_footprint() );
   if( FD_UNLIKELY( !shmem ) ) FD_LOG_ERR(( "malloc failed" ));
   drv = fd_drv_join( fd_drv_new( shmem, TILES, CALLBACKS ) );
-  fd_drv_init( drv, "isolated_gossip" );
+  fd_drv_init( drv, topo_name );
   return 0;
 }
 
@@ -76,15 +82,14 @@ LLVMFuzzerInitialize( int  *   argc,
 
 FD_FN_UNUSED static int
 fuzz_gossip( uchar const * data,
-                        ulong         size ) {
+             ulong         size ) {
   uchar should_call_housekeeping = *CONSUME(1);
+  uchar is_backpressured = !(should_call_housekeeping % 4);
   /* this probability has no deeper justification, just put here for testing */
   if( FD_UNLIKELY( should_call_housekeeping > 25 ) ) {
-    fd_drv_housekeeping( drv, "gossip", 0 );
-  }
-  int is_backpressured = *CONSUME(1);
-  if ( FD_UNLIKELY( is_backpressured > 25 ) ) {
-    fd_drv_housekeeping( drv, "gossip", 1 );
+    fd_drv_housekeeping( drv, "gossip", is_backpressured );
+    /* we could consider calling sign's housekeeping here too, but
+       it only does keyswitch right now. */
   }
   ulong net_sig = 5UL << 32UL;
   fd_drv_send( drv, "net", "gossip", 1, net_sig, (uchar *)data, 8 );
@@ -92,28 +97,35 @@ fuzz_gossip( uchar const * data,
 }
 
 FD_FN_UNUSED static int
-fuzz_shred(
-  uchar const * data,
-  ulong         size ) {
-
+fuzz_shred( uchar const * data,
+            ulong         size ) {
+  // TODO replace with shred
   uchar should_call_housekeeping = *CONSUME(1);
+  uchar is_backpressured = !(should_call_housekeeping % 4);
   /* this probability has no deeper justification, just put here for testing */
   if( FD_UNLIKELY( should_call_housekeeping > 25 ) ) {
-    fd_drv_housekeeping( drv, "gossip", 0 );
+    fd_drv_housekeeping( drv, "shred", is_backpressured );
   }
-  int is_backpressured = *CONSUME(1);
-  if ( FD_UNLIKELY( is_backpressured > 25 ) ) {
-    fd_drv_housekeeping( drv, "gossip", 1 );
+  ulong proto = 3UL;
+  ulong sig = fd_disco_netmux_sig( 1245u, 768u, 0U, proto, 42 );
+  /* we want the smallest possible header, which is 42 */
+  if( FD_UNLIKELY( (size+42UL) > FD_NET_MTU ) ) {
+    return 1;
   }
-  ulong net_sig = 5UL << 32UL;
-  fd_drv_send( drv, "net", "gossip", 1, net_sig, (uchar *)data, 8 );
+  fd_drv_send( drv, "net", "shred", 1UL, sig, (uchar *)data-42, size+42 );
   return 0 /* Input succeeded.  Keep it if it found new coverage. */;
 }
 
 int
 LLVMFuzzerTestOneInput( uchar const * data,
                         ulong         size ) {
-  return fuzz_gossip( data, size );
+  return fuzz_shred( data, size );
+}
+
+int
+LLVMFuzzerInitialize( int  *   argc,
+                      char *** argv ) {
+  return init( argc, argv, "isolated_shred" );
 }
 
 #undef CONSUME

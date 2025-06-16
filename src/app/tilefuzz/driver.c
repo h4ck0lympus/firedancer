@@ -20,6 +20,11 @@ fd_drv_footprint( void ) {
   return sizeof(fd_drv_t);
 }
 
+FD_FN_CONST ulong
+fd_drv_align( void ) {
+  return alignof(fd_drv_t);
+}
+
 void *
 fd_drv_new( void * shmem, fd_topo_run_tile_t ** tiles, fd_topo_obj_callbacks_t ** callbacks ) {
   fd_drv_t * drv = (fd_drv_t *)shmem;
@@ -163,6 +168,11 @@ isolated_shred_topo( config_t * config, fd_topo_obj_callbacks_t * callbacks[] ) 
   fd_topob_tile_in ( topo, "shred", 0UL, "metric_in", "sign_shred",  0UL, FD_TOPOB_UNRELIABLE, FD_TOPOB_UNPOLLED );
   fd_topob_tile_out( topo, "shred", 0UL, "shred_sign", 0UL );
 
+  fd_topob_wksp    ( topo, "net_shred" );
+  fd_topob_link    ( topo, "net_shred", "net_shred", 128UL, 2048UL, 1UL ); // TODO check params
+  fd_topob_tile_in ( topo, "shred", 0UL, "metric_in", "net_shred",   0UL, FD_TOPOB_UNRELIABLE, FD_TOPOB_POLLED );
+
+
   /* mock for  `  if( FD_UNLIKELY( !bank_cnt && !replay_cnt ) ) FD_LOG_ERR(( "0 bank/replay tiles" )); */
   fd_topob_wksp    ( topo, "replay" );
   fd_topo_tile_t * replay_tile = fd_topob_tile( topo, "replay", "replay", "metric_in", 0UL, 0, 1 );
@@ -269,7 +279,6 @@ init_tiles( fd_drv_t * drv ) {
 void
 fd_drv_init( fd_drv_t * drv,
              char* topo_name ) {
-  FD_LOG_NOTICE(( "fd_drv_init" ));
   /* fd_config_t is too large to be on the stack, so we use a static
      variable. */
   fd_config_t * config = &drv->config;
@@ -280,6 +289,7 @@ fd_drv_init( fd_drv_t * drv,
   create_tmp_file( identity_path, "[71,60,17,94,167,87,207,120,61,120,160,233,173,197,58,217,214,218,153,228,116,222,11,211,184,155,118,23,42,117,197,60,201,89,130,105,44,12,187,216,103,89,109,137,91,248,55,31,16,61,21,117,107,68,142,67,230,247,42,14,74,30,158,201]" );
   strcpy( config->paths.identity_key, identity_path );
   config->consensus.expected_shred_version = 64475;
+  config->net.ingress_buffer_size = 16384;
 
   if( FD_LIKELY( 0==strcmp( topo_name, "isolated_gossip") ) ) {
     isolated_gossip_topo( config, drv->callbacks );

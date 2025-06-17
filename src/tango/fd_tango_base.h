@@ -163,9 +163,9 @@ union __attribute__((aligned(FD_FRAG_META_ALIGN))) fd_frag_meta {
     uint   tsorig; /* naturally atomic r/w, Message diagnostic compressed timestamps */
     uint   tspub;  /* naturally atomic r/w, " */
 #ifdef FD_HAS_FUZZ
-    /* hook function pointer only used in single threaded inter-tile
-       fuzzing */
-    void (* hook)( union struct fd_frag_meta const * meta );
+    /* Hook function pointer used by the fuzzing build (single-threaded,
+       intra-tile). */
+    void (* hook)( union fd_frag_meta const * meta );
 #endif
   };
 

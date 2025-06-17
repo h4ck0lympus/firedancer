@@ -52,7 +52,7 @@ fd_drv_delete( void * shmem ) {
 
 
 void
-fd_drv_publish_hook( fd_frag_meta_t * mcache ) {
+fd_drv_publish_hook( fd_frag_meta_t const * mcache ) {
   FD_LOG_NOTICE(( "fd_drv_publish_hook received chunk of size %u", mcache->sz ));
   /* relay to another tile using the send function, validate data, or
      ignore */

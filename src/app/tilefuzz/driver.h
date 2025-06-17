@@ -36,6 +36,9 @@ void
 fd_drv_housekeeping( fd_drv_t * drv, char * tile_name, int backpressured );
 
 void
+fd_drv_publish_hook( fd_frag_meta_t * mcache );
+
+void
 fd_drv_send( fd_drv_t * drv,
              char     * from,
              char     * to,

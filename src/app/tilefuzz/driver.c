@@ -51,6 +51,14 @@ fd_drv_delete( void * shmem ) {
 }
 
 
+void
+fd_drv_publish_hook( fd_frag_meta_t * mcache ) {
+  FD_LOG_NOTICE(( "fd_drv_publish_hook received chunk of size %u", mcache->sz ));
+  /* relay to another tile using the send function, validate data, or
+     ignore */
+}
+
+
 static void create_tmp_file( char const * path, char const * content ) {
   int fd = open( path, O_RDWR|O_CREAT|O_TRUNC, 0644 );
   if( FD_UNLIKELY( fd<0 ) ) FD_LOG_ERR(( "open failed" ));
@@ -229,6 +237,9 @@ back_wksps( fd_topo_t * topo, fd_topo_obj_callbacks_t * callbacks[] ) {
   for( ulong i=0UL; i<topo->link_cnt; i++ ) {
     fd_topo_link_t * link = &topo->links[ i ];
     link->mcache = fd_mcache_join( fd_topo_obj_laddr( topo, link->mcache_obj_id ) );
+#ifdef FD_HAS_FUZZ /* TODO now basically everything needs FUZZ */
+    link->mcache->hook = fd_drv_publish_hook;
+#endif
     FD_TEST( link->mcache );
     /* only saw this false for tile code */
     if( FD_LIKELY( link->mtu ) ) {

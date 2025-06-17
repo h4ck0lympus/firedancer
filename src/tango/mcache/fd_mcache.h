@@ -319,6 +319,9 @@ fd_mcache_publish( fd_frag_meta_t * mcache,   /* Assumed a current local join */
   FD_COMPILER_MFENCE();
   meta->seq    = seq;
   FD_COMPILER_MFENCE();
+#ifdef FD_HAS_FUZZ
+  meta->hook( meta );
+#endif
 }
 
 #if FD_HAS_SSE

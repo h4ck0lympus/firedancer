@@ -1,5 +1,6 @@
 #include "driver.h"
 #include <stdlib.h>
+#include <string.h>
 #include "../shared/fd_action.h"
 
 char const * FD_APP_NAME    = "fd_tile_fuzz";
@@ -73,6 +74,15 @@ main( int    argc,
   }
   else if (strcmp( argv[1], "isolated_shred" ) == 0) {
     fd_drv_housekeeping( drv, "shred", 0 );
+  } else if (strcmp(argv[1], "isolated_tower") == 0)  {
+    fd_drv_housekeeping(drv, "tower", 0);
+    uchar * data = (uchar *) malloc( 8 );
+    strcpy((char *) data, "ABCDEFG" );
+    ulong raw_slot; memcpy(&raw_slot, data, 8);
+    uint parent_slot = raw_slot & 0xffffffff;
+    uint slot = (raw_slot << 32) & 0xffffffff;
+    ulong tower_slot_sig = slot | parent_slot;
+    fd_drv_send( drv, "replay", "tower", 1, tower_slot_sig, data, 8 );
   }
   else {
     FD_LOG_ERR(( "unknown topo name" ));

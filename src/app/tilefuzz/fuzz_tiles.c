@@ -153,6 +153,31 @@ fuzz_shred( uchar const * data,
   return 0 /* Input succeeded.  Keep it if it found new coverage. */;
 }
 
+FD_FN_UNUSED static int
+fuzz_tower(uchar const * data, 
+           ulong size ) {
+  uchar should_call_housekeeping = *CONSUME(1);
+  /* These probabilities have no deeper meaning.  Just put here for
+     testing */
+  uchar is_backpressured = !(should_call_housekeeping % 4);
+  if( FD_UNLIKELY( should_call_housekeeping > 25 ) ) {
+    fd_drv_housekeeping( drv, "tower", is_backpressured );
+  }
+  // sig carries metadata and will decide what to do with data and how data is being processed
+  // we need to fuzz tower so we will set sig to value that will make sure tower is called
+  ulong raw_slot = *CONSUME(8);
+  uint parent_slot = raw_slot & 0xffffffff;
+  uint slot = (raw_slot << 32) & 0xffffffff;
+  ulong sig = slot | parent_slot;  // this is sig targetting after_frag stage
+  /* we want the smallest possible header, which is 42 */
+  if( FD_UNLIKELY( (size+42UL) > FD_NET_MTU ) ) {
+    return 1;
+  }
+  fd_drv_send( drv, "net", "shred", 1UL, sig, (uchar *)data-42, size+42 );
+  return 0 /* Input succeeded.  Keep it if it found new coverage. */;
+  
+}
+
 int
 LLVMFuzzerTestOneInput( uchar const * data,
                         ulong         size ) {

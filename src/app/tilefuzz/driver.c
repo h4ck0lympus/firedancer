@@ -8,6 +8,7 @@
 #include "../../disco/metrics/fd_metrics.h"
 #include "driver.h"
 #include "../../disco/net/fd_net_tile.h" /* fd_topos_net_tiles */
+#include "../../flamenco/snapshot/fd_snapshot_loader.h" /* FD_SNAPSHOT_SRC_HTTP */
 
 // TODO consider making this more like an FD object with new, join, ...
 
@@ -70,17 +71,8 @@ static void create_tmp_file( char const * path, char const * content ) {
   close( fd );
 }
 
-// TODO do code style linting pass
-/* This is a minimal implementation of starting the gossip tile.  With
-   this a few parts of the gossip code won't be exercised, as they check
-   for the existence of the optional links. */
-static void
-isolated_gossip_topo( config_t * config, fd_topo_obj_callbacks_t * callbacks[] ) {
-  fd_topo_t * topo = &config->topo;
-  fd_topob_new( &config->topo, config->name );
-  // topo->max_page_size = 4096UL;
-  fd_topob_wksp( topo, "metric_in" );
-  fd_topob_wksp( topo, "gossip" );
+static fd_topo_tile_t*
+init_gossip_tile(fd_topo_t* topo, config_t* config) {
   fd_topo_tile_t * gossip_tile = fd_topob_tile( topo, "gossip", "gossip", "metric_in", 0UL, 0, 0 );
 
   strncpy( gossip_tile->gossip.identity_key_path, config->paths.identity_key, sizeof(gossip_tile->gossip.identity_key_path) );
@@ -114,6 +106,164 @@ isolated_gossip_topo( config_t * config, fd_topo_obj_callbacks_t * callbacks[] )
   fd_topo_obj_t * poh_shred_obj = fd_topob_obj( topo, "fseq", "gossip" );
   FD_TEST( fd_pod_insertf_ulong( topo->props, poh_shred_obj->id, "poh_shred" ) );
   fd_topob_tile_uses( topo, gossip_tile, poh_shred_obj, FD_SHMEM_JOIN_MODE_READ_WRITE );
+  return gossip_tile;
+}
+
+// taken from firedancer/topology.c
+// technically can be made non static and well inluded but i don't want to break anything
+// so doing minimal changes in firedancer code
+static void
+setup_snapshots( config_t *       config,
+                 fd_topo_tile_t * tile ) {
+  uchar incremental_is_file, incremental_is_url;
+  if( strnlen( config->tiles.replay.incremental, PATH_MAX )>0UL ) {
+    incremental_is_file = 1U;
+  } else {
+    incremental_is_file = 0U;
+  }
+  if( strnlen( config->tiles.replay.incremental_url, PATH_MAX )>0UL ) {
+    incremental_is_url = 1U;
+  } else {
+    incremental_is_url = 0U;
+  }
+  if( FD_UNLIKELY( incremental_is_file && incremental_is_url ) ) {
+    FD_LOG_ERR(( "At most one of the incremental snapshot source strings in the configuration file under [tiles.replay.incremental] and [tiles.replay.incremental_url] may be set." ));
+  }
+  tile->replay.incremental_src_type = INT_MAX;
+  if( FD_LIKELY( incremental_is_url ) ) {
+    strncpy( tile->replay.incremental, config->tiles.replay.incremental_url, sizeof(tile->replay.incremental) );
+    tile->replay.incremental_src_type = FD_SNAPSHOT_SRC_HTTP;
+  }
+  if( FD_UNLIKELY( incremental_is_file ) ) {
+    strncpy( tile->replay.incremental, config->tiles.replay.incremental, sizeof(tile->replay.incremental) );
+    tile->replay.incremental_src_type = FD_SNAPSHOT_SRC_FILE;
+  }
+  tile->replay.incremental[ sizeof(tile->replay.incremental)-1UL ] = '\0';
+
+  uchar snapshot_is_file, snapshot_is_url;
+  if( strnlen( config->tiles.replay.snapshot, PATH_MAX )>0UL ) {
+    snapshot_is_file = 1U;
+  } else {
+    snapshot_is_file = 0U;
+  }
+  if( strnlen( config->tiles.replay.snapshot_url, PATH_MAX )>0UL ) {
+    snapshot_is_url = 1U;
+  } else {
+    snapshot_is_url = 0U;
+  }
+  if( FD_UNLIKELY( snapshot_is_file && snapshot_is_url ) ) {
+    FD_LOG_ERR(( "At most one of the full snapshot source strings in the configuration file under [tiles.replay.snapshot] and [tiles.replay.snapshot_url] may be set." ));
+  }
+  tile->replay.snapshot_src_type = INT_MAX;
+  if( FD_LIKELY( snapshot_is_url ) ) {
+    strncpy( tile->replay.snapshot, config->tiles.replay.snapshot_url, sizeof(tile->replay.snapshot) );
+    tile->replay.snapshot_src_type = FD_SNAPSHOT_SRC_HTTP;
+  }
+  if( FD_UNLIKELY( snapshot_is_file ) ) {
+    strncpy( tile->replay.snapshot, config->tiles.replay.snapshot, sizeof(tile->replay.snapshot) );
+    tile->replay.snapshot_src_type = FD_SNAPSHOT_SRC_FILE;
+  }
+  tile->replay.snapshot[ sizeof(tile->replay.snapshot)-1UL ] = '\0';
+
+  strncpy( tile->replay.snapshot_dir, config->tiles.replay.snapshot_dir, sizeof(tile->replay.snapshot_dir) );
+  tile->replay.snapshot_dir[ sizeof(tile->replay.snapshot_dir)-1UL ] = '\0';
+}
+
+static fd_topo_tile_t*
+init_replay_tile(fd_topo_t* topo, config_t* config) {
+  fd_topo_tile_t* replay_tile = fd_topob_tile(topo, "replay", "replay", "metric_in", 0, 0, 0);
+
+  replay_tile->replay.fec_max = config->tiles.shred.max_pending_shred_sets;
+  replay_tile->replay.max_vote_accounts = config->firedancer.runtime.limits.max_vote_accounts;
+  
+  strncpy(replay_tile->replay.blockstore_file, config->firedancer.blockstore.file, sizeof(replay_tile->replay.blockstore_file));
+  strncpy(replay_tile->replay.blockstore_checkpt, config->firedancer.blockstore.checkpt, sizeof(replay_tile->replay.blockstore_checkpt));
+
+  replay_tile->replay.tx_metadata_storage = config->rpc.extended_tx_metadata_storage;
+  strncpy(replay_tile->replay.capture, config->tiles.replay.capture, sizeof(replay_tile->replay.capture));
+  strncpy(replay_tile->replay.funk_checkpt, config->tiles.replay.funk_checkpt, sizeof(replay_tile->replay.funk_checkpt));
+  replay_tile->replay.funk_rec_max = config->tiles.replay.funk_rec_max;
+  replay_tile->replay.funk_sz_gb   = config->tiles.replay.funk_sz_gb;
+  replay_tile->replay.funk_txn_max = config->tiles.replay.funk_txn_max;
+  strncpy(replay_tile->replay.funk_file, config->tiles.replay.funk_file, sizeof(replay_tile->replay.funk_file));
+
+  int plugins_enabled = config->tiles.gui.enabled;
+  replay_tile->replay.plugins_enabled = plugins_enabled;
+
+  if (FD_UNLIKELY( !strncmp(config->tiles.replay.genesis, "", 1)) && 
+                   !strncmp(config->tiles.replay.snapshot, "", 1)) {
+    fd_cstr_printf_check(  config->tiles.replay.genesis, PATH_MAX, NULL, "%s/genesis.bin", config->paths.ledger );
+  }
+
+  strncpy( replay_tile->replay.genesis, config->tiles.replay.genesis, sizeof(replay_tile->replay.genesis) );
+
+  setup_snapshots( config, replay_tile );
+
+  strncpy( replay_tile->replay.slots_replayed, config->tiles.replay.slots_replayed, sizeof(replay_tile->replay.slots_replayed) );
+  strncpy( replay_tile->replay.status_cache, config->tiles.replay.status_cache, sizeof(replay_tile->replay.status_cache) );
+  strncpy( replay_tile->replay.cluster_version, config->tiles.replay.cluster_version, sizeof(replay_tile->replay.cluster_version) );
+  replay_tile->replay.bank_tile_count = config->layout.bank_tile_count;
+  replay_tile->replay.exec_tile_count   = config->firedancer.layout.exec_tile_count;
+  replay_tile->replay.writer_tile_cuont = config->firedancer.layout.writer_tile_count;
+  strncpy( replay_tile->replay.tower_checkpt, config->tiles.replay.tower_checkpt, sizeof(replay_tile->replay.tower_checkpt) );
+
+  strncpy( replay_tile->replay.identity_key_path, config->paths.identity_key, sizeof(replay_tile->replay.identity_key_path) );
+  replay_tile->replay.ip_addr = config->net.ip_addr;
+  strncpy( replay_tile->replay.vote_account_path, config->paths.vote_account, sizeof(replay_tile->replay.vote_account_path) );
+  replay_tile->replay.full_interval        = config->tiles.batch.full_interval;
+  replay_tile->replay.incremental_interval = config->tiles.batch.incremental_interval;
+
+  replay_tile->replay.enable_bank_hash_cmp = 1;
+
+
+  return replay_tile;
+}
+
+// TODO
+static void
+isolated_tower_topo(config_t* config, fd_topo_obj_callbacks_t* callbacks[])
+{
+  fd_topo_t * topo = &config->topo;
+  fd_topob_new( &config->topo, config->name );
+  // topo->max_page_size = 4096UL;
+  
+  // create 2 necessary workspaces
+  fd_topob_wksp(topo, "metric_in");
+  fd_topob_wksp(topo, "tower");
+
+  // add tower tile to our "fuzzing" topology
+  fd_topo_tile_t* tower_tile = fd_topob_tile(topo, "tower", "tower", "metric_in", 0, 0, 0);
+
+  // do necessary config required by tower
+  strncpy(tower_tile->tower.funk_file, config->tiles.replay.funk_file, sizeof(tower_tile->tower.funk_file));
+  strncpy(tower_tile->tower.identity_key_path, config->paths.identity_key, sizeof(tower_tile->tower.identity_key_path));
+  strncpy(tower_tile->tower.vote_acc_path, config->paths.vote_account, sizeof(tower_tile->tower.vote_acc_path));
+
+  // tower requires initialization of gossip tile and replay tile
+  fd_topob_new(topo, "gossip");
+  fd_topo_tile_t* gossip_tile = init_gossip_tile(topo, config);
+
+  fd_topob_new(topo, "replay");
+
+
+  fd_topob_finish(topo, callbacks);
+}
+
+
+// TODO do code style linting pass
+/* This is a minimal implementation of starting the gossip tile.  With
+   this a few parts of the gossip code won't be exercised, as they check
+   for the existence of the optional links. */
+static void
+isolated_gossip_topo( config_t * config, fd_topo_obj_callbacks_t * callbacks[] ) {
+  fd_topo_t * topo = &config->topo;
+  fd_topob_new( &config->topo, config->name );
+  // topo->max_page_size = 4096UL;
+  fd_topob_wksp( topo, "metric_in" );
+  fd_topob_wksp( topo, "gossip" );
+
+  init_gossip_tile(topo, config);
+
   fd_topob_finish( topo, callbacks );
 }
 
@@ -316,9 +466,10 @@ fd_drv_init( fd_drv_t * drv,
 
   if( FD_LIKELY( 0==strcmp( topo_name, "isolated_gossip") ) ) {
     isolated_gossip_topo( config, drv->callbacks );
-  }
-  else if( FD_LIKELY( 0==strcmp( topo_name, "isolated_shred" ) ) ) {
+  } else if( FD_LIKELY( 0==strcmp( topo_name, "isolated_shred" ) ) ) {
     isolated_shred_topo( config, drv->callbacks );
+  } else if (FD_LIKELY(0==strcmp( topo_name, "isolated_tower"))) {
+    isolated_tower_topo( config, drv->callbacks );
   } else {
     FD_LOG_ERR(( "unknown topology name %s", topo_name ));
   }
@@ -413,7 +564,10 @@ fd_drv_send( fd_drv_t * drv,
     if( FD_UNLIKELY( filter ) ) return;
   }
   if( FD_LIKELY( to_run_tile->during_frag ) ) {
-    /* TODO derive the 4 properly */
+    // if (FD_LIKELY(0==strcmp(to, "tower"))) {
+    //   sig |= 1;
+    // }
+    /* TODO derive the 4 properly and derive sig properly ? */
     to_run_tile->during_frag( ctx, in_idx, fake_seq, sig, 4UL, data_sz, 0UL );
   }
   if( FD_LIKELY( to_run_tile->after_frag ) ) {

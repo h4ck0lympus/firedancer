@@ -10,6 +10,8 @@
 #include "../../disco/net/fd_net_tile.h" /* fd_topos_net_tiles */
 #include "../../flamenco/snapshot/fd_snapshot_loader.h" /* FD_SNAPSHOT_SRC_HTTP */
 
+#include <sys/random.h>
+
 // TODO consider making this more like an FD object with new, join, ...
 
 extern fd_topo_run_tile_t fd_tile_gossip;
@@ -69,44 +71,6 @@ static void create_tmp_file( char const * path, char const * content ) {
     FD_LOG_ERR(( "write failed" ));
   }
   close( fd );
-}
-
-static fd_topo_tile_t*
-init_gossip_tile(fd_topo_t* topo, config_t* config) {
-  fd_topo_tile_t * gossip_tile = fd_topob_tile( topo, "gossip", "gossip", "metric_in", 0UL, 0, 0 );
-
-  strncpy( gossip_tile->gossip.identity_key_path, config->paths.identity_key, sizeof(gossip_tile->gossip.identity_key_path) );
-  gossip_tile->gossip.gossip_listen_port     = 42;
-  gossip_tile->gossip.ip_addr                = (uint)(1<<24 | 1<<16 | 1<<8 | 1);
-  gossip_tile->gossip.expected_shred_version = 50093UL;
-  gossip_tile->gossip.entrypoints_cnt = FD_TOPO_GOSSIP_ENTRYPOINTS_MAX;
-  FD_STATIC_ASSERT( FD_TOPO_GOSSIP_ENTRYPOINTS_MAX<256UL-2UL, "dummy address encoding scheme only works for 8-bit" );
-  for( uchar i=2; i<FD_TOPO_GOSSIP_ENTRYPOINTS_MAX; i++ ) {
-    gossip_tile->gossip.entrypoints[i].addr = (uint)(i<<24 | i<<16 | i<<8 | i);
-    gossip_tile->gossip.entrypoints[i].port = i;
-  }
-
-  fd_topob_wksp( topo, "sign" );
-  fd_topo_tile_t * sign_tile = fd_topob_tile( topo, "sign", "sign", "metric_in", 0UL, 0, 1 );
-  strncpy( sign_tile->sign.identity_key_path, config->paths.identity_key, sizeof(sign_tile->sign.identity_key_path) );
-
-  fd_topob_wksp    ( topo, "gossip_sign" );
-  fd_topob_link    ( topo, "gossip_sign", "gossip_sign", 128UL, 2048UL, 1UL );
-  fd_topob_tile_in ( topo, "sign", 0UL, "metric_in", "gossip_sign", 0UL, FD_TOPOB_UNRELIABLE, FD_TOPOB_POLLED );
-  fd_topob_wksp    ( topo, "sign_gossip" );
-  fd_topob_link    ( topo, "sign_gossip", "sign_gossip", 128UL, 64UL, 1UL );
-  fd_topob_tile_out( topo, "sign", 0UL, "sign_gossip", 0UL );
-  fd_topob_tile_in ( topo, "gossip", 0UL, "metric_in", "sign_gossip",  0UL, FD_TOPOB_UNRELIABLE, FD_TOPOB_UNPOLLED );
-  fd_topob_tile_out( topo, "gossip", 0UL, "gossip_sign", 0UL );
-
-  fd_topob_wksp    ( topo, "net_gossip" );
-  fd_topob_link    ( topo, "net_gossip", "net_gossip", 128UL, 2048UL, 1UL ); // TODO check params
-  fd_topob_tile_in ( topo, "gossip", 0UL, "metric_in", "net_gossip",   0UL, FD_TOPOB_UNRELIABLE, FD_TOPOB_POLLED );
-
-  fd_topo_obj_t * poh_shred_obj = fd_topob_obj( topo, "fseq", "gossip" );
-  FD_TEST( fd_pod_insertf_ulong( topo->props, poh_shred_obj->id, "poh_shred" ) );
-  fd_topob_tile_uses( topo, gossip_tile, poh_shred_obj, FD_SHMEM_JOIN_MODE_READ_WRITE );
-  return gossip_tile;
 }
 
 // taken from firedancer/topology.c
@@ -262,6 +226,7 @@ init_replay_tile(fd_topo_t* topo, config_t* config) {
   replay_tile->replay.enable_bank_hash_cmp = 1;
 
   // create txncache to be used by replay
+  fd_topob_wksp(topo, "tcache");
   fd_topo_obj_t * txncache_obj = setup_topo_txncache( topo, "tcache",
       config->firedancer.runtime.limits.max_rooted_slots,
       config->firedancer.runtime.limits.max_live_slots,
@@ -272,7 +237,8 @@ init_replay_tile(fd_topo_t* topo, config_t* config) {
 
   // setup shared workspace for blockstores
   
-    fd_topo_obj_t * blockstore_obj = setup_topo_blockstore( topo,
+  fd_topob_wksp(topo, "blockstore");
+  fd_topo_obj_t * blockstore_obj = setup_topo_blockstore( topo,
                                                           "blockstore",
                                                           config->firedancer.blockstore.shred_max,
                                                           config->firedancer.blockstore.block_max,
@@ -287,19 +253,67 @@ init_replay_tile(fd_topo_t* topo, config_t* config) {
   return replay_tile;
 }
 
-// TODO
+
+static fd_topo_tile_t*
+init_gossip_tile(fd_topo_t* topo, config_t* config) {
+
+  fd_topo_tile_t * gossip_tile = fd_topob_tile( topo, "gossip", "gossip", "metric_in", 0UL, 0, 0 );
+
+  strncpy( gossip_tile->gossip.identity_key_path, config->paths.identity_key, sizeof(gossip_tile->gossip.identity_key_path) );
+  gossip_tile->gossip.gossip_listen_port     = 42;
+  gossip_tile->gossip.ip_addr                = (uint)(1<<24 | 1<<16 | 1<<8 | 1);
+  gossip_tile->gossip.expected_shred_version = 50093UL;
+  gossip_tile->gossip.entrypoints_cnt = FD_TOPO_GOSSIP_ENTRYPOINTS_MAX;
+  FD_STATIC_ASSERT( FD_TOPO_GOSSIP_ENTRYPOINTS_MAX<256UL-2UL, "dummy address encoding scheme only works for 8-bit" );
+  for( uchar i=2; i<FD_TOPO_GOSSIP_ENTRYPOINTS_MAX; i++ ) {
+    gossip_tile->gossip.entrypoints[i].addr = (uint)(i<<24 | i<<16 | i<<8 | i);
+    gossip_tile->gossip.entrypoints[i].port = i;
+  }
+
+  fd_topob_wksp( topo, "sign" );
+  fd_topo_tile_t * sign_tile = fd_topob_tile( topo, "sign", "sign", "metric_in", 0UL, 0, 1 );
+  strncpy( sign_tile->sign.identity_key_path, config->paths.identity_key, sizeof(sign_tile->sign.identity_key_path) );
+
+  fd_topob_wksp    ( topo, "gossip_sign" );
+  fd_topob_link    ( topo, "gossip_sign", "gossip_sign", 128UL, 2048UL, 1UL );
+  fd_topob_tile_in ( topo, "sign", 0UL, "metric_in", "gossip_sign", 0UL, FD_TOPOB_UNRELIABLE, FD_TOPOB_POLLED );
+  fd_topob_wksp    ( topo, "sign_gossip" );
+  fd_topob_link    ( topo, "sign_gossip", "sign_gossip", 128UL, 64UL, 1UL );
+  fd_topob_tile_out( topo, "sign", 0UL, "sign_gossip", 0UL );
+  fd_topob_tile_in ( topo, "gossip", 0UL, "metric_in", "sign_gossip",  0UL, FD_TOPOB_UNRELIABLE, FD_TOPOB_UNPOLLED );
+  fd_topob_tile_out( topo, "gossip", 0UL, "gossip_sign", 0UL );
+
+  fd_topob_wksp    ( topo, "net_gossip" );
+  fd_topob_link    ( topo, "net_gossip", "net_gossip", 128UL, 2048UL, 1UL ); // TODO check params
+  fd_topob_tile_in ( topo, "gossip", 0UL, "metric_in", "net_gossip",   0UL, FD_TOPOB_UNRELIABLE, FD_TOPOB_POLLED );
+
+  fd_topo_obj_t * poh_shred_obj = fd_topob_obj( topo, "fseq", "gossip" );
+  FD_TEST( fd_pod_insertf_ulong( topo->props, poh_shred_obj->id, "poh_shred" ) );
+  fd_topob_tile_uses( topo, gossip_tile, poh_shred_obj, FD_SHMEM_JOIN_MODE_READ_WRITE );
+
+  return gossip_tile;
+}
+
 static void
 isolated_tower_topo(config_t* config, fd_topo_obj_callbacks_t* callbacks[])
 {
   fd_topo_t * topo = &config->topo;
   fd_topob_new( &config->topo, config->name );
-  // topo->max_page_size = 4096UL;
   
-  // create 2 necessary workspaces
+  // create necessary workspaces
   fd_topob_wksp(topo, "metric_in");
   fd_topob_wksp(topo, "tower");
+  fd_topob_wksp( topo, "gossip" );
+  fd_topob_wksp(topo, "gossip_tower");
+  fd_topob_wksp(topo, "replay");
+  fd_topob_wksp( topo, "replay_tower" );
+  fd_topob_wksp(topo, "slot_fseqs");
+  
+  fd_topob_link( topo, "gossip_tower", "gossip_tower", 128UL, FD_TPU_MTU, 1UL );
+  fd_topob_link( topo, "replay_tower", "replay_tower", 128UL, 65536UL, 1UL );
+  fd_topob_link( topo, "tower_replay", "replay_tower", 128UL, 0, 1UL );
 
-  // add tower tile to our "fuzzing" topology
+  // create tower tile
   fd_topo_tile_t* tower_tile = fd_topob_tile(topo, "tower", "tower", "metric_in", 0, 0, 0);
 
   // do necessary config required by tower
@@ -310,30 +324,17 @@ isolated_tower_topo(config_t* config, fd_topo_obj_callbacks_t* callbacks[])
   // imo we don't need tower send 
 
   // tower requires initialization of gossip tile and replay tile
-  fd_topob_new(topo, "gossip");
   init_gossip_tile(topo, config);
-  fd_topob_wksp(topo, "gossip_tower");
-  fd_topob_link( topo, "gossip_tower", "gossip_tower", 128UL, FD_TPU_MTU, 1UL );
-  fd_topob_tile_out(topo, "gossip", 0UL, "gossip_tower", 0UL);
+  init_replay_tile(topo, config);
 
-  fd_topob_new(topo, "replay");
-  fd_topo_tile_t* replay_tile =  init_replay_tile(topo, config);
-
-  fd_topob_wksp( topo, "replay_tower" );
-  fd_topob_link( topo, "replay_tower", "replay_tower", 128UL, 65536UL, 1UL );
+  fd_topob_tile_in(  topo, "tower", 0UL, "metric_in", "gossip_tower", 0UL, FD_TOPOB_UNRELIABLE, FD_TOPOB_POLLED );
   fd_topob_tile_in(  topo, "tower",   0UL, "metric_in", "replay_tower", 0UL, FD_TOPOB_RELIABLE, FD_TOPOB_POLLED );
-  fd_topob_tile_out(topo, "replay", 0UL, "replay_tower", 0UL);
-
-  fd_topob_link( topo, "tower_replay", "replay_tower", 128UL, 0, 1UL );
-  fd_topob_tile_in( topo, "replay",  0UL, "metric_in", "tower_replay",  0UL, FD_TOPOB_RELIABLE, FD_TOPOB_POLLED );
+  fd_topob_tile_out(topo, "gossip", 0UL, "gossip_tower", 0UL);
   fd_topob_tile_out(topo, "tower", 0UL, "tower_replay", 0UL);
 
+  fd_topob_tile_in( topo, "replay",  0UL, "metric_in", "tower_replay",  0UL, FD_TOPOB_RELIABLE, FD_TOPOB_POLLED );
+  fd_topob_tile_out(topo, "replay", 0UL, "replay_tower", 0UL);
 
-  fd_topo_obj_t * root_slot_obj = fd_topob_obj( topo, "fseq", "slot_fseqs" );
-  fd_topob_tile_uses( topo, replay_tile, root_slot_obj, FD_SHMEM_JOIN_MODE_READ_WRITE );
-  FD_TEST( fd_pod_insertf_ulong( topo->props, root_slot_obj->id, "root_slot" ) );
-
-  // TODO replay and tower linking
   fd_topob_finish(topo, callbacks);
 }
 
@@ -347,9 +348,9 @@ isolated_gossip_topo( config_t * config, fd_topo_obj_callbacks_t * callbacks[] )
   fd_topo_t * topo = &config->topo;
   fd_topob_new( &config->topo, config->name );
   // topo->max_page_size = 4096UL;
+  
   fd_topob_wksp( topo, "metric_in" );
   fd_topob_wksp( topo, "gossip" );
-
   init_gossip_tile(topo, config);
 
   fd_topob_finish( topo, callbacks );

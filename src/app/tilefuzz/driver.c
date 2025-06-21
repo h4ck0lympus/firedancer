@@ -169,6 +169,52 @@ setup_snapshots( config_t *       config,
   tile->replay.snapshot_dir[ sizeof(tile->replay.snapshot_dir)-1UL ] = '\0';
 }
 
+static fd_topo_obj_t *
+setup_topo_txncache( fd_topo_t *  topo,
+                    char const * wksp_name,
+                    ulong        max_rooted_slots,
+                    ulong        max_live_slots,
+                    ulong        max_txn_per_slot,
+                    ulong        max_constipated_slots ) {
+  fd_topo_obj_t * obj = fd_topob_obj( topo, "txncache", wksp_name );
+
+  FD_TEST( fd_pod_insertf_ulong( topo->props, max_rooted_slots, "obj.%lu.max_rooted_slots", obj->id ) );
+  FD_TEST( fd_pod_insertf_ulong( topo->props, max_live_slots,   "obj.%lu.max_live_slots",   obj->id ) );
+  FD_TEST( fd_pod_insertf_ulong( topo->props, max_txn_per_slot, "obj.%lu.max_txn_per_slot", obj->id ) );
+  FD_TEST( fd_pod_insertf_ulong( topo->props, max_constipated_slots, "obj.%lu.max_constipated_slots", obj->id ) );
+
+  return obj;
+}
+
+static fd_topo_obj_t *
+setup_topo_blockstore( fd_topo_t *  topo,
+                      char const * wksp_name,
+                      ulong        shred_max,
+                      ulong        block_max,
+                      ulong        idx_max,
+                      ulong        txn_max,
+                      ulong        alloc_max ) {
+  fd_topo_obj_t * obj = fd_topob_obj( topo, "blockstore", wksp_name );
+
+  ulong seed;
+  FD_TEST( sizeof(ulong) == getrandom( &seed, sizeof(ulong), 0 ) );
+
+  FD_TEST( fd_pod_insertf_ulong( topo->props, 1UL,        "obj.%lu.wksp_tag",   obj->id ) );
+  FD_TEST( fd_pod_insertf_ulong( topo->props, seed,       "obj.%lu.seed",       obj->id ) );
+  FD_TEST( fd_pod_insertf_ulong( topo->props, shred_max,  "obj.%lu.shred_max",  obj->id ) );
+  FD_TEST( fd_pod_insertf_ulong( topo->props, block_max,  "obj.%lu.block_max",  obj->id ) );
+  FD_TEST( fd_pod_insertf_ulong( topo->props, idx_max,    "obj.%lu.idx_max",    obj->id ) );
+  FD_TEST( fd_pod_insertf_ulong( topo->props, txn_max,    "obj.%lu.txn_max",    obj->id ) );
+  FD_TEST( fd_pod_insertf_ulong( topo->props, alloc_max,  "obj.%lu.alloc_max",  obj->id ) );
+
+  /* DO NOT MODIFY LOOSE WITHOUT CHANGING HOW BLOCKSTORE ALLOCATES INTERNAL STRUCTURES */
+
+  ulong blockstore_footprint = fd_blockstore_footprint( shred_max, block_max, idx_max, txn_max ) + alloc_max;
+  FD_TEST( fd_pod_insertf_ulong( topo->props, blockstore_footprint,  "obj.%lu.loose", obj->id ) );
+
+  return obj;
+}
+
 static fd_topo_tile_t*
 init_replay_tile(fd_topo_t* topo, config_t* config) {
   fd_topo_tile_t* replay_tile = fd_topob_tile(topo, "replay", "replay", "metric_in", 0, 0, 0);
@@ -215,6 +261,28 @@ init_replay_tile(fd_topo_t* topo, config_t* config) {
 
   replay_tile->replay.enable_bank_hash_cmp = 1;
 
+  // create txncache to be used by replay
+  fd_topo_obj_t * txncache_obj = setup_topo_txncache( topo, "tcache",
+      config->firedancer.runtime.limits.max_rooted_slots,
+      config->firedancer.runtime.limits.max_live_slots,
+      config->firedancer.runtime.limits.max_transactions_per_slot,
+      fd_txncache_max_constipated_slots_est( config->firedancer.runtime.limits.snapshot_grace_period_seconds ) );
+  fd_topob_tile_uses( topo, replay_tile, txncache_obj, FD_SHMEM_JOIN_MODE_READ_WRITE );
+  FD_TEST( fd_pod_insertf_ulong( topo->props, txncache_obj->id, "txncache" ) );
+
+  // setup shared workspace for blockstores
+  
+    fd_topo_obj_t * blockstore_obj = setup_topo_blockstore( topo,
+                                                          "blockstore",
+                                                          config->firedancer.blockstore.shred_max,
+                                                          config->firedancer.blockstore.block_max,
+                                                          config->firedancer.blockstore.idx_max,
+                                                          config->firedancer.blockstore.txn_max,
+                                                          config->firedancer.blockstore.alloc_max );
+  fd_topob_tile_uses( topo, replay_tile, blockstore_obj, FD_SHMEM_JOIN_MODE_READ_WRITE );
+  
+  // replay uses pack, batch(batch replay)
+  // do replay links
 
   return replay_tile;
 }
@@ -239,13 +307,33 @@ isolated_tower_topo(config_t* config, fd_topo_obj_callbacks_t* callbacks[])
   strncpy(tower_tile->tower.identity_key_path, config->paths.identity_key, sizeof(tower_tile->tower.identity_key_path));
   strncpy(tower_tile->tower.vote_acc_path, config->paths.vote_account, sizeof(tower_tile->tower.vote_acc_path));
 
+  // imo we don't need tower send 
+
   // tower requires initialization of gossip tile and replay tile
   fd_topob_new(topo, "gossip");
-  fd_topo_tile_t* gossip_tile = init_gossip_tile(topo, config);
+  init_gossip_tile(topo, config);
+  fd_topob_wksp(topo, "gossip_tower");
+  fd_topob_link( topo, "gossip_tower", "gossip_tower", 128UL, FD_TPU_MTU, 1UL );
+  fd_topob_tile_out(topo, "gossip", 0UL, "gossip_tower", 0UL);
 
   fd_topob_new(topo, "replay");
+  fd_topo_tile_t* replay_tile =  init_replay_tile(topo, config);
+
+  fd_topob_wksp( topo, "replay_tower" );
+  fd_topob_link( topo, "replay_tower", "replay_tower", 128UL, 65536UL, 1UL );
+  fd_topob_tile_in(  topo, "tower",   0UL, "metric_in", "replay_tower", 0UL, FD_TOPOB_RELIABLE, FD_TOPOB_POLLED );
+  fd_topob_tile_out(topo, "replay", 0UL, "replay_tower", 0UL);
+
+  fd_topob_link( topo, "tower_replay", "replay_tower", 128UL, 0, 1UL );
+  fd_topob_tile_in( topo, "replay",  0UL, "metric_in", "tower_replay",  0UL, FD_TOPOB_RELIABLE, FD_TOPOB_POLLED );
+  fd_topob_tile_out(topo, "tower", 0UL, "tower_replay", 0UL);
 
 
+  fd_topo_obj_t * root_slot_obj = fd_topob_obj( topo, "fseq", "slot_fseqs" );
+  fd_topob_tile_uses( topo, replay_tile, root_slot_obj, FD_SHMEM_JOIN_MODE_READ_WRITE );
+  FD_TEST( fd_pod_insertf_ulong( topo->props, root_slot_obj->id, "root_slot" ) );
+
+  // TODO replay and tower linking
   fd_topob_finish(topo, callbacks);
 }
 

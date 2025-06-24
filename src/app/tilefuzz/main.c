@@ -45,12 +45,18 @@ extern fd_topo_run_tile_t fd_tile_gossip;
 extern fd_topo_run_tile_t fd_tile_shred;
 extern fd_topo_run_tile_t fd_tile_sign;
 extern fd_topo_run_tile_t fd_tile_replay;
+extern fd_topo_run_tile_t fd_tile_tower;
+extern fd_topo_run_tile_t fd_tile_batch;
+extern fd_topo_run_tile_t fd_tile_send;
 
 fd_topo_run_tile_t * TILES[] = {
   &fd_tile_gossip,
   &fd_tile_sign,
   &fd_tile_shred,
   &fd_tile_replay,
+  &fd_tile_tower,
+  &fd_tile_batch,
+  &fd_tile_send,
   NULL
 };
 /* I have no clue why the linker fails if these aren't there. */
@@ -65,14 +71,14 @@ main( int    argc,
   fd_drv_t * drv = fd_drv_join( fd_drv_new( shmem, TILES, CALLBACKS ) );
   if( FD_UNLIKELY( !drv ) ) FD_LOG_ERR(( "creating tile fuzz driver failed" ));
   fd_drv_init( drv, argv[1] );
+
   if( strcmp( argv[1], "isolated_gossip" ) == 0) {
     fd_drv_housekeeping( drv, "gossip", 0 );
     uchar * data = (uchar *) malloc( 8 );
     strcpy((char *) data, "ABCDEFG" );
     ulong net_sig = 5UL << 32UL;
     fd_drv_send( drv, "net", "gossip", 1, net_sig, data, 8 );
-  }
-  else if (strcmp( argv[1], "isolated_shred" ) == 0) {
+  } else if (strcmp( argv[1], "isolated_shred" ) == 0) {
     fd_drv_housekeeping( drv, "shred", 0 );
   } else if (strcmp(argv[1], "isolated_tower") == 0)  {
     fd_drv_housekeeping(drv, "tower", 0);
@@ -83,8 +89,7 @@ main( int    argc,
     uint slot = (raw_slot << 32) & 0xffffffff;
     ulong tower_slot_sig = slot | parent_slot;
     fd_drv_send( drv, "replay", "tower", 1, tower_slot_sig, data, 8 );
-  }
-  else {
+  } else {
     FD_LOG_ERR(( "unknown topo name" ));
   }
 

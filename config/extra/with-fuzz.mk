@@ -7,5 +7,9 @@ CPPFLAGS+=-fno-omit-frame-pointer
 CPPFLAGS+=-fsanitize=fuzzer-no-link
 CPPFLAGS+=-fsanitize-coverage=inline-8bit-counters
 
+CFLAGS+=-ggdb3
+CXXFLAGS+=-ggdb3
+
+
 LDFLAGS+=-fsanitize-coverage=inline-8bit-counters
 LDFLAGS_FUZZ+=-fsanitize=fuzzer

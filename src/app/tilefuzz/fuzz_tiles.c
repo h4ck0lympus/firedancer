@@ -41,16 +41,22 @@ fd_topo_obj_callbacks_t * CALLBACKS[] = {
 };
 
 extern fd_topo_run_tile_t fd_tile_gossip;
-extern fd_topo_run_tile_t fd_tile_sign;
 extern fd_topo_run_tile_t fd_tile_shred;
+extern fd_topo_run_tile_t fd_tile_sign;
 extern fd_topo_run_tile_t fd_tile_replay;
+extern fd_topo_run_tile_t fd_tile_tower;
+extern fd_topo_run_tile_t fd_tile_batch;
+extern fd_topo_run_tile_t fd_tile_send;
 
 fd_topo_run_tile_t * TILES[] = {
-    &fd_tile_gossip,
-    &fd_tile_sign,
-    &fd_tile_shred,
-    &fd_tile_replay,
-    NULL
+  &fd_tile_gossip,
+  &fd_tile_sign,
+  &fd_tile_shred,
+  &fd_tile_replay,
+  &fd_tile_tower,
+  &fd_tile_batch,
+  &fd_tile_send,
+  NULL
 };
 
 /* I have no clue why the linker fails if these aren't there. */
@@ -154,7 +160,7 @@ fuzz_shred( uchar const * data,
 }
 
 FD_FN_UNUSED static int
-fuzz_tower(uchar const * data, 
+fuzz_tower(uchar *data, 
            ulong size ) {
   uchar should_call_housekeeping = *CONSUME(1);
   /* These probabilities have no deeper meaning.  Just put here for
@@ -173,21 +179,21 @@ fuzz_tower(uchar const * data,
   if( FD_UNLIKELY( (size+42UL) > FD_NET_MTU ) ) {
     return 1;
   }
-  fd_drv_send( drv, "net", "shred", 1UL, sig, (uchar *)data-42, size+42 );
+  fd_drv_send( drv, "replay", "tower", 1, sig, data, 8 );
   return 0 /* Input succeeded.  Keep it if it found new coverage. */;
   
 }
 
 int
-LLVMFuzzerTestOneInput( uchar const * data,
+LLVMFuzzerTestOneInput( uchar * data,
                         ulong         size ) {
-  return fuzz_shred( data, size );
+  return fuzz_tower( data, size );
 }
 
 int
 LLVMFuzzerInitialize( int  *   argc,
                       char *** argv ) {
-  return init( argc, argv, "isolated_shred" );
+  return init( argc, argv, "isolated_tower" );
 }
 
 #undef CONSUME

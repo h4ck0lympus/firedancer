@@ -190,7 +190,7 @@ setup_topo_runtime_pub( fd_topo_t *  topo,
   return obj;
 }
 
-static fd_topo_tile_t*
+FD_FN_UNUSED static fd_topo_tile_t*
 init_replay_tile(fd_topo_t* topo, config_t* config) {
 
   // batch is needed for replay tile
@@ -256,15 +256,6 @@ init_replay_tile(fd_topo_t* topo, config_t* config) {
 
   replay_tile->replay.enable_bank_hash_cmp = 1;
 
-  // create txncache to be used by replay
-  fd_topob_wksp(topo, "tcache");
-  fd_topo_obj_t * txncache_obj = setup_topo_txncache( topo, "tcache",
-      config->firedancer.runtime.limits.max_rooted_slots,
-      config->firedancer.runtime.limits.max_live_slots,
-      config->firedancer.runtime.limits.max_transactions_per_slot,
-      fd_txncache_max_constipated_slots_est( config->firedancer.runtime.limits.snapshot_grace_period_seconds ) );
-  fd_topob_tile_uses( topo, replay_tile, txncache_obj, FD_SHMEM_JOIN_MODE_READ_WRITE );
-  FD_TEST( fd_pod_insertf_ulong( topo->props, txncache_obj->id, "txncache" ) );
 
   // setup shared workspace for blockstores
   
@@ -338,6 +329,46 @@ init_gossip_tile(fd_topo_t* topo, config_t* config) {
   return gossip_tile;
 }
 
+static fd_topo_tile_t*
+init_send_tile(fd_topo_t* topo, config_t* config) {
+  fd_topob_wksp(topo, "send");
+  fd_topob_wksp(topo, "send_net");  
+  fd_topob_wksp(topo, "send_txns");  
+  fd_topob_wksp(topo, "send_sign");  
+  fd_topob_wksp(topo, "sign_send");
+  fd_topob_wksp(topo, "tower_send");
+  fd_topob_wksp(topo, "gossip_send");
+  fd_topob_wksp(topo, "stake_out");
+  // ~imo we don't need tower send~  --- ok we needed tower send
+  fd_topo_tile_t* send_tile = fd_topob_tile( topo, "send", "send", "metric_in", 0, 0, 0);
+  strncpy(send_tile->send.identity_key_path, config->paths.identity_key, sizeof(send_tile->send.identity_key_path));
+
+  // fd_topob_wksp(topo, "net_send");
+  // fd_topob_wksp(topo, "send_sign");
+  // fd_topob_wksp(topo, "sign_send");
+  // fd_topob_wksp(topo, "send_txns");
+  fd_topob_link(topo, "gossip_send", "gossip_send", 128UL, 40200UL * 38UL, 1UL);
+  fd_topob_link(topo, "tower_send",   "tower_send", 65536UL, sizeof(fd_txn_p_t), 1UL);
+  fd_topob_link(topo, "send_net", "send_net", 128UL, 2048UL, 1UL);  
+  fd_topob_link(topo, "send_txns", "send_txns", 128UL, 1024UL, 1UL);  
+  fd_topob_link(topo, "send_sign", "send_sign", 128UL, 64UL, 1UL);  
+  fd_topob_link(topo, "sign_send", "sign_send", 128UL, 64UL, 1UL);  
+  fd_topob_link(topo, "stake_out", "stake_out", 128UL, 40UL + 40200UL * 40UL, 1UL);  
+
+  fd_topob_tile_in(topo, "send", 0UL, "metric_in", "stake_out", 0UL, FD_TOPOB_UNRELIABLE, FD_TOPOB_POLLED);
+  fd_topob_tile_in(topo, "send", 0UL, "metric_in", "gossip_send", 0UL, FD_TOPOB_RELIABLE, FD_TOPOB_POLLED);
+  fd_topob_tile_in(topo, "send", 0UL, "metric_in", "tower_send", 0UL, FD_TOPOB_RELIABLE, FD_TOPOB_POLLED);  
+  fd_topob_tile_in(topo, "send", 0UL, "metric_in", "sign_send", 0UL, FD_TOPOB_UNRELIABLE, FD_TOPOB_UNPOLLED);
+
+  fd_topob_tile_out(topo, "gossip", 0UL, "gossip_send", 0UL);
+  fd_topob_tile_out(topo, "send", 0UL, "send_net", 0UL);  
+  fd_topob_tile_out(topo, "send", 0UL, "send_txns", 0UL);  
+  fd_topob_tile_out(topo, "send", 0UL, "send_sign", 0UL);
+  fd_topob_tile_out( topo, "tower", 0UL, "tower_send",0UL);
+
+  return send_tile;
+}
+
 static void
 isolated_tower_topo(config_t* config, fd_topo_obj_callbacks_t* callbacks[])
 {
@@ -369,18 +400,15 @@ isolated_tower_topo(config_t* config, fd_topo_obj_callbacks_t* callbacks[])
   // create necessary workspaces
   fd_topob_wksp(topo, "metric_in");
   fd_topob_wksp(topo, "tower");
-  fd_topob_wksp(topo, "send");
-  fd_topob_wksp(topo, "tower_send");
   fd_topob_wksp(topo, "gossip");
   fd_topob_wksp(topo, "gossip_tower");
-  fd_topob_wksp(topo, "replay");
+  // fd_topob_wksp(topo, "replay");
   fd_topob_wksp(topo, "replay_tower");
   // fd_topob_wksp(topo, "slot_fseqs");
   
   fd_topob_link(topo, "gossip_tower", "gossip_tower", 128UL, FD_TPU_MTU, 1UL );
   fd_topob_link(topo, "replay_tower", "replay_tower", 128UL, 65536UL, 1UL );
   fd_topob_link(topo, "tower_replay", "replay_tower", 128UL, 0, 1UL );
-  fd_topob_link(topo, "tower_send",   "tower_send", 65536UL, sizeof(fd_txn_p_t), 1UL);
 
   // create tower tile
   fd_topo_tile_t* tower_tile = fd_topob_tile(topo, "tower", "tower", "metric_in", 0, 0, 0);
@@ -396,33 +424,42 @@ isolated_tower_topo(config_t* config, fd_topo_obj_callbacks_t* callbacks[])
  
   // tower requires initialization of gossip tile and replay tile
   init_gossip_tile(topo, config);
-  init_replay_tile(topo, config);
-
-  // ~imo we don't need tower send~  --- ok we needed tower send
-  fd_topob_tile( topo, "send", "send", "metric_in", 0, 0, 0);
-  // fd_topob_wksp(topo, "net_send");
-  // fd_topob_wksp(topo, "send_sign");
-  // fd_topob_wksp(topo, "sign_send");
-  fd_topob_wksp(topo, "gossip_send");
-  // fd_topob_wksp(topo, "send_txns");
-
-  fd_topob_link(topo, "gossip_send", "gossip_send", 128UL, 40200UL * 38UL, 1UL);
-
-  fd_topob_tile_in(topo, "send", 0UL, "metric_in", "gossip_send", 0UL, FD_TOPOB_RELIABLE, FD_TOPOB_POLLED);
-  fd_topob_tile_out(topo, "gossip", 0UL, "gossip_send", 0UL);
-
+  // fd_topo_tile_t* replay_tile = init_replay_tile(topo, config);
+  init_send_tile(topo, config);
 
   fd_topob_tile_in(topo, "tower", 0UL, "metric_in", "gossip_tower", 0UL, FD_TOPOB_UNRELIABLE, FD_TOPOB_POLLED);
-  fd_topob_tile_in(topo, "send", 0UL, "metric_in", "tower_send",    0UL,FD_TOPOB_RELIABLE, FD_TOPOB_POLLED);
-  fd_topob_tile_out(topo, "tower",  0UL, "tower_send", 0UL);
   fd_topob_tile_in(topo, "tower",   0UL, "metric_in", "replay_tower", 0UL, FD_TOPOB_RELIABLE, FD_TOPOB_POLLED);
   fd_topob_tile_out(topo, "gossip", 0UL, "gossip_tower", 0UL);
   fd_topob_tile_out(topo, "tower", 0UL, "tower_replay", 0UL);
 
-  fd_topob_tile_in(topo, "replay",  0UL, "metric_in", "tower_replay",  0UL, FD_TOPOB_RELIABLE, FD_TOPOB_POLLED);
-  fd_topob_tile_out(topo, "replay", 0UL, "replay_tower", 0UL);
+  // fd_topob_tile_in(topo, "replay",  0UL, "metric_in", "tower_replay",  0UL, FD_TOPOB_RELIABLE, FD_TOPOB_POLLED);
+  // fd_topob_tile_out(topo, "replay", 0UL, "replay_tower", 0UL);
 
+  // create txncache to be used by replay
+  //fd_topob_wksp(topo, "tcache");
+  //fd_topo_obj_t * txncache_obj = setup_topo_txncache( topo, "tcache",
+  //    config->firedancer.runtime.limits.max_rooted_slots,
+  //    config->firedancer.runtime.limits.max_live_slots,
+  //    config->firedancer.runtime.limits.max_transactions_per_slot,
+  //    fd_txncache_max_constipated_slots_est( config->firedancer.runtime.limits.snapshot_grace_period_seconds ) );
+  // fd_topob_tile_uses( topo, replay_tile, txncache_obj, FD_SHMEM_JOIN_MODE_READ_WRITE );
+  // FD_TEST( fd_pod_insertf_ulong( topo->props, txncache_obj->id, "txncache" ) );
   fd_topob_finish(topo, callbacks);
+
+  // fd_wksp_preview_t preview[1];
+
+  // const char * status_cache = config->tiles.replay.status_cache;
+  // int err = fd_wksp_preview( status_cache, preview );
+  // if( FD_UNLIKELY( err ) ) FD_LOG_ERR(( "unable to preview %s: error %d", status_cache, err ));
+  //fd_topo_wksp_t * wksp = &topo->workspaces[ topo->objs[ txncache_obj->id ].wksp_id ];
+  // wksp->part_max = preview->part_max;
+  // wksp->known_footprint = 0;
+  // wksp->total_footprint =  preview->data_max;
+  // ulong page_sz = FD_SHMEM_GIGANTIC_PAGE_SZ;
+  // wksp->page_sz = page_sz;
+  // ulong footprint = fd_wksp_footprint( preview->part_max, preview->data_max );
+  // wksp->page_cnt = 1UL;
+  config->topo = *topo;
 }
 
 

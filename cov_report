@@ -1,0 +1,5 @@
+MACHINE=linux_clang_x86_64 EXTRAS="fuzz asan llvm-cov" make fuzz-test
+MACHINE=linux_clang_x86_64 EXTRAS="fuzz asan llvm-cov" make fuzz_tiles_unit
+MACHINE=linux_clang_x86_64 EXTRAS="fuzz asan llvm-cov" make fuzz_tiles_run
+MACHINE=linux_clang_x86_64 EXTRAS="fuzz asan llvm-cov" make cov-report
+

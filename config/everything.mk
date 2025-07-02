@@ -523,7 +523,7 @@ $(BASEDIR)/cov/cov.lcov: $(shell find $(BASEDIR) -name 'cov.lcov' -print)
 # llvm-cov step 1.6, 2.2
 # Create HTML coverage report using lcov genhtml
 %/cov/html/index.html: %/cov/cov.lcov
-	rm -rf $(dir $@) && $(GENHTML) --output $(dir $@) $<
+	rm -rf $(dir $@) && $(GENHTML) --ignore-errors unmapped --output $(dir $@) $<
 	@echo "Created coverage report at $@"
 
 # `make cov-report` produces a coverage report from test runs for the

@@ -179,7 +179,7 @@ fuzz_tower(uchar *data,
   if( FD_UNLIKELY( (size+42UL) > FD_NET_MTU ) ) {
     return 1;
   }
-  fd_drv_send( drv, "replay", "tower", 1, sig, data, 8 );
+  fd_drv_send( drv, "gossip", "tower", 1, sig, data, size );
   return 0 /* Input succeeded.  Keep it if it found new coverage. */;
   
 }

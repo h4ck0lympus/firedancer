@@ -16,8 +16,11 @@
 // TODO consider making this more like an FD object with new, join, ...
 
 extern fd_topo_run_tile_t fd_tile_gossip;
-extern fd_topo_run_tile_t fd_tile_sign;
 extern fd_topo_run_tile_t fd_tile_shred;
+extern fd_topo_run_tile_t fd_tile_sign;
+extern fd_topo_run_tile_t fd_tile_replay;
+extern fd_topo_run_tile_t fd_tile_tower;
+extern fd_topo_run_tile_t fd_tile_send;
 
 FD_FN_CONST ulong
 fd_drv_footprint( void ) {
@@ -77,7 +80,7 @@ static void create_tmp_file( char const * path, char const * content ) {
 // taken from firedancer/topology.c
 // technically can be made non static and well inluded but i don't want to break anything
 // so doing minimal changes in firedancer code
-static void
+FD_FN_UNUSED static void
 setup_snapshots( config_t *       config,
                  fd_topo_tile_t * tile ) {
   uchar incremental_is_file, incremental_is_url;
@@ -192,99 +195,11 @@ setup_topo_runtime_pub( fd_topo_t *  topo,
 
 FD_FN_UNUSED static fd_topo_tile_t*
 init_replay_tile(fd_topo_t* topo, config_t* config) {
-
-  // batch is needed for replay tile
-  fd_topob_wksp(topo, "batch"); // create workspace for batch
-  fd_topob_wksp(topo, "batch_replay"); 
-
-  fd_topob_link(topo, "batch_replay", "batch_replay", 128UL, 32UL, 1UL);
-
   fd_topo_tile_t* replay_tile = fd_topob_tile(topo, "replay", "replay", "metric_in", 0, 0, 0);
-  fd_topo_tile_t* batch_tile = fd_topob_tile(topo, "batch", "batch", "metric_in", 0, 0, 0);
-
-  // do we need runtime pub object ?  -- yes we do ig
-  // fd_topob_tile_uses( topo, batch_tile,  runtime_pub_obj, FD_SHMEM_JOIN_MODE_READ_ONLY );
-  fd_topob_tile_in(topo, "replay", 0UL, "metric_in", "batch_replay", 0UL, FD_TOPOB_RELIABLE, FD_TOPOB_POLLED);
-  fd_topob_tile_out(topo, "batch", 0UL, "batch_replay", 0);
-
-  batch_tile->batch.full_interval = config->tiles.batch.full_interval;
-  batch_tile->batch.incremental_interval = config->tiles.batch.incremental_interval;
-
-  strncpy( batch_tile->batch.out_dir, config->tiles.batch.out_dir, sizeof(batch_tile->batch.out_dir) );
-  strncpy( batch_tile->replay.funk_file, config->tiles.replay.funk_file, sizeof(batch_tile->replay.funk_file) );
-
-
-  replay_tile->replay.fec_max = config->tiles.shred.max_pending_shred_sets;
-  replay_tile->replay.max_vote_accounts = config->firedancer.runtime.limits.max_vote_accounts;
   
-  strncpy(replay_tile->replay.blockstore_file, config->firedancer.blockstore.file, sizeof(replay_tile->replay.blockstore_file));
-  strncpy(replay_tile->replay.blockstore_checkpt, config->firedancer.blockstore.checkpt, sizeof(replay_tile->replay.blockstore_checkpt));
-
-  replay_tile->replay.tx_metadata_storage = config->rpc.extended_tx_metadata_storage;
-  strncpy(replay_tile->replay.capture, config->tiles.replay.capture, sizeof(replay_tile->replay.capture));
-  strncpy(replay_tile->replay.funk_checkpt, config->tiles.replay.funk_checkpt, sizeof(replay_tile->replay.funk_checkpt));
-  replay_tile->replay.funk_rec_max = config->tiles.replay.funk_rec_max;
-  replay_tile->replay.funk_sz_gb   = config->tiles.replay.funk_sz_gb;
-  replay_tile->replay.funk_txn_max = config->tiles.replay.funk_txn_max;
-  strncpy(replay_tile->replay.funk_file, config->tiles.replay.funk_file, sizeof(replay_tile->replay.funk_file));
-
-  int plugins_enabled = config->tiles.gui.enabled;
-  replay_tile->replay.plugins_enabled = plugins_enabled;
-
-  if (FD_UNLIKELY( !strncmp(config->tiles.replay.genesis, "", 1)) && 
-                   !strncmp(config->tiles.replay.snapshot, "", 1)) {
-    fd_cstr_printf_check(  config->tiles.replay.genesis, PATH_MAX, NULL, "%s/genesis.bin", config->paths.ledger );
-  }
-
-  strncpy( replay_tile->replay.genesis, config->tiles.replay.genesis, sizeof(replay_tile->replay.genesis) );
-
-  setup_snapshots( config, replay_tile );
-
-  strncpy( replay_tile->replay.slots_replayed, config->tiles.replay.slots_replayed, sizeof(replay_tile->replay.slots_replayed) );
-  strncpy( replay_tile->replay.status_cache, config->tiles.replay.status_cache, sizeof(replay_tile->replay.status_cache) );
-  strncpy( replay_tile->replay.cluster_version, config->tiles.replay.cluster_version, sizeof(replay_tile->replay.cluster_version) );
-  replay_tile->replay.bank_tile_count = config->layout.bank_tile_count;
-  replay_tile->replay.exec_tile_count   = config->firedancer.layout.exec_tile_count;
-  replay_tile->replay.writer_tile_cuont = config->firedancer.layout.writer_tile_count;
-  strncpy( replay_tile->replay.tower_checkpt, config->tiles.replay.tower_checkpt, sizeof(replay_tile->replay.tower_checkpt) );
-
-  strncpy( replay_tile->replay.identity_key_path, config->paths.identity_key, sizeof(replay_tile->replay.identity_key_path) );
-  replay_tile->replay.ip_addr = config->net.ip_addr;
-  strncpy( replay_tile->replay.vote_account_path, config->paths.vote_account, sizeof(replay_tile->replay.vote_account_path) );
-  replay_tile->replay.full_interval        = config->tiles.batch.full_interval;
-  replay_tile->replay.incremental_interval = config->tiles.batch.incremental_interval;
-
-  replay_tile->replay.enable_bank_hash_cmp = 1;
-
-
-  // setup shared workspace for blockstores
-  
-  // fd_topob_wksp(topo, "blockstore");
-  // fd_topo_obj_t * blockstore_obj = setup_topo_blockstore( topo,
-  //                                                         "blockstore",
-  //                                                         config->firedancer.blockstore.shred_max,
-  //                                                         config->firedancer.blockstore.block_max,
-  //                                                         config->firedancer.blockstore.idx_max,
-  //                                                         config->firedancer.blockstore.txn_max,
-  //                                                         config->firedancer.blockstore.alloc_max );
-  // fd_topob_tile_uses( topo, replay_tile, blockstore_obj, FD_SHMEM_JOIN_MODE_READ_WRITE );
-  
-  // constipate wksp and related config for batch tile
-  fd_topob_wksp(topo, "constipate");
-  fd_topo_obj_t * constipated_obj = fd_topob_obj( topo, "fseq", "constipate" );
-  fd_topob_tile_uses( topo, replay_tile, constipated_obj, FD_SHMEM_JOIN_MODE_READ_WRITE );
-  fd_topob_tile_uses( topo, batch_tile,  constipated_obj, FD_SHMEM_JOIN_MODE_READ_WRITE );
-  FD_TEST( fd_pod_insertf_ulong( topo->props, constipated_obj->id, "constipate" ) );
-
-  // runtime_pub  wksp and related config for batch tile
-  
-  fd_topob_wksp(topo, "runtime_pub");
-  fd_topo_obj_t * runtime_pub_obj = setup_topo_runtime_pub( topo, "runtime_pub", config->firedancer.runtime.heap_size_gib<<30 );
-
-  // shared wksp for runtime pub
-  fd_topob_tile_uses( topo, replay_tile, runtime_pub_obj, FD_SHMEM_JOIN_MODE_READ_WRITE );
-  fd_topob_tile_uses( topo, batch_tile,  runtime_pub_obj, FD_SHMEM_JOIN_MODE_READ_ONLY );
-  FD_TEST(fd_pod_insertf_ulong(topo->props, runtime_pub_obj->id, "runtime_pub"));
+  strncpy(replay_tile->replay.identity_key_path, config->paths.identity_key, sizeof(replay_tile->replay.identity_key_path));  
+  strncpy(replay_tile->replay.vote_account_path, config->paths.vote_account, sizeof(replay_tile->replay.vote_account_path));  
+  strncpy(replay_tile->replay.tower_checkpt, config->tiles.replay.tower_checkpt, sizeof(replay_tile->replay.tower_checkpt));  
 
   return replay_tile;
 }
@@ -329,29 +244,25 @@ init_gossip_tile(fd_topo_t* topo, config_t* config) {
   return gossip_tile;
 }
 
-static fd_topo_tile_t*
+FD_FN_UNUSED static fd_topo_tile_t*
 init_send_tile(fd_topo_t* topo, config_t* config) {
   fd_topob_wksp(topo, "send");
   fd_topob_wksp(topo, "send_net");  
   fd_topob_wksp(topo, "send_txns");  
-  fd_topob_wksp(topo, "send_sign");  
-  fd_topob_wksp(topo, "sign_send");
   fd_topob_wksp(topo, "tower_send");
   fd_topob_wksp(topo, "gossip_send");
+  fd_topob_wksp(topo, "send_sign");  
+  fd_topob_wksp(topo, "sign_send");
   fd_topob_wksp(topo, "stake_out");
   // ~imo we don't need tower send~  --- ok we needed tower send
   fd_topo_tile_t* send_tile = fd_topob_tile( topo, "send", "send", "metric_in", 0, 0, 0);
   strncpy(send_tile->send.identity_key_path, config->paths.identity_key, sizeof(send_tile->send.identity_key_path));
 
-  // fd_topob_wksp(topo, "net_send");
-  // fd_topob_wksp(topo, "send_sign");
-  // fd_topob_wksp(topo, "sign_send");
-  // fd_topob_wksp(topo, "send_txns");
   fd_topob_link(topo, "gossip_send", "gossip_send", 128UL, 40200UL * 38UL, 1UL);
-  fd_topob_link(topo, "tower_send",   "tower_send", 65536UL, sizeof(fd_txn_p_t), 1UL);
+  fd_topob_link(topo, "tower_send", "tower_send", 65536UL, sizeof(fd_txn_p_t), 1UL);
   fd_topob_link(topo, "send_net", "send_net", 128UL, 2048UL, 1UL);  
-  fd_topob_link(topo, "send_txns", "send_txns", 128UL, 1024UL, 1UL);  
   fd_topob_link(topo, "send_sign", "send_sign", 128UL, 64UL, 1UL);  
+  fd_topob_link(topo, "send_txns", "send_txns",  128UL, FD_TXN_MTU, 1UL);
   fd_topob_link(topo, "sign_send", "sign_send", 128UL, 64UL, 1UL);  
   fd_topob_link(topo, "stake_out", "stake_out", 128UL, 40UL + 40200UL * 40UL, 1UL);  
 
@@ -359,12 +270,13 @@ init_send_tile(fd_topo_t* topo, config_t* config) {
   fd_topob_tile_in(topo, "send", 0UL, "metric_in", "gossip_send", 0UL, FD_TOPOB_RELIABLE, FD_TOPOB_POLLED);
   fd_topob_tile_in(topo, "send", 0UL, "metric_in", "tower_send", 0UL, FD_TOPOB_RELIABLE, FD_TOPOB_POLLED);  
   fd_topob_tile_in(topo, "send", 0UL, "metric_in", "sign_send", 0UL, FD_TOPOB_UNRELIABLE, FD_TOPOB_UNPOLLED);
+  fd_topob_tile_in(topo, "gossip",  0UL, "metric_in", "send_txns" , 0UL, FD_TOPOB_RELIABLE, FD_TOPOB_POLLED);
 
   fd_topob_tile_out(topo, "gossip", 0UL, "gossip_send", 0UL);
   fd_topob_tile_out(topo, "send", 0UL, "send_net", 0UL);  
-  fd_topob_tile_out(topo, "send", 0UL, "send_txns", 0UL);  
   fd_topob_tile_out(topo, "send", 0UL, "send_sign", 0UL);
-  fd_topob_tile_out( topo, "tower", 0UL, "tower_send",0UL);
+  fd_topob_tile_out(topo, "tower", 0UL, "tower_send",0UL);
+  fd_topob_tile_out(topo, "send", 0UL, "send_txns",0UL);
 
   return send_tile;
 }
@@ -375,47 +287,21 @@ isolated_tower_topo(config_t* config, fd_topo_obj_callbacks_t* callbacks[])
   fd_topo_t * topo = &config->topo;
   fd_topob_new( &config->topo, config->name );
 
-  // for tcache we will need to initialize, max rooted slots, max live slots etc
-  config->firedancer.runtime.limits.max_rooted_slots = 300UL;
-  config->firedancer.runtime.limits.max_live_slots = 1024UL;
-  config->firedancer.runtime.limits.max_transactions_per_slot = 1024UL;
-  config->firedancer.runtime.limits.snapshot_grace_period_seconds = 300UL;
-
-  // initialize blockstore limits
-  // config->firedancer.blockstore.shred_max = 1000000UL;
-  // config->firedancer.blockstore.block_max = 200000UL;
-  // config->firedancer.blockstore.idx_max = 200000UL;
-  // config->firedancer.blockstore.txn_max = 100000000UL;
-  // config->firedancer.blockstore.alloc_max = 1UL << 30; // 1GB
-
-  strcpy(config->tiles.batch.out_dir, "/tmp/batch_snapshots");
-  config->tiles.batch.full_interval = 1000UL;
-  config->tiles.batch.incremental_interval = 500UL;
-
-  mkdir("/tmp/batch_snapshots", 0755);
-
-  // runtime heap size = 8 GB
-  config->firedancer.runtime.heap_size_gib = 8UL;
-  
   // create necessary workspaces
   fd_topob_wksp(topo, "metric_in");
   fd_topob_wksp(topo, "tower");
-  fd_topob_wksp(topo, "gossip");
   fd_topob_wksp(topo, "gossip_tower");
-  // fd_topob_wksp(topo, "replay");
+  fd_topob_wksp(topo, "gossip");
   fd_topob_wksp(topo, "replay_tower");
-  // fd_topob_wksp(topo, "slot_fseqs");
-  
+  fd_topob_wksp(topo, "replay");
+ 
+  // creating links
   fd_topob_link(topo, "gossip_tower", "gossip_tower", 128UL, FD_TPU_MTU, 1UL );
   fd_topob_link(topo, "replay_tower", "replay_tower", 128UL, 65536UL, 1UL );
   fd_topob_link(topo, "tower_replay", "replay_tower", 128UL, 0, 1UL );
 
   // create tower tile
   fd_topo_tile_t* tower_tile = fd_topob_tile(topo, "tower", "tower", "metric_in", 0, 0, 0);
-
-  if (!tower_tile) {
-    FD_LOG_ERR(("tower_tile failed to create"));
-  }
 
   // do necessary config required by tower
   strncpy(tower_tile->tower.funk_file, config->tiles.replay.funk_file, sizeof(tower_tile->tower.funk_file));
@@ -424,42 +310,31 @@ isolated_tower_topo(config_t* config, fd_topo_obj_callbacks_t* callbacks[])
  
   // tower requires initialization of gossip tile and replay tile
   init_gossip_tile(topo, config);
-  // fd_topo_tile_t* replay_tile = init_replay_tile(topo, config);
+  fd_topo_tile_t* replay_tile = init_replay_tile(topo, config);
   init_send_tile(topo, config);
 
   fd_topob_tile_in(topo, "tower", 0UL, "metric_in", "gossip_tower", 0UL, FD_TOPOB_UNRELIABLE, FD_TOPOB_POLLED);
   fd_topob_tile_in(topo, "tower",   0UL, "metric_in", "replay_tower", 0UL, FD_TOPOB_RELIABLE, FD_TOPOB_POLLED);
-  fd_topob_tile_out(topo, "gossip", 0UL, "gossip_tower", 0UL);
   fd_topob_tile_out(topo, "tower", 0UL, "tower_replay", 0UL);
+  fd_topob_tile_out(topo, "gossip", 0UL, "gossip_tower", 0UL);
 
-  // fd_topob_tile_in(topo, "replay",  0UL, "metric_in", "tower_replay",  0UL, FD_TOPOB_RELIABLE, FD_TOPOB_POLLED);
-  // fd_topob_tile_out(topo, "replay", 0UL, "replay_tower", 0UL);
+  fd_topob_tile_in(topo, "replay",  0UL, "metric_in", "tower_replay",  0UL, FD_TOPOB_RELIABLE, FD_TOPOB_POLLED);
+  fd_topob_tile_out(topo, "replay", 0UL, "replay_tower", 0UL);
 
-  // create txncache to be used by replay
-  //fd_topob_wksp(topo, "tcache");
-  //fd_topo_obj_t * txncache_obj = setup_topo_txncache( topo, "tcache",
-  //    config->firedancer.runtime.limits.max_rooted_slots,
-  //    config->firedancer.runtime.limits.max_live_slots,
-  //    config->firedancer.runtime.limits.max_transactions_per_slot,
-  //    fd_txncache_max_constipated_slots_est( config->firedancer.runtime.limits.snapshot_grace_period_seconds ) );
-  // fd_topob_tile_uses( topo, replay_tile, txncache_obj, FD_SHMEM_JOIN_MODE_READ_WRITE );
-  // FD_TEST( fd_pod_insertf_ulong( topo->props, txncache_obj->id, "txncache" ) );
+  fd_topob_wksp(topo, "slot_fseqs");
+  fd_topo_obj_t* root_slot_obj = fd_topob_obj(topo, "fseq", "slot_fseqs");
+  fd_topob_tile_uses(topo, tower_tile, root_slot_obj, FD_SHMEM_JOIN_MODE_READ_WRITE);
+  FD_TEST(fd_pod_insertf_ulong(topo->props, root_slot_obj->id, "root_slot"));
+  
+  fd_topo_obj_t * turbine_slot0_obj = fd_topob_obj( topo, "fseq", "slot_fseqs" );
+  fd_topob_tile_uses( topo, replay_tile, turbine_slot0_obj, FD_SHMEM_JOIN_MODE_READ_ONLY );
+  FD_TEST( fd_pod_insertf_ulong( topo->props, turbine_slot0_obj->id, "turbine_slot0" ) );
+
+  fd_topo_obj_t * turbine_slot_obj = fd_topob_obj( topo, "fseq", "slot_fseqs" );
+  fd_topob_tile_uses( topo, replay_tile, turbine_slot_obj, FD_SHMEM_JOIN_MODE_READ_ONLY );
+  FD_TEST( fd_pod_insertf_ulong( topo->props, turbine_slot_obj->id, "turbine_slot" ) );
+  
   fd_topob_finish(topo, callbacks);
-
-  // fd_wksp_preview_t preview[1];
-
-  // const char * status_cache = config->tiles.replay.status_cache;
-  // int err = fd_wksp_preview( status_cache, preview );
-  // if( FD_UNLIKELY( err ) ) FD_LOG_ERR(( "unable to preview %s: error %d", status_cache, err ));
-  //fd_topo_wksp_t * wksp = &topo->workspaces[ topo->objs[ txncache_obj->id ].wksp_id ];
-  // wksp->part_max = preview->part_max;
-  // wksp->known_footprint = 0;
-  // wksp->total_footprint =  preview->data_max;
-  // ulong page_sz = FD_SHMEM_GIGANTIC_PAGE_SZ;
-  // wksp->page_sz = page_sz;
-  // ulong footprint = fd_wksp_footprint( preview->part_max, preview->data_max );
-  // wksp->page_cnt = 1UL;
-  config->topo = *topo;
 }
 
 
@@ -579,9 +454,26 @@ back_wksps( fd_topo_t * topo, fd_topo_obj_callbacks_t * callbacks[] ) {
       }
     }
     ulong align = cb->align( topo, obj );
+    ulong page_cnt = 1;
+    char* _page_sz = "gigantic";
+    ulong numa_idx = fd_shmem_numa_idx(0);
+
+    FD_LOG_NOTICE( ( "Creating workspace (--page-cnt %lu, --page-sz %s, --numa-idx %lu)", page_cnt, _page_sz, numa_idx ) );
+
+    static int wksp_idx = 0;
+    char wksp_name[64];  
+    snprintf(wksp_name, sizeof(wksp_name), "wksp_%d", wksp_idx);
+    wksp_idx++;
+
+    fd_wksp_t * wksp = fd_wksp_new_anonymous( fd_cstr_to_shmem_page_sz( _page_sz ),
+                                            page_cnt,
+                                            fd_shmem_cpu_idx(numa_idx),
+                                            wksp_name,
+                                            0UL );
+    FD_TEST(wksp);
 
     obj->wksp_id = obj->id;
-    topo->workspaces[ obj->wksp_id ].wksp = aligned_alloc( align, obj->footprint );
+    topo->workspaces[ obj->wksp_id ].wksp = wksp; // aligned_alloc( align, obj->footprint );
     obj->offset = 0UL;
     FD_LOG_NOTICE(( "obj %s %lu %lu %lu %lu", obj->name, obj->wksp_id, obj->footprint, obj->offset, align ));
     FD_LOG_NOTICE(( "wksp pointer %p", (void*)topo->workspaces[ obj->wksp_id ].wksp ));
@@ -734,8 +626,8 @@ void
 fd_drv_send( fd_drv_t * drv,
              char     * from,
              char     * to,
-             ulong      in_idx,
-             ulong      sig,
+             FD_PARAM_UNUSED ulong      in_idx,
+             FD_PARAM_UNUSED ulong      sig,
              uchar    * data,
              ulong      data_sz ) {
   fd_topo_t * topo = &drv->config.topo;
@@ -762,20 +654,21 @@ fd_drv_send( fd_drv_t * drv,
   if( FD_UNLIKELY( 0==strcmp( "out", to ) ) ) {
     to = "shred";
   }
-  fd_topo_run_tile_t * to_run_tile  = find_run_tile( drv, to );
+  FD_PARAM_UNUSED fd_topo_run_tile_t * to_run_tile  = find_run_tile( drv, to );
   fd_topo_tile_t *     to_topo_tile = find_topo_tile( drv, to );
-  void * ctx = fd_topo_obj_laddr( &drv->config.topo, to_topo_tile->tile_obj_id );
+  FD_PARAM_UNUSED void * ctx = fd_topo_obj_laddr( &drv->config.topo, to_topo_tile->tile_obj_id );
   ulong fake_seq=0UL;
   ulong fake_cr_avail=0UL;
-  fd_stem_context_t fake_stem = {
+  FD_PARAM_UNUSED fd_stem_context_t fake_stem = {
     .mcaches=&link->mcache,
     .seqs=&fake_seq,
     .depths=&link->depth,
     .cr_avail=&fake_cr_avail,
     .cr_decrement_amount=0UL
   };
-  int charge_busy_before = 0;
+  FD_PARAM_UNUSED int charge_busy_before = 0;
   fd_memcpy( link->dcache, data, data_sz );
+
   #ifdef FD_HAS_FUZZ
   if( to_run_tile->before_credit ) {
     to_run_tile->before_credit( ctx, &fake_stem, &charge_busy_before );
@@ -790,11 +683,7 @@ fd_drv_send( fd_drv_t * drv,
     if( FD_UNLIKELY( filter ) ) return;
   }
   if( FD_LIKELY( to_run_tile->during_frag ) ) {
-    // if (FD_LIKELY(0==strcmp(to, "tower"))) {
-    //   sig |= 1;
-    // }
-    /* TODO derive the 4 properly and derive sig properly ? */
-    to_run_tile->during_frag( ctx, in_idx, fake_seq, sig, 4UL, data_sz, 0UL );
+    to_run_tile->during_frag( ctx, in_idx, fake_seq, sig, 4UL, data_sz, 0UL);
   }
   if( FD_LIKELY( to_run_tile->after_frag ) ) {
     to_run_tile->after_frag( ctx, in_idx, fake_seq, sig, data_sz, 0UL, 0UL, &fake_stem );

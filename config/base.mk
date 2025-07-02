@@ -40,7 +40,8 @@ GENHTML=genhtml
 # newer versions of genhtml will require '-ignore-errors unmapped'
 
 # Parameters passed to libFuzzer tests
-FUZZFLAGS:=-max_total_time=600 -timeout=10 -runs=10
+#FUZZFLAGS:=-max_total_time=600 -timeout=10 -runs=10
+FUZZFLAGS:=-max_total_time=600
 
 # Obtain compiler version so that decisions can be made on disabling/enabling
 # certain flags

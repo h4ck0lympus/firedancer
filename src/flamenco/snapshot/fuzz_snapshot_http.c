@@ -31,6 +31,7 @@ LLVMFuzzerInitialize( int  *   argc,
   putenv( "FD_LOG_BACKTRACE=0" );
   fd_boot( argc, argv );
   atexit( fd_halt );
+  fd_log_level_core_set(3); /* crash on warning log */
   /* Don't print warning log */
   fd_log_level_logfile_set( 4 );
   fd_log_level_stderr_set( 4 );
@@ -45,7 +46,7 @@ target_task( void * ctx ) {
 
   fd_snapshot_name_t name[1] = {{0}};
   fd_snapshot_http_t  _http[1];
-  fd_snapshot_http_t * http = fd_snapshot_http_new( _http, "localhost:80", FD_IP4_ADDR( 127, 0, 0, 1 ), 80, name );
+  fd_snapshot_http_t * http = fd_snapshot_http_new( _http, "localhost:80", FD_IP4_ADDR( 127, 0, 0, 1 ), 80, NULL, name );
 
   /* Hijack the HTTP state and make it think there is a successful connection */
   assert( http->socket_fd == -1 );

@@ -83,24 +83,30 @@ checkout_repo () {
   # Skip if dir already exists
   if [[ -d "$PREFIX/git/$1" ]]; then
     echo "[~] Skipping $1 fetch as \"$PREFIX/git/$1\" already exists"
+  elif [[ -z "$3" ]]; then
+    echo "[+] Cloning $1 from $2"
+    git -c advice.detachedHead=false clone "$2" "$PREFIX/git/$1" && cd "$PREFIX/git/$1" && git reset --hard "$4"
+    echo
   else
     echo "[+] Cloning $1 from $2"
     git -c advice.detachedHead=false clone "$2" "$PREFIX/git/$1" --branch "$3" --depth=1
     echo
   fi
 
-  # Skip if tag already correct
-  if [[ "$(git -C "$PREFIX/git/$1" describe --tags --abbrev=0)" == "$3" ]]; then
-    return
-  fi
+  if [[ ! -z "$3" ]]; then
+    # Skip if tag already correct
+    if [[ "$(git -C "$PREFIX/git/$1" describe --tags --abbrev=0)" == "$3" ]]; then
+      return
+    fi
 
-  echo "[~] Checking out $1 $3"
-  (
-    cd "$PREFIX/git/$1"
-    git fetch origin "$3" --tags --depth=1
-    git -c advice.detachedHead=false checkout "$3"
-  )
-  echo
+    echo "[~] Checking out $1 $3"
+    (
+      cd "$PREFIX/git/$1"
+      git fetch origin "$3" --tags --depth=1
+      git -c advice.detachedHead=false checkout "$3"
+    )
+    echo
+  fi
 }
 
 checkout_llvm () {
@@ -127,21 +133,39 @@ fetch () {
   if [[ $MSAN == 1 ]]; then
     checkout_llvm
   fi
-  checkout_repo zstd      https://github.com/facebook/zstd          "v1.5.6"
-  checkout_repo lz4       https://github.com/lz4/lz4                "v1.9.4"
-  checkout_repo secp256k1 https://github.com/bitcoin-core/secp256k1 "v0.5.0"
-  #checkout_repo openssl   https://github.com/openssl/openssl        "openssl-3.3.1"
+  checkout_repo zstd      https://github.com/facebook/zstd          "v1.5.7"
+  checkout_repo lz4       https://github.com/lz4/lz4                "v1.10.0"
+  checkout_repo s2n       https://github.com/awslabs/s2n-bignum     "" "4d2e22a"
+  checkout_repo openssl   https://github.com/openssl/openssl        "openssl-3.5.0"
+  checkout_repo secp256k1 https://github.com/bitcoin-core/secp256k1 "v0.6.0"
   if [[ $DEVMODE == 1 ]]; then
-    checkout_repo rocksdb   https://github.com/facebook/rocksdb       "v9.4.0"
-    checkout_repo snappy    https://github.com/google/snappy          "1.2.1"
-    checkout_repo luajit    https://github.com/LuaJIT/LuaJIT          "v2.0.5"
+    checkout_repo blst      https://github.com/supranational/blst     "v0.3.14"
+    checkout_repo rocksdb   https://github.com/facebook/rocksdb       "v10.2.1"
+    checkout_repo snappy    https://github.com/google/snappy          "1.2.2"
   fi
 }
 
 check_fedora_pkgs () {
-  local REQUIRED_RPMS=( perl autoconf gettext-devel automake flex bison cmake clang gmp-devel protobuf-compiler llvm-toolset lcov systemd-devel pkgconf patch )
+  local REQUIRED_RPMS=(
+    curl               # download rustup
+    diffutils          # build system
+    make               # build system
+    pkgconf            # build system
+    patch              # build system
+    gcc                # compiler
+    gcc-c++            # compiler
+
+    cmake              # Agave (RocksDB)
+    clang-devel        # Agave (bindgen)
+    systemd-devel      # Agave
+    perl               # Agave (OpenSSL)
+    protobuf-compiler  # Agave, solfuzz
+  )
   if [[ $DEVMODE == 1 ]]; then
-    REQUIRED_RPMS+=( lua5.1 lua5.1-bitop )
+    REQUIRED_RPMS+=( autoconf automake bison cmake clang flex gettext-devel gmp-devel lcov )
+    if [[ "${ID_LIKE:-}" == *rhel* ]]; then
+      REQUIRED_RPMS+=( llvm-toolset )
+    fi
   fi
 
   echo "[~] Checking for required RPM packages"
@@ -166,9 +190,19 @@ check_fedora_pkgs () {
 }
 
 check_debian_pkgs () {
-  local REQUIRED_DEBS=( perl autoconf gettext automake autopoint flex bison build-essential gcc-multilib protobuf-compiler llvm lcov libgmp-dev libudev-dev cmake libclang-dev pkgconf )
+  local REQUIRED_DEBS=(
+    curl               # download rustup
+    diffutils          # build system
+    build-essential    # C/C++ compiler
+    pkgconf            # build system
+
+    cmake              # Agave (protobuf-src)
+    libclang-dev       # Agave (bindgen)
+    libudev-dev        # Agave
+    protobuf-compiler  # Agave
+  )
   if [[ $DEVMODE == 1 ]]; then
-    REQUIRED_DEBS+=( lua5.1 lua5.1-bitop )
+    REQUIRED_DEBS+=( autoconf automake autopoint bison flex gcc-multilib gettext llvm lcov libgmp-dev perl )
   fi
 
   echo "[~] Checking for required DEB packages"
@@ -193,7 +227,16 @@ check_debian_pkgs () {
 }
 
 check_alpine_pkgs () {
-  local REQUIRED_APKS=( perl autoconf gettext automake flex bison build-base linux-headers protobuf-dev patch libucontext-dev )
+  local REQUIRED_APKS=(
+    build-base       # C/C++ compiler
+    curl             # download rustup
+    linux-headers    # base dependency
+    libucontext-dev  # base dependency
+    patch            # build system
+  )
+  if [[ $DEVMODE == 1 ]]; then
+    REQUIRED_APKS+=( autoconf automake bison flex gettext perl protobuf-dev )
+  fi
 
   echo "[~] Checking for required APK packages"
 
@@ -287,7 +330,11 @@ check () {
         echo "[+] Installing rustup"
         curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
         source "$HOME/.cargo/env"
-        rustup toolchain add 1.75.0
+        rust_toolchain=$(grep "channel" agave/rust-toolchain.toml | awk '{print $NF}' | tr -d '"')
+        if [[ ! $(rustup toolchain list | grep $rust_toolchain) ]]; then
+          echo "[+] Updating rustup toolchain"
+          rustup toolchain add $rust_toolchain
+        fi
         ;;
       *)
         echo "[-] Skipping rustup install"
@@ -308,9 +355,13 @@ install_libcxx () {
     -DCMAKE_INSTALL_PREFIX:PATH="$PREFIX" \
     -DCMAKE_INSTALL_LIBDIR="lib" \
     -DCMAKE_BUILD_TYPE=Release \
-    -DLLVM_ENABLE_RUNTIMES="libcxx;libcxxabi;libunwind" \
+    -DLLVM_DIR=".." \
+    -DLLVM_ENABLE_RUNTIMES="libcxx;libcxxabi" \
     -DLLVM_USE_SANITIZER=Memory \
-    -DLLVM_ENABLE_PIC=ON
+    -DLLVM_ENABLE_PIC=ON \
+    -DLLVM_INCLUDE_TESTS=OFF \
+    -DLIBCXX_INCLUDE_BENCHMARKS=OFF \
+    -DLIBCXXABI_USE_LLVM_UNWINDER=OFF
 
   echo "[+] Building libcxx"
   "${MAKE[@]}" cxx cxxabi
@@ -332,8 +383,34 @@ install_lz4 () {
   cd "$PREFIX/git/lz4/lib"
 
   echo "[+] Installing lz4 to $PREFIX"
-  "${MAKE[@]}" PREFIX="$PREFIX" BUILD_SHARED=no MOREFLAGS="-fPIC $EXTRA_CFLAGS" install
+  "${MAKE[@]}" PREFIX="$PREFIX" BUILD_SHARED=no CFLAGS="-fPIC $EXTRA_CFLAGS" install
   echo "[+] Successfully installed lz4"
+}
+
+install_s2n () {
+  cd "$PREFIX/git/s2n"
+
+  echo "[+] Installing s2n-bignum to $PREFIX"
+  make -C x86
+  cp x86/libs2nbignum.a "$PREFIX/lib"
+  cp include/* "$PREFIX/include"
+  echo "[+] Successfully installed s2n-bignum"
+}
+
+install_blst () {
+  cd "$PREFIX/git/blst"
+
+  echo "[+] Installing blst to $PREFIX"
+
+  # this is copied from ./build.sh:27
+  CFLAGS=${CFLAGS:--O2 -fno-builtin -fPIC -Wall -Wextra -Werror}
+  # this adds our flags, e.g. for MSAN
+  CFLAGS+=" $EXTRA_CFLAGS"
+
+  CFLAGS=$CFLAGS ./build.sh
+  cp libblst.a "$PREFIX/lib"
+  cp bindings/*.h "$PREFIX/include"
+  echo "[+] Successfully installed blst"
 }
 
 install_secp256k1 () {
@@ -343,6 +420,7 @@ install_secp256k1 () {
   rm -rf build
   mkdir build
   cd build
+  # https://github.com/bitcoin-core/secp256k1/blob/master/CMakeLists.txt#L59
   cmake .. \
     -G"Unix Makefiles" \
     -DCMAKE_INSTALL_PREFIX:PATH="$PREFIX" \
@@ -353,10 +431,13 @@ install_secp256k1 () {
     -DSECP256K1_BUILD_BENCHMARK=OFF \
     -DSECP256K1_DISABLE_SHARED=OFF \
     -DBUILD_SHARED_LIBS=OFF \
+    -DSECP256K1_ENABLE_MODULE_ECDH=OFF \
     -DSECP256K1_ENABLE_MODULE_RECOVERY=ON \
     -DSECP256K1_ENABLE_MODULE_EXTRAKEYS=OFF \
     -DSECP256K1_ENABLE_MODULE_SCHNORRSIG=OFF \
     -DSECP256K1_ENABLE_MODULE_ECDH=OFF \
+    -DSECP256K1_ENABLE_MODULE_MUSIG=OFF \
+    -DSECP256K1_ENABLE_MODULE_ELLSWIFT=OFF \
     -DCMAKE_C_FLAGS_RELEASE="-O3" \
     -DCMAKE_POSITION_INDEPENDENT_CODE=ON \
     -DCMAKE_C_FLAGS="$EXTRA_CFLAGS" \
@@ -409,12 +490,10 @@ install_openssl () {
     no-comp \
     no-ct \
     no-des \
-    no-dh \
     no-dsa \
     no-dtls \
     no-dtls1-method \
     no-dtls1_2-method \
-    no-ecdsa \
     no-fips \
     no-gost \
     no-idea \
@@ -435,7 +514,6 @@ install_openssl () {
     no-sm4 \
     no-srp \
     no-srtp \
-    no-sock \
     no-ts \
     no-whirlpool
   echo "[+] Configured OpenSSL"
@@ -456,11 +534,28 @@ install_rocksdb () {
   NJOBS=$((NJOBS>0 ? NJOBS : 1))
   make clean
 
+  # Fix a random build failure
+  git checkout HEAD -- db/blob/blob_file_meta.h
+  git apply << EOF
+diff --git a/db/blob/blob_file_meta.h b/db/blob/blob_file_meta.h
+index d7c8a12..8cfff9b 100644
+--- a/db/blob/blob_file_meta.h
++++ b/db/blob/blob_file_meta.h
+@@ -5,6 +5,7 @@
+ 
+ #pragma once
+ 
++#include <cstdint>
+ #include <cassert>
+ #include <iosfwd>
+ #include <memory>
+EOF
+
   ROCKSDB_DISABLE_NUMA=1 \
   ROCKSDB_DISABLE_ZLIB=1 \
   ROCKSDB_DISABLE_BZIP=1 \
   ROCKSDB_DISABLE_GFLAGS=1 \
-  CFLAGS="-isystem $(pwd)/../../include -g0 -DSNAPPY -DZSTD -Wno-unknown-warning-option -Wno-uninitialized -Wno-array-bounds -Wno-stringop-overread $EXTRA_CXXFLAGS" \
+  CFLAGS="-isystem $(pwd)/../../include -g0 -DSNAPPY -DZSTD -Wno-unknown-warning-option -Wno-uninitialized -Wno-array-bounds -Wno-stringop-overread -fPIC $EXTRA_CXXFLAGS" \
   make -j $NJOBS \
     LITE=1 \
     V=1 \
@@ -516,9 +611,13 @@ install () {
   fi
   ( install_zstd      )
   ( install_lz4       )
+  if [[ "$(uname -m)" == x86_64 ]]; then
+    ( install_s2n )
+  fi
+  ( install_openssl   )
   ( install_secp256k1 )
-  #( install_openssl   )
   if [[ $DEVMODE == 1 ]]; then
+    ( install_blst      )
     ( install_snappy    )
     ( install_rocksdb   )
   fi
@@ -589,7 +688,11 @@ if [[ $ACTION == 0 ]]; then
   echo
   echo "[~] Running $0 fetch check install"
 
-  read -r -p "[?] Continue? (y/N) " choice
+  if [[ "${FD_AUTO_INSTALL_PACKAGES:-}" == "1" ]]; then
+    choice=y
+  else
+    read -r -p "[?] Continue? (y/N) " choice
+  fi
   case "$choice" in
     y|Y)
       echo

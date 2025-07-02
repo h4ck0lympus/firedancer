@@ -1,10 +1,3 @@
-#include <stdio.h>
-#include <unistd.h>
-#include <string.h>
-#include <signal.h>
-#include <arpa/inet.h>
-
-#include "../fd_quic.h"
 #include "../crypto/fd_quic_crypto_suites.h"
 
 FD_IMPORT_BINARY( test_client_initial,   "src/waltz/quic/fixtures/rfc9001-client-initial-payload.bin"   );
@@ -12,7 +5,7 @@ FD_IMPORT_BINARY( test_client_encrypted, "src/waltz/quic/fixtures/rfc9001-client
 
 /* the destination connection id from the example */
 /* 0x8394c8f03e515708 */
-static uchar const test_dst_conn_id[8] = "\x83\x94\xc8\xf0\x3e\x51\x57\x08";
+static uchar const test_dst_conn_id[8] = { 0x83, 0x94, 0xc8, 0xf0, 0x3e, 0x51, 0x57, 0x08 };
 
 /* expected value from rfc9001:
    7db5df06e7a69e432496adedb0085192 3595221596ae2ae9fb8115c1e9ed0a44 */
@@ -79,6 +72,73 @@ static uchar const packet_header[] =
   { 0xc3, 0x00, 0x00, 0x00, 0x01, 0x08, 0x83, 0x94, 0xc8, 0xf0, 0x3e, 0x51, 0x57, 0x08, 0x00, 0x00,
     0x44, 0x9e, 0x00, 0x00, 0x00, 0x02 };
 
+static uchar const packet_header_short_pn[] =
+  { 0xc1, 0x00, 0x00, 0x00, 0x01, 0x08, 0x83, 0x94, 0xc8, 0xf0, 0x3e, 0x51, 0x57, 0x08, 0x00, 0x00,
+    0x44, 0x9e, 0x00, 0x02 };
+
+
+static void
+test_quic_crypto_helper( ulong pkt_number, uchar const * hdr, ulong hdr_sz ) {
+  uchar cipher_text_[4096] = {0};
+  ulong cipher_text_sz = sizeof(cipher_text_);
+
+  fd_quic_crypto_keys_t client_keys;
+  memcpy( client_keys.pkt_key, expected_client_key, sizeof( expected_client_key ) );
+  memcpy( client_keys.iv,      expected_client_quic_iv, sizeof( expected_client_quic_iv ) );
+  memcpy( client_keys.hp_key,  expected_client_quic_hp_key, sizeof( expected_client_quic_hp_key ) );
+
+  FD_TEST( fd_quic_crypto_encrypt(
+      cipher_text_, &cipher_text_sz,
+      hdr, hdr_sz,
+      test_client_initial, test_client_initial_sz,
+      &client_keys,
+      &client_keys,
+      pkt_number ) ==FD_QUIC_SUCCESS );
+
+  /* now decrypt and confirm it matches*/
+  uchar revert[4096] = {0};
+  ulong const pn_offset = 18; /* from example in rfc */
+
+  fd_memcpy( revert, cipher_text_, cipher_text_sz );
+  FD_TEST( fd_quic_crypto_decrypt_hdr(
+        revert, cipher_text_sz,
+        pn_offset,
+        &client_keys ) == FD_QUIC_SUCCESS );
+
+  FD_TEST( 0==memcmp( revert, hdr, hdr_sz ) );
+
+
+  uchar revert_partial[4096];  /* only header decrypted */
+  fd_memcpy( revert_partial, revert, cipher_text_sz );
+
+  FD_TEST( fd_quic_crypto_decrypt(
+        revert, cipher_text_sz,
+        pn_offset, pkt_number,
+        &client_keys ) == FD_QUIC_SUCCESS );
+  FD_TEST( 0==memcmp( revert + hdr_sz, test_client_initial, test_client_initial_sz ) );
+
+}
+
+/* tests that short pn consistently encrypts and decrypts*/
+static void
+test_quic_short_pn( void ) {
+  test_quic_crypto_helper( 2UL, packet_header_short_pn, sizeof( packet_header_short_pn ) );
+  /* short but large number, truncated to 0x2 in hdr so can reuse header*/
+  test_quic_crypto_helper(0xff00000002UL, packet_header_short_pn, sizeof( packet_header_short_pn ) );
+}
+
+/* tests that nonce is correctly generated, e.g. from rfc9001 a.5. */
+static void
+test_quic_nonce( void ) {
+  uchar const iv[12] =
+    { 0xe0, 0x45, 0x9b, 0x34, 0x74, 0xbd, 0xd0, 0xe4, 0x4a, 0x41, 0xc1, 0x44 };
+  uchar const expected_nonce[12] =
+    { 0xe0, 0x45, 0x9b, 0x34, 0x74, 0xbd, 0xd0, 0xe4, 0x6d, 0x41, 0x7e, 0xb0 };
+
+  uchar nonce[12];
+  fd_quic_get_nonce( nonce, iv, 654360564UL );
+  FD_TEST( 0==memcmp( nonce, expected_nonce, sizeof( expected_nonce ) ) );
+}
 
 int
 main( int     argc,
@@ -123,13 +183,12 @@ main( int     argc,
   fd_quic_crypto_secrets_t secrets;
 
   /* initial salt is based on quic version */
-  fd_quic_gen_initial_secret(
+  fd_quic_gen_initial_secrets(
       &secrets,
-      test_dst_conn_id, sizeof( test_dst_conn_id ) );
+      test_dst_conn_id, sizeof( test_dst_conn_id ),
+      /* is_server */ 1 );
   FD_TEST( 0==memcmp( secrets.initial_secret, expected_initial_secret, sizeof( expected_initial_secret ) ) );
   FD_LOG_INFO(( "fd_quic_gen_initial_secret: PASSED" ));
-
-  fd_quic_gen_secrets( &secrets, fd_quic_enc_level_initial_id );
 
   /* initial secrets are derived from the initial client destination connection id
      both client and server initial secrets are derived here */
@@ -328,6 +387,8 @@ main( int     argc,
     FD_LOG_NOTICE(( "~%6.3f Gbps Ethernet equiv throughput / core (sz %4lu)", (double)gbps, out_sz ));
   } while(0);
 
+  test_quic_short_pn();
+  test_quic_nonce();
   fd_rng_delete( fd_rng_leave( rng ) );
   FD_LOG_NOTICE(( "pass" ));
   fd_halt();

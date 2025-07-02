@@ -1,4 +1,5 @@
 import { defineConfig } from 'vitepress'
+import latestVersion from './version-plugin.js';
 
 // https://vitepress.dev/reference/site-config
 export default defineConfig({
@@ -6,16 +7,20 @@ export default defineConfig({
   title: "Firedancer",
   description: "Firedancer",
 
-  base: '/firedancer/',
+  base: '/',
   lastUpdated: true,
 
   head: [
-    ['link', { rel: 'icon', type: 'image/svg+xml', href: '/firedancer/fire.svg' }],
+    ['link', { rel: 'icon', type: 'image/svg+xml', href: '/fire.svg' }],
     ['meta', { name: 'theme-color', content: '#1ce7c2' }],
     ['meta', { name: 'og:type', content: 'website' }],
     ['meta', { name: 'og:locale', content: 'en' }],
     ['meta', { name: 'og:site_name', content: 'Firedancer' }],
   ],
+
+  vite: {
+    plugins: [latestVersion()]
+  },
 
   themeConfig: {
     logo: { src: '/fire.svg', width: 24, height: 24 },
@@ -51,6 +56,14 @@ export default defineConfig({
             { text: 'Monitoring', link: 'monitoring' },
             { text: 'Troubleshooting', link: 'troubleshooting' },
             { text: 'Frequently Asked Questions', link: 'faq' },
+          ]
+        },
+        {
+          text: 'Internals',
+          collapsed: false,
+          items: [
+            { text: 'Net Tile', link: 'internals/net_tile' },
+            { text: 'Netlink', link: 'internals/netlink' },
           ]
         }
       ] },

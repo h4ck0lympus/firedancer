@@ -1,8 +1,7 @@
 #ifndef HEADER_fd_src_flamenco_snapshot_fd_snapshot_http_h
 #define HEADER_fd_src_flamenco_snapshot_fd_snapshot_http_h
 
-#include "fd_snapshot.h"
-#include "fd_snapshot_loader.h"
+#include "fd_snapshot_base.h"
 #include "fd_snapshot_istream.h"
 
 /* fd_snapshot_http.h provides APIs for streaming download of Solana
@@ -16,6 +15,7 @@
 #define FD_SNAPSHOT_HTTP_STATE_RESP  (2) /* receiving response headers */
 #define FD_SNAPSHOT_HTTP_STATE_DL    (3) /* downloading response body */
 #define FD_SNAPSHOT_HTTP_STATE_DONE  (4) /* downloading done */
+#define FD_SNAPSHOT_HTTP_STATE_READ  (5) /* reading snapshot file */
 #define FD_SNAPSHOT_HTTP_STATE_FAIL (-1) /* fatal error */
 
 /* Request size limits */
@@ -24,6 +24,7 @@
 #define FD_SNAPSHOT_HTTP_REQ_PATH_MAX   (508UL)
 #define FD_SNAPSHOT_HTTP_RESP_HDR_CNT    (32UL)
 #define FD_SNAPSHOT_HTTP_RESP_BUF_MAX (1UL<<20)
+#define FD_SNAPSHOT_HTTP_FILE_PATH_MAX (4096UL)
 
 /* FD_SNAPSHOT_HTTP_DEFAULT_HOPS is the number of directs to follow
    by default. */
@@ -31,6 +32,8 @@
 #define FD_SNAPSHOT_HTTP_DEFAULT_HOPS (4UL)
 
 /* fd_snapshot_http_t is the snapshot HTTP client class. */
+
+FD_PROTOTYPES_BEGIN
 
 struct fd_snapshot_http {
   uint   next_ipv4;  /* big-endian, see fd_ip4.h */
@@ -79,17 +82,28 @@ struct fd_snapshot_http {
   /* Total downloaded so far */
 
   ulong dl_total;
+
+  /* Total written out so far */
+
+  ulong write_total;
+
+  /* Snapshot file */
+
+  char  snapshot_path[ FD_SNAPSHOT_HTTP_FILE_PATH_MAX ];
+  ulong snapshot_filename_off;
+  ulong snapshot_filename_max;
+  int   snapshot_fd;
+  uchar save_snapshot;
 };
 
 typedef struct fd_snapshot_http fd_snapshot_http_t;
-
-FD_PROTOTYPES_BEGIN
 
 fd_snapshot_http_t *
 fd_snapshot_http_new( void *               mem,
                       const char *         dst_str,
                       uint                 dst_ipv4,
                       ushort               dst_port,
+                      const char *         snapshot_dir,
                       fd_snapshot_name_t * name_out );
 
 void *
@@ -106,7 +120,7 @@ fd_snapshot_http_set_timeout( fd_snapshot_http_t * this,
 /* fd_snapshot_http_set_path sets the path of the next request.  Should
    start with '/'. */
 
-int
+void
 fd_snapshot_http_set_path( fd_snapshot_http_t * this,
                            char const *         path,
                            ulong                path_len,

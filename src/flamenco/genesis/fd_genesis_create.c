@@ -128,8 +128,10 @@ genesis_create( void *                       buf,
     vs->node_pubkey             = options->identity_pubkey;
     vs->authorized_withdrawer   = options->identity_pubkey;
     vs->commission              = 100;
-    vs->authorized_voters.pool  = fd_vote_authorized_voters_pool_alloc ( fd_scratch_virtual(), 1UL );
-    vs->authorized_voters.treap = fd_vote_authorized_voters_treap_alloc( fd_scratch_virtual(), 1UL );
+    uchar * pool_mem = fd_scratch_alloc( fd_vote_authorized_voters_pool_align(), fd_vote_authorized_voters_pool_footprint( 1UL ) );
+    vs->authorized_voters.pool  = fd_vote_authorized_voters_pool_join( fd_vote_authorized_voters_pool_new( pool_mem, 1UL ) );
+    uchar * mem = fd_scratch_alloc( fd_vote_authorized_voters_treap_align(), fd_vote_authorized_voters_treap_footprint( 1UL ) );
+    vs->authorized_voters.treap = fd_vote_authorized_voters_treap_join( fd_vote_authorized_voters_treap_new( mem, 1UL ) );
 
     fd_vote_authorized_voter_t * ele =
       fd_vote_authorized_voters_pool_ele_acquire( vs->authorized_voters.pool );
@@ -151,7 +153,7 @@ genesis_create( void *                       buf,
 
   ulong const stake_account_index = genesis->accounts_len++;
 
-  uchar stake_data[ FD_STAKE_STATE_V2_SZ ];
+  uchar stake_data[ FD_STAKE_STATE_V2_SZ ] = {0};
 
   ulong stake_state_min_bal = fd_rent_exempt_minimum_balance( &genesis->rent, FD_STAKE_STATE_V2_SZ );
   ulong vote_min_bal        = fd_rent_exempt_minimum_balance( &genesis->rent, FD_VOTE_STATE_V3_SZ  );

@@ -6,7 +6,7 @@ struct pubkey_to_idx {
 };
 typedef struct pubkey_to_idx pubkey_to_idx_t;
 
-const fd_pubkey_t null_pubkey = {{ 0 }};
+static const fd_pubkey_t null_pubkey = {{ 0 }};
 
 #define MAP_NAME              pubkey_to_idx
 #define MAP_T                 pubkey_to_idx_t
@@ -220,7 +220,8 @@ sample_unstaked( fd_shred_dest_t * sdest ) {
 }
 
 
-/* Returns 0 on success */
+/* Returns 0 on success
+   https://github.com/anza-xyz/agave/blob/v2.2.1/ledger/src/shred.rs#L293 */
 static inline int
 compute_seeds( fd_shred_dest_t           * sdest,
                fd_shred_t  const * const * input_shreds,
@@ -239,7 +240,7 @@ compute_seeds( fd_shred_dest_t           * sdest,
 
     uchar shred_type = fd_shred_type( shred->variant );
     h_in->slot = slot;
-    h_in->type = fd_uchar_if( (shred_type==FD_SHRED_TYPE_LEGACY_DATA) | (shred_type==FD_SHRED_TYPE_MERKLE_DATA), 0xA5, 0x5A );
+    h_in->type = fd_uchar_if( fd_shred_is_data( shred_type ), 0xA5, 0x5A );
     h_in->idx  = shred->idx;
     memcpy( h_in->leader_pubkey, leader, 32UL );
 
@@ -285,8 +286,8 @@ fd_shred_dest_compute_first( fd_shred_dest_t          * sdest,
   for( ulong i=0UL; i<shred_cnt; i++ ) {
     fd_wsample_seed_rng( fd_wsample_get_rng( sdest->staked ), dest_hash_outputs[ i ] );
     /* Map FD_WSAMPLE_INDETERMINATE to FD_SHRED_DEST_NO_DEST */
-    if( FD_LIKELY( any_staked_candidates ) ) out[i] = (ushort)fd_ulong_min( fd_wsample_sample( sdest->staked ), FD_SHRED_DEST_NO_DEST );
-    else                                     out[i] = (ushort)sample_unstaked_noprepare( sdest, sdest->source_validator_orig_idx );
+    if( FD_LIKELY( any_staked_candidates ) ) out[i] = (fd_shred_dest_idx_t)fd_ulong_min( fd_wsample_sample( sdest->staked ), FD_SHRED_DEST_NO_DEST );
+    else                                     out[i] = (fd_shred_dest_idx_t)sample_unstaked_noprepare( sdest, sdest->source_validator_orig_idx );
   }
   fd_wsample_restore_all( sdest->staked );
 

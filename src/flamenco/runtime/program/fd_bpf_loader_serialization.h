@@ -4,43 +4,29 @@
 #include "../../fd_flamenco_base.h"
 #include "../../vm/fd_vm.h"
 
-#define MAX_PERMITTED_DATA_INCREASE (10240UL)
-#define FD_BPF_ALIGN_OF_U128        (8UL    )
 #define FD_NON_DUP_MARKER           (0xFF   )
 
 FD_PROTOTYPES_BEGIN
 
-uchar *
-fd_bpf_loader_input_serialize_aligned( fd_exec_instr_ctx_t       ctx,
-                                       ulong *                   sz,
-                                       ulong *                   pre_lens,
-                                       fd_vm_input_region_t *    input_mem_regions,            
-                                       uint *                    input_mem_regions_cnt,
-                                       fd_vm_acc_region_meta_t * acc_region_metas,
-                                       int                       copy_account_data );
+int
+fd_bpf_loader_input_serialize_parameters( fd_exec_instr_ctx_t *     instr_ctx,
+                                          ulong *                   sz,
+                                          ulong *                   pre_lens,
+                                          fd_vm_input_region_t *    input_mem_regions,
+                                          uint *                    input_mem_regions_cnt,
+                                          fd_vm_acc_region_meta_t * acc_region_metas,
+                                          int                       direct_mapping,
+                                          int                       mask_out_rent_epoch_in_vm_serialization,
+                                          uchar                     is_deprecated,
+                                          uchar **                  out /* output */ );
 
 int
-fd_bpf_loader_input_deserialize_aligned( fd_exec_instr_ctx_t ctx, 
-                                         ulong const *       pre_lens,
-                                         uchar *             buffer,
-                                         ulong               buffer_sz,
-                                         int                 copy_account_data );
-
-uchar *
-fd_bpf_loader_input_serialize_unaligned( fd_exec_instr_ctx_t       ctx,
-                                         ulong *                   sz, 
-                                         ulong *                   pre_lens,
-                                         fd_vm_input_region_t *    input_mem_regions,            
-                                         uint *                    input_mem_regions_cnt,
-                                         fd_vm_acc_region_meta_t * acc_region_metas,
-                                         int                       copy_account_data );
-
-int
-fd_bpf_loader_input_deserialize_unaligned( fd_exec_instr_ctx_t ctx,
-                                           ulong const *       pre_lens,
-                                           uchar *             input,
-                                           ulong               input_sz,
-                                           int                 copy_account_data );
+fd_bpf_loader_input_deserialize_parameters( fd_exec_instr_ctx_t * ctx,
+                                            ulong const *         pre_lens,
+                                            uchar *               input,
+                                            ulong                 input_sz,
+                                            int                   direct_mapping,
+                                            uchar                 is_deprecated );
 
 
 FD_PROTOTYPES_END

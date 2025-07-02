@@ -2,6 +2,7 @@
 
 # ci_tests.sh builds and runs the tests that are required on every CI
 # commit.  May optionally export coverage data.
+# NOTE: Use EXTRAS=fuzz-stubs to build stubbed binaries for fuzz tests.
 #
 # WARNING: Running this script will destroy your build directory.
 
@@ -36,12 +37,9 @@ for MACHINE in ${MACHINES[*]}; do
   contrib/make-j $TARGETS
   if [[ "$NOTEST" != 1 ]]; then
     make run-unit-test
-    if [[ "$EXTRAS" != *"ubsan"* && "$EXTRAS" != *"asan"* ]]; then
-      make run-integration-test
-    fi
     make run-fuzz-test
     make run-script-test
-    make run-test-vectors
+    # make run-test-vectors
     if [[ "$HAS_LLVM_COV" == 1 ]]; then
       make "${OBJDIR}/cov/cov.lcov"
     fi

@@ -5,6 +5,7 @@
 
 #include "../../fd_flamenco_base.h"
 #include "../context/fd_exec_instr_ctx.h"
+#include "fd_sysvar.h"
 
 /* https://github.com/solana-labs/solana/blob/8f2c8b8388a495d2728909e30460aa40dcc5d733/sdk/program/src/clock.rs#L10 */
 #define FD_SYSVAR_CLOCK_DEFAULT_TICKS_PER_SECOND ( 160UL )
@@ -17,19 +18,35 @@ FD_PROTOTYPES_BEGIN
 /* Initialize the clock sysvar account. */
 
 void
-fd_sysvar_clock_init( fd_exec_slot_ctx_t * slot_ctx );
+fd_sysvar_clock_init( fd_bank_t *     bank,
+                      fd_funk_t *     funk,
+                      fd_funk_txn_t * funk_txn );
 
 /* Update the clock sysvar account.  This should be called at the start
    of every slot, before execution commences. */
 
 int
-fd_sysvar_clock_update( fd_exec_slot_ctx_t * slot_ctx );
+fd_sysvar_clock_update( fd_bank_t *     bank,
+                        fd_funk_t *     funk,
+                        fd_funk_txn_t * funk_txn,
+                        fd_spad_t *     runtime_spad );
 
-/* Reads the current value of the clock sysvar */
+/* Writes the current value of the clock sysvar to funk. */
 
-fd_sol_sysvar_clock_t *
-fd_sysvar_clock_read( fd_sol_sysvar_clock_t *    result,
-                      fd_exec_slot_ctx_t const * slot_ctx );
+void
+fd_sysvar_clock_write( fd_bank_t *             bank,
+                       fd_funk_t *             funk,
+                       fd_funk_txn_t *         funk_txn,
+                       fd_sol_sysvar_clock_t * clock );
+
+/* fd_sysvar_clok_read reads the current value of the rent sysvar from
+   funk. If the account doesn't exist in funk or if the account
+   has zero lamports, this function returns NULL. */
+
+fd_sol_sysvar_clock_t const *
+fd_sysvar_clock_read( fd_funk_t *     funk,
+                      fd_funk_txn_t * funk_txn,
+                      fd_spad_t *     spad );
 
 /* fd_slot_cnt_2day returns the number of slots in two days.
    Used in rent collection. */

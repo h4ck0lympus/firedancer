@@ -2,6 +2,7 @@
 #include "fd_toml.h"
 #include "../../util/fd_util.h"
 #include <ctype.h>
+#include <math.h>
 #include <time.h>
 
 /* Implementation note:
@@ -14,10 +15,6 @@
 
    The indexer into fd_pod blindly inserts using fd_pod_insert, which
    may not be the most efficient allocation strategy. */
-
-/* FD_TOML_PATH_MAX is the max supported pod path length. */
-
-#define FD_TOML_PATH_MAX (512UL)
 
 /* fd_toml_cur_t is a cursor object.  It is safe to copy this object via
    assignment to implement backtracking. */
@@ -36,8 +33,8 @@ typedef struct fd_toml_cur fd_toml_cur_t;
 struct fd_toml_parser {
   fd_toml_cur_t c;
   char const *  data_end;     /* points one past EOF */
-  long          error;        /* hint: fatal pod error occurred */
   uchar *       pod;          /* pod provided by user */
+  int           error;        /* hint: fatal pod error occurred */
 
   /* The current buffered string (either for both keys and values) */
 
@@ -154,7 +151,7 @@ fd_toml_upsert_empty_pod( fd_toml_parser_t * parser ) {
 
 /* fd_toml_avail returns the number of bytes available for parsing. */
 
-FD_FN_PURE static inline ulong
+static inline ulong
 fd_toml_avail( fd_toml_parser_t const * parser ) {
   if( FD_UNLIKELY( parser->c.data > parser->data_end ) ) {
     FD_LOG_CRIT(( "Parse cursor is out of bounds" ));
@@ -319,7 +316,7 @@ fd_toml_parse_escaped( fd_toml_parser_t * parser ) {
     return 1;
   case 'u':
     if( FD_UNLIKELY( fd_toml_avail( parser ) < 4UL ) ) return 0;
-    for( ulong j=0; j<4; j++ ) valid &= ( !!isxdigit( parser->c.data[j] ) );
+    for( ulong j=0; j<4; j++ ) valid &= fd_isxdigit( parser->c.data[j] );
     if( FD_UNLIKELY( !valid ) ) return 0;
     rune  = ( fd_toml_xdigit( parser->c.data[0] )<<12 );
     rune |= ( fd_toml_xdigit( parser->c.data[1] )<< 8 );
@@ -330,7 +327,7 @@ fd_toml_parse_escaped( fd_toml_parser_t * parser ) {
     return 1;
   case 'U':
     if( FD_UNLIKELY( fd_toml_avail( parser ) < 8UL ) ) return 0;
-    for( ulong j=0; j<8; j++ ) valid &= ( !!isxdigit( parser->c.data[j] ) );
+    for( ulong j=0; j<8; j++ ) valid &= fd_isxdigit( parser->c.data[j] );
     if( FD_UNLIKELY( !valid ) ) return 0;
     rune  = ( fd_toml_xdigit( parser->c.data[0] )<<28 );
     rune |= ( fd_toml_xdigit( parser->c.data[1] )<<24 );
@@ -466,7 +463,7 @@ add:
     ulong suffix_len  = (ulong)parser->scratch_cur - (ulong)parser->scratch;
     ulong key_len     = (ulong)old_key_len + suffix_len + 1;
     if( FD_UNLIKELY( key_len > sizeof(parser->key)  ) ) {
-      FD_LOG_WARNING(( "oversz key: \"%.*s%.*s\"",
+      FD_LOG_WARNING(( "TOML parse error: key is too long: \"%.*s%.*s\"",
                       (int)old_key_len, parser->key,
                       (int)suffix_len,  (char *)parser->scratch ));
       parser->error = FD_TOML_ERR_KEY;
@@ -975,8 +972,8 @@ fd_toml_parse_zero_prefixable_int( fd_toml_parser_t * parser,
     if( FD_UNLIKELY( allow_underscore && parser->c.data[0] == '_' ) ) {
       allow_underscore = 0;
       fd_toml_advance_inline( parser, 1UL );
-      if( FD_UNLIKELY( !fd_toml_avail( parser )      ) ) return 0;
-      if( FD_UNLIKELY( !isdigit( parser->c.data[0] ) ) ) return 0;
+      if( FD_UNLIKELY( !fd_toml_avail( parser )         ) ) return 0;
+      if( FD_UNLIKELY( !fd_isdigit( parser->c.data[0] ) ) ) return 0;
     } else {
       int digit = (uchar)parser->c.data[0];
       if( FD_UNLIKELY(
@@ -987,7 +984,7 @@ fd_toml_parse_zero_prefixable_int( fd_toml_parser_t * parser,
       }
       fd_toml_advance_inline( parser, 1UL );
       if( !fd_toml_avail( parser ) ) break;
-      if( !isdigit( parser->c.data[0] ) && parser->c.data[0] != '_' ) break;
+      if( !fd_isdigit( parser->c.data[0] ) && parser->c.data[0] != '_' ) break;
       allow_underscore = 1;
     }
   }
@@ -1045,10 +1042,10 @@ fd_toml_parse_dec_int( fd_toml_parser_t * parser ) {
 
 static int
 fd_toml_parse_hex_int( fd_toml_parser_t * parser ) {
-  if( FD_UNLIKELY( fd_toml_avail( parser ) < 3    ) ) return 0;
-  if( FD_UNLIKELY( parser->c.data[0] != '0'       ) ) return 0;
-  if( FD_UNLIKELY( parser->c.data[1] != 'x'       ) ) return 0;
-  if( FD_UNLIKELY( !isxdigit( parser->c.data[2] ) ) ) return 0;  /* at least one digit */
+  if( FD_UNLIKELY( fd_toml_avail( parser ) < 3       ) ) return 0;
+  if( FD_UNLIKELY( parser->c.data[0] != '0'          ) ) return 0;
+  if( FD_UNLIKELY( parser->c.data[1] != 'x'          ) ) return 0;
+  if( FD_UNLIKELY( !fd_isxdigit( parser->c.data[2] ) ) ) return 0;  /* at least one digit */
   fd_toml_advance_inline( parser, 2UL );
 
   ulong res = 0UL;
@@ -1058,10 +1055,10 @@ fd_toml_parse_hex_int( fd_toml_parser_t * parser ) {
     if( FD_UNLIKELY( allow_underscore && digit == '_' ) ) {
       allow_underscore = 0;
       fd_toml_advance_inline( parser, 1UL );
-      if( FD_UNLIKELY( !fd_toml_avail( parser )       ) ) return 0;
-      if( FD_UNLIKELY( !isxdigit( parser->c.data[0] ) ) ) return 0;
+      if( FD_UNLIKELY( !fd_toml_avail( parser )          ) ) return 0;
+      if( FD_UNLIKELY( !fd_isxdigit( parser->c.data[0] ) ) ) return 0;
     } else {
-      if( !isxdigit( digit ) ) break;
+      if( !fd_isxdigit( digit ) ) break;
       if( FD_UNLIKELY( res>>60 ) ) {
         parser->error = FD_TOML_ERR_RANGE;
         return 0;
@@ -1289,13 +1286,13 @@ fd_float_parse_float_special( fd_toml_parser_t * parser ) {
   fd_toml_advance_inline( parser, 3UL );
 
   if( 0==strncasecmp( str, "inf", 3 ) ) {
-    FD_LOG_WARNING(( "float infinity is unsupported" ));
+    FD_LOG_WARNING(( "TOML parse error: float infinity is unsupported" ));
     parser->error = FD_TOML_ERR_RANGE;
     return 0;
   }
 
   if( 0==strncasecmp( str, "nan", 3 ) ) {
-    FD_LOG_WARNING(( "float NaN is unsupported" ));
+    FD_LOG_WARNING(( "TOML parse error: float NaN is unsupported" ));
     parser->error = FD_TOML_ERR_RANGE;
     return 1;
   }
@@ -1323,16 +1320,16 @@ fd_toml_parse_full_date( fd_toml_parser_t * parser,
                          struct tm *        time ) {
   if( FD_UNLIKELY( fd_toml_avail( parser ) < 10 ) ) return 0;
 
-  if( ( !isdigit( parser->c.data[0] ) )      |
-      ( !isdigit( parser->c.data[1] ) )      |
-      ( !isdigit( parser->c.data[2] ) )      |
-      ( !isdigit( parser->c.data[3] ) )      |
-                ( parser->c.data[4] != '-' ) |
-      ( !isdigit( parser->c.data[5] ) )      |
-      ( !isdigit( parser->c.data[6] ) )      |
-                ( parser->c.data[7] != '-' ) |
-      ( !isdigit( parser->c.data[8] ) ) |
-      ( !isdigit( parser->c.data[9] ) ) ) {
+  if( ( !fd_isdigit( parser->c.data[0] ) )      |
+      ( !fd_isdigit( parser->c.data[1] ) )      |
+      ( !fd_isdigit( parser->c.data[2] ) )      |
+      ( !fd_isdigit( parser->c.data[3] ) )      |
+                   ( parser->c.data[4] != '-' ) |
+      ( !fd_isdigit( parser->c.data[5] ) )      |
+      ( !fd_isdigit( parser->c.data[6] ) )      |
+                   ( parser->c.data[7] != '-' ) |
+      ( !fd_isdigit( parser->c.data[8] ) ) |
+      ( !fd_isdigit( parser->c.data[9] ) ) ) {
     return 0;
   }
 
@@ -1342,7 +1339,7 @@ fd_toml_parse_full_date( fd_toml_parser_t * parser,
   fd_toml_advance_inline( parser, 10UL );
 
   if( FD_UNLIKELY( !strptime( cstr, "%Y-%m-%d", time ) ) ) {
-    FD_LOG_WARNING(( "invalid date format" ));
+    FD_LOG_WARNING(( "TOML parse error: invalid date format" ));
     return 0;
   }
   return 1;
@@ -1366,9 +1363,9 @@ fd_toml_parse_time_delim( fd_toml_parser_t * parser ) {
 static int
 fd_toml_parse_time_secfrac( fd_toml_parser_t * parser,
                             ulong *            pnanos ) {
-  if( fd_toml_avail( parser ) < 2                  ) return 0;
-  if( parser->c.data[0] != '.'                     ) return 0;
-  if( FD_UNLIKELY( !isdigit( parser->c.data[1] ) ) ) return 0;
+  if( fd_toml_avail( parser ) < 2                     ) return 0;
+  if( parser->c.data[0] != '.'                        ) return 0;
+  if( FD_UNLIKELY( !fd_isdigit( parser->c.data[1] ) ) ) return 0;
   fd_toml_advance_inline( parser, 1UL );
 
   ulong secfrac = 0UL;
@@ -1378,9 +1375,9 @@ fd_toml_parse_time_secfrac( fd_toml_parser_t * parser,
     secfrac = secfrac * 10UL + (ulong)( digit - '0' );
     fd_toml_advance_inline( parser, 1UL );
     len++;
-  } while( fd_toml_avail( parser ) && isdigit( parser->c.data[0] ) );
+  } while( fd_toml_avail( parser ) && fd_isdigit( parser->c.data[0] ) );
   if( FD_UNLIKELY( len > 9 ) ) {
-    FD_LOG_WARNING(( "invalid time fraction format" ));
+    FD_LOG_WARNING(( "TOML parse error: invalid time fraction format" ));
     return 0;
   }
 
@@ -1399,14 +1396,14 @@ fd_toml_parse_partial_time( fd_toml_parser_t * parser,
                             ulong *            pnanos ) {
 
   if( FD_UNLIKELY( fd_toml_avail( parser ) < 8 ) ) return 0;
-  if( ( !isdigit( parser->c.data[0] ) )      |
-      ( !isdigit( parser->c.data[1] ) )      |
-                ( parser->c.data[2] != ':' ) |
-      ( !isdigit( parser->c.data[3] ) )      |
-      ( !isdigit( parser->c.data[4] ) )      |
-                ( parser->c.data[5] != ':' ) |
-      ( !isdigit( parser->c.data[6] ) )      |
-      ( !isdigit( parser->c.data[7] ) ) ) {
+  if( ( !fd_isdigit( parser->c.data[0] ) )      |
+      ( !fd_isdigit( parser->c.data[1] ) )      |
+                   ( parser->c.data[2] != ':' ) |
+      ( !fd_isdigit( parser->c.data[3] ) )      |
+      ( !fd_isdigit( parser->c.data[4] ) )      |
+                   ( parser->c.data[5] != ':' ) |
+      ( !fd_isdigit( parser->c.data[6] ) )      |
+      ( !fd_isdigit( parser->c.data[7] ) ) ) {
     return 0;
   }
 
@@ -1417,7 +1414,7 @@ fd_toml_parse_partial_time( fd_toml_parser_t * parser,
 
   struct tm time[1];
   if( FD_UNLIKELY( !strptime( cstr, "%H:%M:%S", time ) ) ) {
-    FD_LOG_WARNING(( "invalid time format" ));
+    FD_LOG_WARNING(( "TOML parse error: invalid time format" ));
     return 0;
   }
 
@@ -1450,12 +1447,12 @@ fd_toml_parse_time_numoffset( fd_toml_parser_t * parser,
   fd_toml_advance_inline( parser, 1UL );
 
   if( FD_UNLIKELY( fd_toml_avail( parser ) < 5   ) ) return 0;
-  if( ( !isdigit( parser->c.data[0] ) ) |
-      ( !isdigit( parser->c.data[1] ) ) |
-                ( parser->c.data[2] != ':' ) |
-      ( !isdigit( parser->c.data[3] ) ) |
-      ( !isdigit( parser->c.data[4] ) ) ) {
-    FD_LOG_WARNING(( "invalid time offset format" ));
+  if( ( !fd_isdigit( parser->c.data[0] ) ) |
+      ( !fd_isdigit( parser->c.data[1] ) ) |
+                   ( parser->c.data[2] != ':' ) |
+      ( !fd_isdigit( parser->c.data[3] ) ) |
+      ( !fd_isdigit( parser->c.data[4] ) ) ) {
+    FD_LOG_WARNING(( "TOML parse error: invalid time offset format" ));
     return 0;
   }
 
@@ -1466,7 +1463,7 @@ fd_toml_parse_time_numoffset( fd_toml_parser_t * parser,
 
   struct tm time;
   if( FD_UNLIKELY( !strptime( cstr, "%H:%M", &time ) ) ) {
-    FD_LOG_WARNING(( "invalid time offset format" ));
+    FD_LOG_WARNING(( "TOML parse error: invalid time offset format" ));
     return 0;
   }
   long abs_sec = (long)time.tm_hour * 3600L + (long)time.tm_min * 60L;
@@ -1574,7 +1571,7 @@ add:
 
 static int
 fd_toml_parse_val( fd_toml_parser_t * parser ) {
-  /* consider consider some lookahead for better performance */
+  /* consider some lookahead for better performance */
   if( SUB_PARSE( fd_toml_parse_string      ( parser ) ) ) return 1;
   if( SUB_PARSE( fd_toml_parse_boolean     ( parser ) ) ) return 1;
   if( SUB_PARSE( fd_toml_parse_array       ( parser ) ) ) return 1;
@@ -1594,7 +1591,7 @@ fd_toml_parse_keyval( fd_toml_parser_t * parser ) {
   if( FD_UNLIKELY( !SUB_PARSE( fd_toml_parse_key( parser ) ) ) ) return 0;
 
   if( FD_UNLIKELY( fd_pod_query( parser->pod, parser->key, NULL )==FD_POD_SUCCESS ) ) {
-    FD_LOG_WARNING(( "Duplicate key: \"%s\"", parser->key ));
+    FD_LOG_WARNING(( "TOML parse error: duplicate key: \"%s\"", parser->key ));
     parser->error = FD_TOML_ERR_DUP;
     return 0;
   }
@@ -1626,7 +1623,7 @@ fd_toml_parse_std_table( fd_toml_parser_t * parser ) {
   //  parser->error = FD_TOML_ERR_DUP;
   //  return 0;
   //}
-  FD_LOG_DEBUG(( "Added table %.*s", parser->key_len, parser->key ));
+  FD_LOG_DEBUG(( "Added table %.*s", (int)parser->key_len, parser->key ));
 
   fd_toml_parse_ws( parser );
   EXPECT_CHAR( ']' );
@@ -1673,7 +1670,7 @@ fd_toml_parse_array_table( fd_toml_parser_t * parser ) {
   fd_cstr_fini( key_c );
   parser->key_len = (uint)( key_c - parser->key );
 
-  FD_LOG_DEBUG(( "Added array table %.*s", parser->key_len, parser->key ));
+  FD_LOG_DEBUG(( "Added array table %.*s", (int)parser->key_len, parser->key ));
 
   /* Continue parsing */
 
@@ -1743,12 +1740,17 @@ fd_toml_parse_toml( fd_toml_parser_t * parser ) {
   return 1;
 }
 
-long
-fd_toml_parse( void const * toml,
-               ulong        toml_sz,
-               uchar *      pod,
-               uchar *      scratch,
-               ulong        scratch_sz ) {
+int
+fd_toml_parse( void const *         toml,
+               ulong                toml_sz,
+               uchar *              pod,
+               uchar *              scratch,
+               ulong                scratch_sz,
+               fd_toml_err_info_t * opt_err ) {
+
+  static fd_toml_err_info_t _dummy_err[1];
+  if( !opt_err ) opt_err = _dummy_err;
+  opt_err->line = 0UL;
 
   if( FD_UNLIKELY( !toml_sz    ) ) return FD_TOML_SUCCESS;
   if( FD_UNLIKELY( !scratch_sz ) ) {
@@ -1769,10 +1771,25 @@ fd_toml_parse( void const * toml,
   }};
 
   int ok = fd_toml_parse_toml( parser );
+  opt_err->line = parser->c.lineno;
+
   if( FD_UNLIKELY( (!ok) | (fd_toml_avail( parser ) > 0) ) ) {
-    /* Parse failed */
-    return fd_long_if( !!parser->error, parser->error, fd_long_max( 1L, (long)parser->c.lineno ) );
+    return fd_int_if( !!parser->error, parser->error, FD_TOML_ERR_PARSE );
   }
 
   return FD_TOML_SUCCESS;
+}
+
+FD_FN_CONST char const *
+fd_toml_strerror( int err ) {
+  switch( err ) {
+  case FD_TOML_SUCCESS:     return "success";
+  case FD_TOML_ERR_POD:     return "out of memory in output pod";
+  case FD_TOML_ERR_SCRATCH: return "out of memory in scratch region";
+  case FD_TOML_ERR_KEY:     return "oversize key";
+  case FD_TOML_ERR_DUP:     return "duplicate key";
+  case FD_TOML_ERR_RANGE:   return "integer overflow";
+  case FD_TOML_ERR_PARSE:   return "parse failure";
+  default:                  return "unknown error";
+  }
 }

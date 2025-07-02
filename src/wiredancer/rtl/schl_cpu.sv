@@ -11,7 +11,7 @@ built around a fixed 256-bit pipeline ALU that schedules the needed runtime
 math operations based on a generated fixed instruction stream. The implementation
 being generic allowed for a hardware-software codesign process where, combined
 with the Python reference implementation that you will find in sw/py/*, gave us
-the oppurtunity to optimize the architecture to balance the hardware footprint, 
+the opportunity to optimize the architecture to balance the hardware footprint, 
 mathematical complexity and runtime latency/throughput over the course of our 
 development (ending up with a very simple and efficient end result design)
 
@@ -489,7 +489,7 @@ module shcl_cpu
      In the "next instruction" logic here we create fairness across tags by having 
      the two read ports in the instruciton ROM split between from upper/lower
      tags and allowing for "lower" reads to select "upper" values to read if they are
-     idle (and vice-versa). While still having implicit priority to the the lsb tags 
+     idle (and vice-versa). While still having implicit priority to the lsb tags 
      within $next_instr_req, this logic provides sufficient access bandwidth to not
      lead to any blocking with our final configuration
 
@@ -604,7 +604,7 @@ module shcl_cpu
     end
   end
 
-  // Scratch Memory write logic (assume simple dual port memory with seperate read/write)
+  // Scratch Memory write logic (assume simple dual port memory with separate read/write)
   always_ff @(posedge clk) begin
     if (rst) begin
       init_done      <= '0;
@@ -616,7 +616,7 @@ module shcl_cpu
       mem_d_wr_en    <= '0; 
     end
     else begin
-      if (curr_state[0] == ST_INIT) begin // Write in constants (intialization only happens at startup)
+      if (curr_state[0] == ST_INIT) begin // Write in constants (initialization only happens at startup)
         init_done <= (init_addr == NUM_CONSTS && next_instr_ready == '1); // Consts written into memory and initial instr read for all tags
       
         if( init_addr < NUM_CONSTS) begin

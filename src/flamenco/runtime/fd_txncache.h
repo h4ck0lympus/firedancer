@@ -1,6 +1,10 @@
 #ifndef HEADER_fd_src_flamenco_runtime_txncache_h
 #define HEADER_fd_src_flamenco_runtime_txncache_h
 
+#include "../fd_flamenco_base.h"
+#include "../types/fd_types.h"
+#include <math.h>
+
 /* A txn cache is a concurrent map for saving the result (status) of
    transactions that have executed.  In addition to supporting fast
    concurrent insertion and query of transaction results, the txn
@@ -182,9 +186,9 @@
 #define FD_TXNCACHE_DEFAULT_MAX_LIVE_SLOTS (2048UL)
 
 /* The Solana consensus protocol has an implied restriction on the number
-   transactions in a slot.  A slot might have at most 48,000,000 CUs,
+   transactions in a slot.  A slot might have 50,000,000+ CUs,
    but a transaction requires at least around 1500 CUs, so there could
-   be at most 32,000 transactions in a slot.
+   be at most 33,333 transactions in a slot.
 
    For Firedancer, we respect this limit when running in production, but
    for development and preformance tuning this limit is removed, and
@@ -393,6 +397,16 @@ fd_txncache_set_txnhash_offset( fd_txncache_t * tc,
 int
 fd_txncache_is_rooted_slot( fd_txncache_t * tc,
                             ulong slot );
+
+/* fd_txncache_get_entries is responsible for converting the rooted state of
+   the status cache back into fd_bank_slot_deltas_t, which is the decoded
+   format used by Agave. This is a helper method used to generate Agave-
+   compatible snapshots. */
+
+int
+fd_txncache_get_entries( fd_txncache_t *         tc,
+                         fd_bank_slot_deltas_t * bank_slot_deltas,
+                         fd_spad_t *             spad );
 
 FD_PROTOTYPES_END
 

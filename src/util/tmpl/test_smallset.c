@@ -1,4 +1,9 @@
 #include "../fd_util.h"
+#if FD_HAS_HOSTED
+#include <sys/types.h>
+#include <sys/wait.h>
+#include <unistd.h>
+#endif
 
 #define MAX   63
 #define IDX_T int
@@ -13,6 +18,8 @@ int
 main( int     argc,
       char ** argv ) {
   fd_boot( &argc, &argv );
+
+  fd_rng_t _rng[1]; fd_rng_t * rng = fd_rng_join( fd_rng_new( _rng, 0U, 0UL ) );
 
   IDX_T max = set_max(); FD_TEST( max==(IDX_T)MAX );
 
@@ -254,8 +261,57 @@ main( int     argc,
     f0 = set_insert( f0, idx ); f1 = set_union   ( f1, e );
   }
 
+  set_t z = set_null();
+
+  for( IDX_T l=(IDX_T)0; l<=max; l++ ) {
+    for( IDX_T h=l; h<=max; h++ ) {
+      set_t r = z; for( IDX_T i=l; i<h;   i++ ) r = set_insert( r, i );
+      set_t t = z; for( IDX_T i=0; i<max; i++ ) t = set_insert_if( fd_rng_uint( rng ) & 1U, t, i );
+      set_t x = set_union    ( t, r );
+      set_t y = set_intersect( t, r );
+      set_t w = set_subtract ( t, r );
+
+      FD_TEST( set_eq( set_range( l, h ), r ) );
+
+      FD_TEST( set_eq( set_insert_range( t, l, h ), x ) );
+      FD_TEST( set_eq( set_select_range( t, l, h ), y ) );
+      FD_TEST( set_eq( set_remove_range( t, l, h ), w ) );
+
+      FD_TEST( set_range_cnt( t, l, h )==set_cnt( y ) );
+    }
+  }
+
+#if FD_HAS_HOSTED && FD_TMPL_USE_HANDHOLDING
+#define FD_EXPECT_LOG_CRIT( CALL ) do {                            \
+    FD_LOG_DEBUG(( "Testing that "#CALL" triggers FD_LOG_CRIT" )); \
+    pid_t pid = fork();                                            \
+    FD_TEST( pid >= 0 );                                           \
+    if( pid == 0 ) {                                               \
+      fd_log_level_logfile_set( 6 );                               \
+      __typeof__(CALL) res = (CALL);                               \
+      __asm__("" : "+r"(res));                                     \
+      _exit( 0 );                                                  \
+    }                                                              \
+    int status = 0;                                                \
+    wait( &status );                                               \
+                                                                   \
+    FD_TEST( WIFSIGNALED(status) && WTERMSIG(status)==6 );         \
+    } while( 0 )
+
+  FD_EXPECT_LOG_CRIT( set_ele      (        MAX ) );
+  FD_EXPECT_LOG_CRIT( set_ele_if   ( 1,     MAX ) );
+  FD_EXPECT_LOG_CRIT( set_test     (    f1, MAX ) );
+  FD_EXPECT_LOG_CRIT( set_insert_if( 1, f1, MAX ) );
+  FD_EXPECT_LOG_CRIT( set_remove_if( 1, f1, MAX ) );
+
+#else
+  FD_LOG_WARNING(( "skip: testing handholding, requires hosted" ));
+#endif
+
   FD_TEST( set_is_null( n0 ) ); FD_TEST( set_is_null( n1 ) );
   FD_TEST( set_is_full( f0 ) ); FD_TEST( set_is_full( f1 ) );
+
+  fd_rng_delete( fd_rng_leave( rng ) );
 
   FD_LOG_NOTICE(( "pass" ));
   fd_halt();

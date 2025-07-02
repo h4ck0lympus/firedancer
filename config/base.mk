@@ -2,14 +2,16 @@ BASEDIR?=build
 
 OPT?=opt
 SHELL:=bash
-CPPFLAGS:=-isystem ./$(OPT)/include -DFD_LOG_UNCLEAN_EXIT=1 -DFD_HAS_BACKTRACE=0
+CPPFLAGS:=-isystem ./$(OPT)/include -DFD_HAS_BACKTRACE=0
 RUSTFLAGS:=-C force-frame-pointers=yes
 CC:=gcc
-CFLAGS=-std=c17
+CFLAGS=-std=c17 -fwrapv
 CXX:=g++
 CXXFLAGS=-std=c++17
 LD:=g++
 LDFLAGS:=-lm -ldl -L./$(OPT)/lib
+LDFLAGS_EXE:=
+LDFLAGS_SO:=-shared
 AR:=ar
 ARFLAGS:=rv
 RANLIB:=ranlib
@@ -43,3 +45,6 @@ FUZZFLAGS:=-max_total_time=600 -timeout=10 -runs=10
 # Obtain compiler version so that decisions can be made on disabling/enabling
 # certain flags
 CC_MAJOR_VERSION=$(shell $(CC) -dumpversion | cut -f1 -d.)
+
+# Default _FORTIFY_SOURCE level
+FORTIFY_SOURCE?=2

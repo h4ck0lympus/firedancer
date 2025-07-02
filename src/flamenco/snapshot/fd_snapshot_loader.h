@@ -12,22 +12,18 @@
    The loader is currently a single-threaded streaming pipeline.  This
    is subject to change to the tile architecture in the future. */
 
-#include "../snapshot/fd_snapshot.h"
-#include "../snapshot/fd_snapshot_restore.h"
+#include "fd_snapshot.h"
+#include "fd_snapshot_istream.h"
+#include "fd_snapshot_restore.h"
+
+/* fd_snapshot_src_t specifies the snapshot source. */
+
+FD_PROTOTYPES_BEGIN
 
 /* fd_snapshot_loader_t manages file descriptors and buffers used during
    snapshot load. */
-
 struct fd_snapshot_loader;
 typedef struct fd_snapshot_loader fd_snapshot_loader_t;
-
-/* FD_SNAPSHOT_SRC_{...} specifies the type of snapshot source. */
-
-#define FD_SNAPSHOT_SRC_FILE    (1)
-#define FD_SNAPSHOT_SRC_HTTP    (2)
-#define FD_SNAPSHOT_SRC_ARCHIVE (3)
-
-/* fd_snapshot_src_t specifies the snapshot source. */
 
 struct fd_snapshot_src {
   int type;
@@ -46,11 +42,10 @@ struct fd_snapshot_src {
     } http;
 
   };
+  char const * snapshot_dir;
 };
 
 typedef struct fd_snapshot_src fd_snapshot_src_t;
-
-FD_PROTOTYPES_BEGIN
 
 /* Constructor API for fd_snapshot_loader_t. */
 
@@ -77,7 +72,8 @@ fd_snapshot_loader_t *
 fd_snapshot_loader_init( fd_snapshot_loader_t *    loader,
                          fd_snapshot_restore_t *   restore,
                          fd_snapshot_src_t const * src,
-                         ulong                     base_slot );
+                         ulong                     base_slot,
+                         int                       validate_slot );
 
 /* fd_snapshot_loader_advance polls the tar reader for data.  This data
    is synchronously passed down the pipeline (ending in a manifest
@@ -92,12 +88,21 @@ fd_snapshot_loader_advance( fd_snapshot_loader_t * loader );
 FD_FN_CONST fd_snapshot_name_t const *  /* nullable */
 fd_snapshot_loader_get_name( fd_snapshot_loader_t const * loader );
 
-/* fd_snapshot_src_parse determines the snapshot source from the given
-   cstr. */
-
 fd_snapshot_src_t *
 fd_snapshot_src_parse( fd_snapshot_src_t * src,
-                       char *              cstr );
+                       char *              cstr,
+                       int                 src_type );
+
+/* fd_snapshot_src_parse_type_unknown determines the source from the
+   given cstr.
+
+   Should only be used for testing and dev.  Production validators
+   explicitly set the snapshot src type in the config file.
+ */
+
+fd_snapshot_src_t *
+fd_snapshot_src_parse_type_unknown( fd_snapshot_src_t * src,
+                                    char *              cstr );
 
 FD_PROTOTYPES_END
 

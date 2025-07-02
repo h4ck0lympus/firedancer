@@ -44,27 +44,19 @@ void * fd_stake_ci_delete( void          * mem  ) { return mem;          }
 
 
 void
-fd_stake_ci_stake_msg_init( fd_stake_ci_t * info,
-                            uchar const   * new_message ) {
-  ulong const * hdr = fd_type_pun_const( new_message );
-
-  ulong epoch               = hdr[ 0 ];
-  ulong staked_cnt          = hdr[ 1 ];
-  ulong start_slot          = hdr[ 2 ];
-  ulong slot_cnt            = hdr[ 3 ];
-  ulong excluded_stake      = hdr[ 4 ];
-
-  if( FD_UNLIKELY( staked_cnt > MAX_SHRED_DESTS ) )
+fd_stake_ci_stake_msg_init( fd_stake_ci_t               * info,
+                            fd_stake_weight_msg_t const * msg ) {
+  if( FD_UNLIKELY( msg->staked_cnt > MAX_SHRED_DESTS ) )
     FD_LOG_ERR(( "The stakes -> Firedancer splice sent a malformed update with %lu stakes in it,"
-                 " but the maximum allowed is %lu", staked_cnt, MAX_SHRED_DESTS ));
+                 " but the maximum allowed is %lu", msg->staked_cnt, MAX_SHRED_DESTS ));
 
-  info->scratch->epoch          = epoch;
-  info->scratch->start_slot     = start_slot;
-  info->scratch->slot_cnt       = slot_cnt;
-  info->scratch->staked_cnt     = staked_cnt;
-  info->scratch->excluded_stake = excluded_stake;
+  info->scratch->epoch          = msg->epoch;
+  info->scratch->start_slot     = msg->start_slot;
+  info->scratch->slot_cnt       = msg->slot_cnt;
+  info->scratch->staked_cnt     = msg->staked_cnt;
+  info->scratch->excluded_stake = msg->excluded_stake;
 
-  fd_memcpy( info->stake_weight, hdr+5UL, sizeof(fd_stake_weight_t)*staked_cnt );
+  fd_memcpy( info->stake_weight, msg->weights, msg->staked_cnt*sizeof(fd_stake_weight_t) );
 }
 
 static inline void
@@ -211,7 +203,6 @@ fd_stake_ci_dest_add_fini_impl( fd_stake_ci_t       * info,
     if( FD_LIKELY( idx!=FD_SHRED_DEST_NO_DEST ) ) {
       dest->ip4  = info->shred_dest[ i ].ip4;
       dest->port = info->shred_dest[ i ].port;
-      memcpy( dest->mac_addr, info->shred_dest[ i ].mac_addr, 6UL );
     }
 
     any_new_unstaked   |= (idx==FD_SHRED_DEST_NO_DEST);
@@ -261,11 +252,20 @@ fd_stake_ci_dest_add_fini_impl( fd_stake_ci_t       * info,
 void
 fd_stake_ci_dest_add_fini( fd_stake_ci_t * info,
                            ulong           cnt ) {
-  /* The Rust side uses tvu_peers which excludes the local validator.
-     Add the local validator back. */
+  /* The Rust side uses tvu_peers which typically excludes the local
+     validator.  In some cases, after a set-identity, it might still
+     include the local validator though.  If it doesn't include it, we
+     need to add the local validator back. */
   FD_TEST( cnt<MAX_SHRED_DESTS );
-  fd_shred_dest_weighted_t self_dests[ 1 ] = {{ .pubkey = info->identity_key[ 0 ], .ip4 = SELF_DUMMY_IP }};
-  info->shred_dest[ cnt++ ] = self_dests[ 0 ];
+  ulong i=0UL;
+  for(; i<cnt; i++ ) if( FD_UNLIKELY( 0==memcmp( info->shred_dest[ i ].pubkey.uc, info->identity_key, 32UL ) ) ) break;
+
+  if( FD_LIKELY( i==cnt ) ) {
+    fd_shred_dest_weighted_t self_dests = { .pubkey = info->identity_key[ 0 ], .ip4 = SELF_DUMMY_IP };
+    info->shred_dest[ cnt++ ] = self_dests;
+  } else {
+    info->shred_dest[ i ].ip4 = SELF_DUMMY_IP;
+  }
 
   /* Update both of them */
   fd_stake_ci_dest_add_fini_impl( info, cnt, info->epoch_info + 0UL );
@@ -283,6 +283,60 @@ fd_stake_ci_get_idx_for_slot( fd_stake_ci_t const * info,
   ulong idx = ULONG_MAX;
   for( ulong i=0UL; i<2UL; i++ ) idx = fd_ulong_if( (ei[i].start_slot<=slot) & (slot-ei[i].start_slot<ei[i].slot_cnt), i, idx );
   return idx;
+}
+
+
+void
+fd_stake_ci_set_identity( fd_stake_ci_t *     info,
+                          fd_pubkey_t const * identity_key ) {
+  /* None of the stakes are changing, so we just need to regenerate the
+     sdests, sightly adjusting the destination IP addresses.  The only
+     corner case is if the new identity is not present. */
+  for( ulong i=0UL; i<2UL; i++ ) {
+    fd_per_epoch_info_t * ei = info->epoch_info+i;
+
+    fd_shred_dest_idx_t old_idx = fd_shred_dest_pubkey_to_idx( ei->sdest, info->identity_key );
+    fd_shred_dest_idx_t new_idx = fd_shred_dest_pubkey_to_idx( ei->sdest, identity_key       );
+
+    FD_TEST( old_idx!=FD_SHRED_DEST_NO_DEST );
+
+    if( FD_LIKELY( new_idx!=FD_SHRED_DEST_NO_DEST ) ) {
+      fd_shred_dest_idx_to_dest( ei->sdest, old_idx )->ip4 = 0U;
+      fd_shred_dest_idx_to_dest( ei->sdest, new_idx )->ip4 = SELF_DUMMY_IP;
+
+      fd_shred_dest_update_source( ei->sdest, new_idx );
+    } else {
+      ulong staked_cnt   = fd_shred_dest_cnt_staked  ( ei->sdest );
+      ulong unstaked_cnt = fd_shred_dest_cnt_unstaked( ei->sdest );
+      if( FD_UNLIKELY( staked_cnt+unstaked_cnt==MAX_SHRED_DESTS ) ) {
+        FD_LOG_ERR(( "too many validators in shred table to add a new validator with set-identity" ));
+      }
+      /* We'll add identity_key as a new unstaked validator.  First copy
+         all the staked ones, then place the new validator in the spot
+         where it belongs according to lexicographic order. */
+      ulong j=0UL;
+      for(; j<staked_cnt; j++ ) info->shred_dest_temp[ j ] = *fd_shred_dest_idx_to_dest( ei->sdest, (fd_shred_dest_idx_t)j );
+      for(; j<staked_cnt+unstaked_cnt; j++ ) {
+        fd_shred_dest_weighted_t * wj = fd_shred_dest_idx_to_dest( ei->sdest, (fd_shred_dest_idx_t)j );
+        if( FD_UNLIKELY( (memcmp( wj->pubkey.uc, identity_key->uc, 32UL )>=0) ) ) break;
+        info->shred_dest_temp[ j ] = *wj;
+      }
+
+      info->shred_dest_temp[ j ].pubkey         = *identity_key;
+      info->shred_dest_temp[ j ].stake_lamports = 0UL;
+      info->shred_dest_temp[ j ].ip4            = SELF_DUMMY_IP;
+
+      for(; j<staked_cnt+unstaked_cnt; j++ ) info->shred_dest_temp[ j+1UL ] = *fd_shred_dest_idx_to_dest( ei->sdest, (fd_shred_dest_idx_t)j );
+
+      fd_shred_dest_delete( fd_shred_dest_leave( ei->sdest ) );
+
+      ei->sdest  = fd_shred_dest_join( fd_shred_dest_new( ei->_sdest, info->shred_dest_temp, j+1UL, ei->lsched, identity_key,
+                                                          ei->excluded_stake ) );
+      FD_TEST( ei->sdest );
+    }
+
+  }
+  *info->identity_key = *identity_key;
 }
 
 

@@ -54,10 +54,13 @@ repair_from_sockaddr( fd_repair_peer_addr_t * dst, uchar const * src ) {
   return 0;
 }
 
-static void
-send_packet( uchar const * data, size_t sz, fd_repair_peer_addr_t const * addr, void * arg ) {
+static void FD_FN_UNUSED
+send_packet( uchar const * data,
+             size_t        sz,
+             fd_repair_peer_addr_t const * addr,
+             uint          src_ip4_addr FD_PARAM_UNUSED,
+             void *        arg FD_PARAM_UNUSED ) {
   // FD_LOG_HEXDUMP_NOTICE(("send: ", data, sz));
-  (void)arg;
   uchar saddr[sizeof(struct sockaddr_in)];
   int saddrlen = repair_to_sockaddr(saddr, addr);
   if ( sendto(sockfd, data, sz, MSG_DONTWAIT,
@@ -65,6 +68,94 @@ send_packet( uchar const * data, size_t sz, fd_repair_peer_addr_t const * addr, 
     FD_LOG_WARNING(("sendto failed: %s", strerror(errno)));
   }
 }
+
+static void
+recv_shred(fd_shred_t const * shred, ulong shred_sz, fd_gossip_peer_addr_t const * from, fd_pubkey_t const * id, void * arg) {
+  (void)from;
+  (void)id;
+  (void)arg;
+  FD_LOG_NOTICE(( "shred variant=0x%02x sz=%lu slot=%lu idx=%u header_sz=0x%lx merkle_sz=0x%lx payload_sz=0x%lx",
+                  (uint)shred->variant, shred_sz, shred->slot, shred->idx, fd_shred_header_sz(shred->variant),
+                  fd_shred_merkle_sz(shred->variant), fd_shred_payload_sz(shred) ));
+}
+
+static void FD_FN_UNUSED
+deliver_fail_fun( fd_pubkey_t const * id,
+                         ulong               slot,
+                         uint                shred_index,
+                         void *              arg,
+                         int                 reason ) {
+  (void)arg;
+  FD_LOG_WARNING(( "repair_deliver_fail_fun - shred: %s, slot: %lu, idx: %u, reason: %d",
+                    FD_BASE58_ENC_32_ALLOCA( id ),
+                    slot,
+                    shred_index,
+                    reason ));
+}
+
+/* NOTE: since the removal of callbacks from repair_tile, this is now a similar but different
+   version of fd_repair_recv_clnt_packet in fd_repair_tile.c */
+/* Pass a raw client response packet into the protocol. addr is the address of the sender */
+int
+fd_repair_recv_clnt_packet( fd_repair_t *                 glob,
+                            uchar const *                 msg,
+                            ulong                         msglen,
+                            fd_repair_peer_addr_t const * src_addr,
+                            uint                          dst_ip4_addr FD_PARAM_UNUSED) {
+  glob->metrics.recv_clnt_pkt++;
+
+  FD_SCRATCH_SCOPE_BEGIN {
+    while( 1 ) {
+      ulong decoded_sz;
+      fd_repair_response_t * gmsg = fd_bincode_decode1_scratch(
+          repair_response, msg, msglen, NULL, &decoded_sz );
+      if( FD_UNLIKELY( !gmsg ) ) {
+        /* Solana falls back to assuming we got a shred in this case
+           https://github.com/solana-labs/solana/blob/master/core/src/repair/serve_repair.rs#L1198 */
+        break;
+      }
+      if( FD_UNLIKELY( decoded_sz != msglen ) ) {
+        break;
+      }
+
+      switch( gmsg->discriminant ) {
+      case fd_repair_response_enum_ping:
+        /* TODO: make sure to add back handle_ping from repair tile in order to use */
+        //fd_repair_handle_ping( glob, &gmsg->inner.ping, src_addr, dst_ip4_addr );
+        break;
+      }
+
+      return 0;
+    }
+
+    /* Look at the nonse */
+    if( msglen < sizeof(fd_repair_nonce_t) ) {
+      return 0;
+    }
+    ulong shredlen = msglen - sizeof(fd_repair_nonce_t); /* Nonce is at the end */
+    fd_repair_nonce_t key = *(fd_repair_nonce_t const *)(msg + shredlen);
+    fd_needed_elem_t * val = fd_needed_table_query( glob->needed, &key, NULL );
+    if( NULL == val ) {
+      return 0;
+    }
+
+    fd_active_elem_t * active = fd_active_table_query( glob->actives, &val->id, NULL );
+    if( NULL != active ) {
+      /* Update statistics */
+      active->avg_reps++;
+      active->avg_lat += glob->now - val->when;
+    }
+
+    fd_shred_t const * shred = fd_shred_parse(msg, shredlen);
+    if( shred == NULL ) {
+      FD_LOG_WARNING(("invalid shread"));
+    } else {
+      recv_shred(shred, shredlen, src_addr, &val->id, glob->fun_arg);
+    }
+  } FD_SCRATCH_SCOPE_END;
+  return 0;
+}
+
 
 /* Convert a host:port string to a repair network address. If host is
  * missing, it assumes the local hostname. */
@@ -108,6 +199,7 @@ resolve_hostport(const char* str /* host:port */, fd_repair_peer_addr_t * res) {
   return res;
 }
 
+
 static int
 main_loop( int * argc, char *** argv, fd_repair_t * glob, fd_repair_config_t * config, volatile int * stopflag ) {
   int fd;
@@ -145,7 +237,6 @@ main_loop( int * argc, char *** argv, fd_repair_t * glob, fd_repair_config_t * c
   if ( fd_repair_add_active_peer(glob, resolve_hostport(addr_cstr, &peeraddr), &id) )
     return -1;
   fd_repair_add_sticky(glob, &id);
-  fd_repair_set_permanent(glob, &id);
 
   char const * slot_cstr = fd_env_strip_cmdline_cstr ( argc, argv, "--slot", NULL, NULL );
   if ( slot_cstr == NULL )
@@ -221,7 +312,7 @@ main_loop( int * argc, char *** argv, fd_repair_t * glob, fd_repair_config_t * c
       fd_repair_peer_addr_t from;
       repair_from_sockaddr( &from, msgs[i].msg_hdr.msg_name );
       FD_LOG_HEXDUMP_NOTICE(("recv: ", bufs[i], (ulong)msgs[i].msg_len));
-      fd_repair_recv_clnt_packet(glob, bufs[i], (ulong)msgs[i].msg_len, &from);
+      fd_repair_recv_clnt_packet( glob, bufs[i], (ulong)msgs[i].msg_len, &from, 0 );
     }
   }
 
@@ -230,30 +321,6 @@ main_loop( int * argc, char *** argv, fd_repair_t * glob, fd_repair_config_t * c
 
   close(fd);
   return 0;
-}
-
-static void
-recv_shred(fd_shred_t const * shred, ulong shred_sz, fd_gossip_peer_addr_t const * from, fd_pubkey_t const * id, void * arg) {
-  (void)from;
-  (void)id;
-  (void)arg;
-  FD_LOG_NOTICE(( "shred variant=0x%02x sz=%lu slot=%lu idx=%u header_sz=0x%lx merkle_sz=0x%lx payload_sz=0x%lx",
-                  (uint)shred->variant, shred_sz, shred->slot, shred->idx, fd_shred_header_sz(shred->variant),
-                  fd_shred_merkle_sz(shred->variant), fd_shred_payload_sz(shred) ));
-}
-
-static void
-deliver_fail_fun( fd_pubkey_t const * id,
-                         ulong               slot,
-                         uint                shred_index,
-                         void *              arg,
-                         int                 reason ) {
-  (void)arg;
-  FD_LOG_WARNING(( "repair_deliver_fail_fun - shred: %s, slot: %lu, idx: %u, reason: %d",
-                    FD_BASE58_ENC_32_ALLOCA( id ),
-                    slot,
-                    shred_index,
-                    reason ));
 }
 
 int main(int argc, char **argv) {
@@ -279,10 +346,6 @@ int main(int argc, char **argv) {
 
   char const * my_addr = fd_env_strip_cmdline_cstr ( &argc, &argv, "--my_addr", NULL, ":1125");
   FD_TEST( resolve_hostport(my_addr, &config.intake_addr) );
-
-  config.deliver_fun = recv_shred;
-  config.clnt_send_fun = send_packet;
-  config.deliver_fail_fun = deliver_fail_fun;
 
   ulong seed = fd_hash(0, hostname, strnlen(hostname, sizeof(hostname)));
 

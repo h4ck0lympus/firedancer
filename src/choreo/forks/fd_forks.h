@@ -1,11 +1,11 @@
 #ifndef HEADER_fd_src_choreo_forks_fd_forks_h
 #define HEADER_fd_src_choreo_forks_fd_forks_h
 
-#include "../../flamenco/runtime/context/fd_exec_epoch_ctx.h"
 #include "../../flamenco/runtime/context/fd_exec_slot_ctx.h"
 #include "../../flamenco/runtime/fd_blockstore.h"
 #include "../fd_choreo_base.h"
 #include "../ghost/fd_ghost.h"
+#include "../voter/fd_voter.h"
 
 /* FD_FORKS_USE_HANDHOLDING:  Define this to non-zero at compile time
    to turn on additional runtime checks and logging. */
@@ -24,7 +24,7 @@ struct fd_fork {
                  be read or written to by downstream consumers (eg.
                  consensus, publishing) and should definitely not be
                  removed. */
-  fd_exec_slot_ctx_t slot_ctx;
+  uint  end_idx; /* the end_idx of the last batch executed on this fork */
 };
 
 typedef struct fd_fork fd_fork_t;
@@ -38,9 +38,31 @@ typedef struct fd_fork fd_fork_t;
 #define MAP_KEY   slot
 #include "../../util/tmpl/fd_map_chain.c"
 
+/* fd_forks maintains all the outstanding fork heads known as the
+   frontier.  The memory required for these fork heads is pre-allocated
+   in `pool`.
+
+   {processed, confirmed, finalized} correspond to the highest slots
+   that have achieved each of these cluster commitment levels. This is
+   based on what Firedancer has locally observed, so these values are
+   not atomically synchronized with other nodes in the cluster (ie.
+   other nodes may report higher or lower slot numbers for each of
+   these) but are "eventually consistent" as long as Firedancer is
+   connected to the cluster and replaying blocks. All three values are
+   strictly monotonically increasing.
+
+   processed - a slot has been replayed.
+   confirmed - a slot has been "optimistically confirmed" ie. 2/3 of
+               stake has voted for it.
+   finalized - a slot has been "supermajority rooted" ie. 2/3 of stake
+               has rooted it or any of its descendants. */
+
 struct fd_forks {
-  fd_fork_frontier_t * frontier; /* the fork heads, map of slot->fd_fork_t */
+  fd_fork_frontier_t * frontier; /* map of slot->fd_fork_t */
   fd_fork_t *          pool;     /* memory pool of fd_fork_t */
+  ulong                processed;
+  ulong                confirmed;
+  ulong                finalized;
 };
 typedef struct fd_forks fd_forks_t;
 
@@ -56,14 +78,14 @@ fd_forks_align( void ) {
 FD_FN_CONST static inline ulong
 fd_forks_footprint( ulong max ) {
   return FD_LAYOUT_FINI(
-      FD_LAYOUT_APPEND( FD_LAYOUT_APPEND( FD_LAYOUT_APPEND( FD_LAYOUT_INIT,
-                                                            alignof( fd_forks_t ),
-                                                            sizeof( fd_forks_t ) ),
-                                          fd_fork_pool_align(),
-                                          fd_fork_pool_footprint( max ) ),
-                        fd_fork_frontier_align(),
-                        fd_fork_frontier_footprint( max ) ),
-      alignof( fd_forks_t ) );
+    FD_LAYOUT_APPEND(
+    FD_LAYOUT_APPEND(
+    FD_LAYOUT_APPEND(
+    FD_LAYOUT_INIT,
+      alignof(fd_forks_t),      sizeof(fd_forks_t) ),
+      fd_fork_pool_align(),     fd_fork_pool_footprint( max ) ),
+      fd_fork_frontier_align(), fd_fork_frontier_footprint( max ) ),
+    alignof(fd_forks_t) );
 }
 
 /* fd_forks_new formats an unused memory region for use as a forks.  mem
@@ -99,18 +121,14 @@ void *
 fd_forks_delete( void * forks );
 
 /* fd_forks_init initializes forks.  Assumes forks is a valid local join
-   and no one else is joined, and non-NULL slot_ctx.  Inserts the first
-   fork into the frontier containing slot_ctx.  This should be the
-   slot_ctx from loading a snapshot, restoring a bank from Funk, or the
-   genesis slot_ctx.  The slot_ctx will be copied into an element
-   acquired from the memory pool owned by forks.  Returns fork on
-   success, NULL on failure.
+   and no one else is joined, and slot  Inserts the first fork.
+   Returns fork on success, NULL on failure.
 
    In general, this should be called by the same process that formatted
    forks' memory, ie. the caller of fd_forks_new. */
 
 fd_fork_t *
-fd_forks_init( fd_forks_t * forks, fd_exec_slot_ctx_t const * slot_ctx );
+fd_forks_init( fd_forks_t * forks, ulong slot );
 
 /* fd_forks_query queries for the fork corresponding to slot in the
    frontier.  Returns the fork if found, otherwise NULL. */
@@ -150,11 +168,9 @@ fd_forks_advance( fd_forks_t const * forks, fd_fork_t * fork, ulong slot );
 fd_fork_t *
 fd_forks_prepare( fd_forks_t const *    forks,
                   ulong                 parent_slot,
-                  fd_acc_mgr_t *        acc_mgr,
-                  fd_blockstore_t *     blockstore,
-                  fd_exec_epoch_ctx_t * epoch_ctx,
                   fd_funk_t *           funk,
-                  fd_valloc_t           valloc );
+                  fd_blockstore_t *     blockstore,
+                  fd_spad_t *           runtime_spad );
 
 /* fd_forks_publish publishes a new root into forks.  Assumes root is a
    valid slot that exists in the cluster and has already been replayed.
@@ -163,20 +179,12 @@ fd_forks_prepare( fd_forks_t const *    forks,
    when handholding is enabled).  */
 
 void
-fd_forks_publish( fd_forks_t * fork, ulong root, fd_ghost_t const * ghost );
+fd_forks_publish( fd_forks_t * fork, ulong root );
 
 /* fd_forks_print prints a forks as a list of the frontiers and number
    of forks (pool eles acquired). */
 
-static inline void
-fd_forks_print( fd_forks_t const * forks ) {
-  FD_LOG_NOTICE( ( "\n\n[Frontier]" ) );
-  for( fd_fork_frontier_iter_t iter = fd_fork_frontier_iter_init( forks->frontier, forks->pool );
-       !fd_fork_frontier_iter_done( iter, forks->frontier, forks->pool );
-       iter = fd_fork_frontier_iter_next( iter, forks->frontier, forks->pool ) ) {
-    printf( "%lu\n", fd_fork_frontier_iter_ele_const( iter, forks->frontier, forks->pool )->slot );
-  }
-  printf( "\n" );
-}
+void
+fd_forks_print( fd_forks_t const * forks );
 
 #endif /* HEADER_fd_src_choreo_forks_fd_forks_h */

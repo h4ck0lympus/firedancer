@@ -34,7 +34,7 @@ typedef struct fd_snapshot_accv_key fd_snapshot_accv_key_t;
 static const fd_snapshot_accv_key_t
 fd_snapshot_accv_key_null = { 0UL, 0UL };
 
-static inline ulong
+FD_FN_PURE static inline ulong
 fd_snapshot_accv_key_hash( fd_snapshot_accv_key_t key ) {
   return fd_hash( 0x39c49607bf16463aUL, &key, sizeof(fd_snapshot_accv_key_t) );
 }
@@ -62,14 +62,14 @@ typedef struct fd_snapshot_accv_map fd_snapshot_accv_map_t;
 /* Main snapshot restore **********************************************/
 
 struct fd_snapshot_restore {
-  fd_acc_mgr_t *    acc_mgr;
+  fd_funk_t *       funk;
   fd_funk_txn_t *   funk_txn;
-  fd_valloc_t       valloc;
+  fd_spad_t *       spad;
 
   ulong slot;  /* Slot number the snapshot was taken at */
 
   uchar state;
-  uchar manifest_done : 1;
+  uchar manifest_done;
   uchar status_cache_done : 1;
   uchar failed        : 1;
 

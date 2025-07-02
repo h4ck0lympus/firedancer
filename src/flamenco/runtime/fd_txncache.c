@@ -6,6 +6,9 @@
 #define SORT_BEFORE(a,b) (a)<(b)
 #include "../../util/tmpl/fd_sort.c"
 
+/* TODO: This data structure needs a careful audit and testing. It may need
+   to be reworked to support better fork-aware behavior.  */
+
 /* The number of transactions in each page.  This needs to be high
    enough to amoritze the cost of caller code reserving pages from,
    and returning pages to the pool, but not so high that the memory
@@ -37,6 +40,7 @@
 #define FD_TXNCACHE_TOMBSTONE_ENTRY (ULONG_MAX-1UL)
 
 /* Placeholder value used for critical sections. */
+
 #define FD_TXNCACHE_TEMP_ENTRY (ULONG_MAX-2UL)
 
 struct fd_txncache_private_txn {
@@ -149,6 +153,7 @@ struct __attribute__((aligned(FD_TXNCACHE_ALIGN))) fd_txncache_private {
   ulong probed_entries_off; /* The map of index to number of entries which oveflowed over this index.
                                Overflow for index i is defined as every entry j > i where j should have
                                been inserted at k < i. */
+
   ulong magic; /* ==FD_TXNCACHE_MAGIC */
 };
 
@@ -313,26 +318,26 @@ fd_txncache_new( void * shmem,
   if( FD_UNLIKELY( !max_txnpages_per_blockhash ) ) return NULL;
 
   FD_SCRATCH_ALLOC_INIT( l, shmem );
-  fd_txncache_t * txncache = FD_SCRATCH_ALLOC_APPEND( l,  FD_TXNCACHE_ALIGN,                        sizeof(fd_txncache_t)                                   );
-  void * _root_slots       = FD_SCRATCH_ALLOC_APPEND( l, alignof(ulong),                            max_rooted_slots*sizeof(ulong)                          );
-  void * _blockcache       = FD_SCRATCH_ALLOC_APPEND( l, alignof(fd_txncache_private_blockcache_t), max_live_slots*sizeof(fd_txncache_private_blockcache_t) );
-  void * _blockcache_pages = FD_SCRATCH_ALLOC_APPEND( l, alignof(uint),                             max_live_slots*max_txnpages_per_blockhash*sizeof(uint)  );
-  void * _slotcache        = FD_SCRATCH_ALLOC_APPEND( l, alignof(fd_txncache_private_slotcache_t),  max_live_slots*sizeof(fd_txncache_private_slotcache_t ) );
-  void * _txnpages_free    = FD_SCRATCH_ALLOC_APPEND( l, alignof(uint),                             max_txnpages*sizeof(uint)                               );
-  void * _txnpages         = FD_SCRATCH_ALLOC_APPEND( l, alignof(fd_txncache_private_txnpage_t),    max_txnpages*sizeof(fd_txncache_private_txnpage_t)      );
-  void * _probed_entries   = FD_SCRATCH_ALLOC_APPEND( l, alignof(ulong),                            max_live_slots*sizeof(ulong)                            );
+  fd_txncache_t * txncache  = FD_SCRATCH_ALLOC_APPEND( l,  FD_TXNCACHE_ALIGN,                        sizeof(fd_txncache_t)                                   );
+  void * _root_slots        = FD_SCRATCH_ALLOC_APPEND( l, alignof(ulong),                            max_rooted_slots*sizeof(ulong)                          );
+  void * _blockcache        = FD_SCRATCH_ALLOC_APPEND( l, alignof(fd_txncache_private_blockcache_t), max_live_slots*sizeof(fd_txncache_private_blockcache_t) );
+  void * _blockcache_pages  = FD_SCRATCH_ALLOC_APPEND( l, alignof(uint),                             max_live_slots*max_txnpages_per_blockhash*sizeof(uint)  );
+  void * _slotcache         = FD_SCRATCH_ALLOC_APPEND( l, alignof(fd_txncache_private_slotcache_t),  max_live_slots*sizeof(fd_txncache_private_slotcache_t ) );
+  void * _txnpages_free     = FD_SCRATCH_ALLOC_APPEND( l, alignof(uint),                             max_txnpages*sizeof(uint)                               );
+  void * _txnpages          = FD_SCRATCH_ALLOC_APPEND( l, alignof(fd_txncache_private_txnpage_t),    max_txnpages*sizeof(fd_txncache_private_txnpage_t)      );
+  void * _probed_entries    = FD_SCRATCH_ALLOC_APPEND( l, alignof(ulong),                            max_live_slots*sizeof(ulong)                            );
 
   /* We calculate and store the offsets for these allocations. */
-  txncache->root_slots_off       = (ulong)_root_slots - (ulong)txncache;
-  txncache->blockcache_off       = (ulong)_blockcache - (ulong)txncache;
-  txncache->slotcache_off        = (ulong)_slotcache - (ulong)txncache;
-  txncache->txnpages_free_off    = (ulong)_txnpages_free - (ulong)txncache;
-  txncache->txnpages_off         = (ulong)_txnpages - (ulong)txncache;
-  txncache->blockcache_pages_off = (ulong)_blockcache_pages - (ulong)txncache;
-  txncache->probed_entries_off   = (ulong)_probed_entries - (ulong)txncache;
+  txncache->root_slots_off        = (ulong)_root_slots - (ulong)txncache;
+  txncache->blockcache_off        = (ulong)_blockcache - (ulong)txncache;
+  txncache->slotcache_off         = (ulong)_slotcache - (ulong)txncache;
+  txncache->txnpages_free_off     = (ulong)_txnpages_free - (ulong)txncache;
+  txncache->txnpages_off          = (ulong)_txnpages - (ulong)txncache;
+  txncache->blockcache_pages_off  = (ulong)_blockcache_pages - (ulong)txncache;
+  txncache->probed_entries_off    = (ulong)_probed_entries - (ulong)txncache;
 
-  tc->lock->value = 0;
-  tc->root_slots_cnt = 0UL;
+  tc->lock->value           = 0;
+  tc->root_slots_cnt        = 0UL;
 
   tc->root_slots_max             = max_rooted_slots;
   tc->live_slots_max             = max_live_slots;
@@ -503,15 +508,18 @@ fd_txncache_purge_slot( fd_txncache_t * tc,
   }
 }
 
-void
-fd_txncache_register_root_slot( fd_txncache_t * tc,
-                                ulong           slot ) {
-  fd_rwlock_write( tc->lock );
+/* fd_txncache_register_root_slot_private is a helper function that
+   actually registers the root. This function assumes that the
+   caller has already obtained a lock to the status cache. */
+
+static void
+fd_txncache_register_root_slot_private( fd_txncache_t * tc,
+                                        ulong           slot ) {
 
   ulong * root_slots = fd_txncache_get_root_slots( tc );
   ulong idx;
   for( idx=0UL; idx<tc->root_slots_cnt; idx++ ) {
-    if( FD_UNLIKELY( root_slots[ idx ]==slot ) ) goto unlock;
+    if( FD_UNLIKELY( root_slots[ idx ]==slot ) ) return;
     if( FD_UNLIKELY( root_slots[ idx ]>slot ) ) break;
   }
 
@@ -530,8 +538,16 @@ fd_txncache_register_root_slot( fd_txncache_t * tc,
     root_slots[ idx ] = slot;
     tc->root_slots_cnt++;
   }
+}
 
-unlock:
+void
+fd_txncache_register_root_slot( fd_txncache_t * tc,
+                                ulong           slot ) {
+
+  fd_rwlock_write( tc->lock );
+
+  fd_txncache_register_root_slot_private( tc, slot );
+
   fd_rwlock_unwrite( tc->lock );
 }
 
@@ -740,7 +756,9 @@ fd_txncache_ensure_txnpage( fd_txncache_t *                    tc,
   if( FD_LIKELY( page_cnt ) ) {
     uint txnpage_idx = blockcache->pages[ page_cnt-1 ];
     ushort txnpage_free = txnpages[ txnpage_idx ].free;
-    if( FD_LIKELY( txnpage_free ) ) return &txnpages[ txnpage_idx ];
+    if( FD_LIKELY( txnpage_free ) ) {
+      return &txnpages[ txnpage_idx ];
+    }
   }
 
   if( FD_UNLIKELY( page_cnt==tc->txnpages_per_blockhash_max ) ) return NULL;
@@ -995,4 +1013,76 @@ fd_txncache_is_rooted_slot( fd_txncache_t * tc,
 
   fd_rwlock_unread( tc->lock );
   return 0;
+}
+
+int
+fd_txncache_get_entries( fd_txncache_t *         tc,
+                         fd_bank_slot_deltas_t * slot_deltas,
+                         fd_spad_t *             spad ) {
+
+  fd_rwlock_read( tc->lock );
+
+  slot_deltas->slot_deltas_len = tc->root_slots_cnt;
+  slot_deltas->slot_deltas     = fd_spad_alloc( spad, FD_SLOT_DELTA_ALIGN, tc->root_slots_cnt * sizeof(fd_slot_delta_t) );
+
+  fd_txncache_private_txnpage_t * txnpages   = fd_txncache_get_txnpages( tc );
+  ulong                         * root_slots = fd_txncache_get_root_slots( tc );
+
+  for( ulong i=0UL; i<tc->root_slots_cnt; i++ ) {
+    ulong slot = root_slots[ i ];
+
+    slot_deltas->slot_deltas[ i ].slot               = slot;
+    slot_deltas->slot_deltas[ i ].is_root            = 1;
+    slot_deltas->slot_deltas[ i ].slot_delta_vec     = fd_spad_alloc( spad, FD_STATUS_PAIR_ALIGN, FD_TXNCACHE_DEFAULT_MAX_ROOTED_SLOTS * sizeof(fd_status_pair_t) );
+    slot_deltas->slot_deltas[ i ].slot_delta_vec_len = 0UL;
+    ulong slot_delta_vec_len = 0UL;
+
+    fd_txncache_private_slotcache_t * slotcache;
+    if( FD_UNLIKELY( FD_TXNCACHE_FIND_FOUND!=fd_txncache_find_slot( tc, slot, 0, &slotcache ) ) ) {
+      continue;
+    }
+
+    for( ulong j=0UL; j<FD_TXNCACHE_DEFAULT_MAX_ROOTED_SLOTS; j++ ) {
+      fd_txncache_private_slotblockcache_t * slotblockcache = &slotcache->blockcache[ j ];
+      if( FD_UNLIKELY( slotblockcache->txnhash_offset>=ULONG_MAX-1UL ) ) {
+        continue;
+      }
+      fd_status_pair_t * status_pair = &slot_deltas->slot_deltas[ i ].slot_delta_vec[ slot_delta_vec_len++ ];
+      fd_memcpy( &status_pair->hash, slotblockcache->blockhash, sizeof(fd_hash_t) );
+      status_pair->value.txn_idx = slotblockcache->txnhash_offset;
+
+      /* First count through the number of etnries you expect to encounter
+         and size out the data structure to store them. */
+
+      ulong num_statuses = 0UL;
+      for( ulong k=0UL; k<FD_TXNCACHE_SLOTCACHE_MAP_CNT; k++ ) {
+        uint head = slotblockcache->heads[ k ];
+        for( ; head!=UINT_MAX; head=txnpages[ head/FD_TXNCACHE_TXNS_PER_PAGE ].txns[ head%FD_TXNCACHE_TXNS_PER_PAGE ]->slotblockcache_next ) {
+          num_statuses++;
+        }
+      }
+
+      status_pair->value.statuses_len = num_statuses;
+      status_pair->value.statuses     = fd_spad_alloc( spad, FD_CACHE_STATUS_ALIGN, num_statuses * sizeof(fd_cache_status_t) );
+      fd_memset( status_pair->value.statuses, 0, num_statuses * sizeof(fd_cache_status_t) );
+
+      /* Copy over every entry for the given slot into the slot deltas. */
+
+      num_statuses = 0UL;
+      for( ulong k=0UL; k<FD_TXNCACHE_SLOTCACHE_MAP_CNT; k++ ) {
+        uint head = slotblockcache->heads[ k ];
+        for( ; head!=UINT_MAX; head=txnpages[ head/FD_TXNCACHE_TXNS_PER_PAGE ].txns[ head%FD_TXNCACHE_TXNS_PER_PAGE ]->slotblockcache_next ) {
+          fd_txncache_private_txn_t * txn = txnpages[ head/FD_TXNCACHE_TXNS_PER_PAGE ].txns[ head%FD_TXNCACHE_TXNS_PER_PAGE ];
+          fd_memcpy( status_pair->value.statuses[ num_statuses ].key_slice, txn->txnhash, 20 );
+          status_pair->value.statuses[ num_statuses++ ].result.discriminant = txn->result;
+        }
+      }
+    }
+    slot_deltas->slot_deltas[ i ].slot_delta_vec_len = slot_delta_vec_len;
+  }
+
+  fd_rwlock_unread( tc->lock );
+
+  return 0;
+
 }

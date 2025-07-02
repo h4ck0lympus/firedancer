@@ -56,6 +56,8 @@
 
 #define FD_ZSTD_MAX_HDR_SZ (18UL)
 
+#define FD_ZSTD_CSTREAM_ALIGN (64UL)
+
 /* Decompress API *****************************************************/
 
 /* fd_zstd_dstream_t provides streaming decompression for Zstandard
@@ -141,7 +143,7 @@ fd_zstd_dstream_reset( fd_zstd_dstream_t * dstream );
    to the next frame (reset not required).  Note that -1 may be returned
    even if *in_p<in_end because the fragment could span multiple frames.
    Returns EPROTO on error.  The caller should reset the dstream in
-   this case.  If opt_errcode!=NULL and an error occured, *opt_errcode
+   this case.  If opt_errcode!=NULL and an error occurred, *opt_errcode
    is set accordingly. */
 
 int
@@ -151,6 +153,8 @@ fd_zstd_dstream_read( fd_zstd_dstream_t *     dstream,
                       uchar ** restrict       out_p,
                       uchar *                 out_end,
                       ulong *                 opt_errcode );
+
+/* TODO: Migrate compression logic from fd_snapshot_create. to fd_zstd.h */
 
 FD_PROTOTYPES_END
 

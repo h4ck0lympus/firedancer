@@ -17,6 +17,11 @@
 #define FD_SNAPSHOT_TYPE_FULL        1
 #define FD_SNAPSHOT_TYPE_INCREMENTAL 2
 
+/* FD_SNAPSHOT_SRC_{...} specifies the type of snapshot source. */
+
+#define FD_SNAPSHOT_SRC_FILE    (1)
+#define FD_SNAPSHOT_SRC_HTTP    (2)
+
 struct fd_snapshot_name {
   int       type;
   ulong     slot;
@@ -32,14 +37,17 @@ FD_PROTOTYPES_BEGIN
 
 fd_snapshot_name_t *
 fd_snapshot_name_from_cstr( fd_snapshot_name_t * id,
-                            char const *         cstr,
-                            ulong                base_slot );
+                            char const *         cstr );
 
 fd_snapshot_name_t *
 fd_snapshot_name_from_buf( fd_snapshot_name_t * id,
                            char const *         str,
-                           ulong                str_len,
-                           ulong                base_slot );
+                           ulong                str_len );
+
+int
+fd_snapshot_name_slot_validate( fd_snapshot_name_t * id,
+                                ulong                base_slot );
+
 
 FD_PROTOTYPES_END
 

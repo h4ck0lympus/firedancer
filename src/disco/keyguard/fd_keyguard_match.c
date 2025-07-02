@@ -38,9 +38,8 @@
 
    ### Code Verification
 
-   The safety of this module is verified using a number of CBMC proofs
-   composed via deductive reasoning.  These can be found in the
-   verification directory of the repository.
+   The safety of this module can be verified using a number of CBMC
+   proofs composed via deductive reasoning.
 
    - fd_txn_minsz_proof verifies the constant FD_TXN_MIN_SERIALIZED_SZ.
    - fd_txn_ambiguity_gossip_proof verifies that gossip messages cannot
@@ -292,6 +291,18 @@ fd_keyguard_payload_matches_bundle( uchar const * data,
   return 1;
 }
 
+FD_FN_PURE int
+fd_keyguard_payload_matches_event( uchar const * data,
+                                   ulong         sz,
+                                   int           sign_type ) {
+  (void)data;
+
+  if( sign_type != FD_KEYGUARD_SIGN_TYPE_FD_METRICS_REPORT_CONCAT_ED25519 ) return 0;
+  if( sz!=32UL ) return 0;
+
+  return 1;
+}
+
 FD_FN_PURE ulong
 fd_keyguard_payload_match( uchar const * data,
                            ulong         sz,
@@ -305,5 +316,6 @@ fd_keyguard_payload_match( uchar const * data,
   res |= fd_ulong_if( fd_keyguard_payload_matches_tls_cv    ( data, sz, sign_type ), FD_KEYGUARD_PAYLOAD_TLS_CV, 0 );
   res |= fd_ulong_if( fd_keyguard_payload_matches_ping_msg  ( data, sz, sign_type ), FD_KEYGUARD_PAYLOAD_PING,   0 );
   res |= fd_ulong_if( fd_keyguard_payload_matches_bundle    ( data, sz, sign_type ), FD_KEYGUARD_PAYLOAD_BUNDLE, 0 );
+  res |= fd_ulong_if( fd_keyguard_payload_matches_event     ( data, sz, sign_type ), FD_KEYGUARD_PAYLOAD_EVENT,  0 );
   return res;
 }

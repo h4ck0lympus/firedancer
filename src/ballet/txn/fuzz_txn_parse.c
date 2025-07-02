@@ -15,6 +15,7 @@ LLVMFuzzerInitialize( int  *   argc,
   /* Set up shell without signal handlers */
   putenv( "FD_LOG_BACKTRACE=0" );
   fd_boot( argc, argv );
+  fd_log_level_core_set(3); /* crash on warning log */
   atexit( fd_halt );
   return 0;
 }
@@ -28,7 +29,9 @@ LLVMFuzzerTestOneInput( uchar const * data,
   fd_txn_parse_counters_t counters = {0};
 
   ulong sz = fd_txn_parse( data, size, txn_buf, &counters );
-  __asm__ volatile( "" : "+m,r"(sz) : : "memory" ); /* prevent optimization */
+
+  FD_COMPILER_UNPREDICTABLE(sz);
+  FD_COMPILER_MFENCE();
 
   if( FD_LIKELY( sz>0UL ) ) {
     FD_FUZZ_MUST_BE_COVERED;

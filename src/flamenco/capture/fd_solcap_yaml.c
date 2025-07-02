@@ -2,9 +2,9 @@
 #include "fd_solcap_proto.h"
 #include "fd_solcap_reader.h"
 #include "fd_solcap.pb.h"
-#include "../nanopb/pb_decode.h"
+#include "../runtime/fd_executor_err.h"
+#include "../../ballet/nanopb/pb_decode.h"
 #include "../../util/textstream/fd_textstream.h"
-#include "../runtime/fd_executor.h"
 #include <errno.h>
 #include <stdio.h>
 
@@ -58,7 +58,7 @@ process_account( FILE * file,
     return 0;
   }
   if( FD_UNLIKELY( chunk->magic != FD_SOLCAP_V1_ACCT_MAGIC ) ) {
-    FD_LOG_ERR(( "expected account table chunk at %#lx, got magic=0x%016lx", goff, chunk->magic ));
+    FD_LOG_ERR(( "expected account table chunk at %#lx, got magic=0x%016lx", (ulong)goff, chunk->magic ));
     return 0;
   }
 
@@ -340,17 +340,19 @@ process_bank( fd_solcap_chunk_t const * chunk,
     printf( "- slot: %lu\n", meta.slot );
 
   printf(
-      "  - bank_hash:          '%s'\n",
+      "  - bank_hash:                 '%s'\n",
       FD_BASE58_ENC_32_ALLOCA( meta.bank_hash ) );
 
   if( verbose>=1 ) {
     printf(
-      "  - prev_bank_hash:     '%s'\n"
-      "  - account_delta_hash: '%s'\n"
-      "  - poh_hash:           '%s'\n"
-      "  - signature_cnt:      %lu\n",
+      "  - prev_bank_hash:            '%s'\n"
+      "  - account_delta_hash:        '%s'\n"
+      "  - accounts_lt_hash_checksum: '%s'\n"
+      "  - poh_hash:                  '%s'\n"
+      "  - signature_cnt:             %lu\n",
       FD_BASE58_ENC_32_ALLOCA( meta.prev_bank_hash ),
       FD_BASE58_ENC_32_ALLOCA( meta.account_delta_hash ),
+      FD_BASE58_ENC_32_ALLOCA( meta.accounts_lt_hash_checksum ),
       FD_BASE58_ENC_32_ALLOCA( meta.poh_hash ),
       meta.signature_cnt );
   }

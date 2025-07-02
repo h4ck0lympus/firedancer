@@ -8,7 +8,7 @@
 #include "fd_funk_base.h"
 
 /* FD_FUNK_TXN_{ALIGN,FOOTPRINT} describe the alignment and footprint of
-   a fd_funk_txn_t.  ALIGN will be an power of 2, footprint will be a
+   a fd_funk_txn_t.  ALIGN will be a power of 2, footprint will be a
    multiple of align.  These are provided to facilitate compile time
    declarations. */
 
@@ -23,7 +23,7 @@
 
 #define FD_FUNK_TXN_IDX_NULL ((ulong)UINT_MAX)
 
-/* A fd_funk_txn_t is an opaque handle of a in-preparation funk
+/* A fd_funk_txn_t is an opaque handle of an in-preparation funk
    transaction.  The details are exposed here to facilitate inlining
    various operations. */
 
@@ -46,27 +46,34 @@ struct __attribute__((aligned(FD_FUNK_TXN_ALIGN))) fd_funk_txn_private {
   uint   stack_cidx;        /* Internal use by funk */
   ulong  tag;               /* Internal use by funk */
 
-  ulong  rec_head_idx;      /* Record map index of the first record, FD_FUNK_REC_IDX_NULL if none (from oldest to youngest) */
-  ulong  rec_tail_idx;      /* "                       last          " */
+  uint  rec_head_idx;      /* Record map index of the first record, FD_FUNK_REC_IDX_NULL if none (from oldest to youngest) */
+  uint  rec_tail_idx;      /* "                       last          " */
+  uchar lock;              /* Internal use by funk for sychronizing modifications to txn object */
 };
 
 typedef struct fd_funk_txn_private fd_funk_txn_t;
 
 /* fd_funk_txn_map allows for indexing transactions by their xid */
 
+#define POOL_NAME          fd_funk_txn_pool
+#define POOL_ELE_T         fd_funk_txn_t
+#define POOL_IDX_T         uint
+#define POOL_NEXT          map_next
+#define POOL_IMPL_STYLE    1
+#include "../util/tmpl/fd_pool_para.c"
+
 #define MAP_NAME              fd_funk_txn_map
-#define MAP_T                 fd_funk_txn_t
+#define MAP_ELE_T             fd_funk_txn_t
 #define MAP_KEY_T             fd_funk_txn_xid_t
 #define MAP_KEY               xid
 #define MAP_KEY_EQ(k0,k1)     fd_funk_txn_xid_eq((k0),(k1))
 #define MAP_KEY_HASH(k0,seed) fd_funk_txn_xid_hash((k0),(seed))
-#define MAP_KEY_COPY(kd,ks)   fd_funk_txn_xid_copy((kd),(ks))
 #define MAP_NEXT              map_next
 #define MAP_HASH              map_hash
-#define MAP_MAGIC             (0xf173da2ce7172db0UL) /* Firedancer trn db version 0 */
+#define MAP_MAGIC             (0xf173da2ce7172db0UL) /* Firedancer txn db version 0 */
 #define MAP_IMPL_STYLE        1
-#define MAP_MEMOIZE           1
-#include "../util/tmpl/fd_map_giant.c"
+#include "../util/tmpl/fd_map_chain_para.c"
+#undef  MAP_HASH
 
 FD_PROTOTYPES_BEGIN
 
@@ -80,24 +87,45 @@ static inline ulong fd_funk_txn_idx ( uint  idx ) { return (ulong)idx; }
 
 static inline int fd_funk_txn_idx_is_null( ulong idx ) { return idx==FD_FUNK_TXN_IDX_NULL; }
 
-/* Generate a globally unique psuedo-random xid */
+/* Generate a globally unique pseudo-random xid */
 fd_funk_txn_xid_t fd_funk_generate_xid(void);
 
+/* Concurrency control */
+
+/* APIs for marking the start and end of operations that read or write to
+   the Funk transactions.
+
+   IMPORTANT SAFETY TIP
+
+   The following APIs need the write lock:
+   - fd_funk_txn_prepare
+   - fd_funk_txn_publish
+   - fd_funk_txn_publish_into_parent
+   - fd_funk_txn_cancel
+   - fd_funk_txn_cancel_siblings
+   - fd_funk_txn_cancel_children
+
+   The following APIs need the read lock:
+   - fd_funk_txn_ancestor
+   - fd_funk_txn_descendant
+   - fd_funk_txn_all_iter
+
+   TODO: in future we may be able to make these lock-free, but they are called
+   infrequently so not sure how much of a gain this would be.
+   */
+void
+fd_funk_txn_start_read( fd_funk_t * funk );
+
+void
+fd_funk_txn_end_read( fd_funk_t * funk );
+
+void
+fd_funk_txn_start_write( fd_funk_t * funk );
+
+void
+fd_funk_txn_end_write( fd_funk_t * funk );
+
 /* Accessors */
-
-/* fd_funk_txn_cnt returns the number of transactions currently in
-   preparation.  Assumes funk is a current local join,
-   map==fd_funk_txn_map( funk, fd_funk_wksp( funk ) ).  See fd_funk.h
-   for fd_funk_txn_max. */
-
-FD_FN_PURE static inline ulong fd_funk_txn_cnt( fd_funk_txn_t const * map ) { return fd_funk_txn_map_key_cnt( map ); }
-
-/* fd_funk_txn_is_full returns 1 if the transaction map is full (i.e.
-   the maximum of transactions that can be in preparation has been
-   reached) and 0 otherwise.  Assumes funk is a current local join,
-   map==fd_funk_txn_map( funk, fd_funk_wksp( funk ) ). */
-
-FD_FN_PURE static inline int fd_funk_txn_is_full( fd_funk_txn_t const * map ) { return fd_funk_txn_map_is_full( map ); }
 
 /* fd_funk_txn_query returns a pointer to an in-preparation transaction
    whose id is pointed to by xid.  Returns NULL if xid is not an
@@ -110,17 +138,17 @@ FD_FN_PURE static inline int fd_funk_txn_is_full( fd_funk_txn_t const * map ) { 
    return is non-NULL, the lifetime of the returned pointer is the
    lesser of the funk join or the transaction is published or canceled
    (either directly or indirectly via publish of a descendant, publish
-   of a competing transaction history or cancel of an ancestor).
-
-   Callers wanting more control over queries (e.g. concurrent queries,
-   sentinel transactions on failure, queries that don't optimize for
-   future queries by the same xid, etc) should use fd_funk_txn_map_query
-   or fd_funk_txn_map_query_const as appropriate. */
+   of a competing transaction history or cancel of an ancestor). */
 
 FD_FN_PURE static inline fd_funk_txn_t *
 fd_funk_txn_query( fd_funk_txn_xid_t const * xid,
-                   fd_funk_txn_t *           map ) {
-  return fd_funk_txn_map_query( map, xid, NULL );
+                   fd_funk_txn_map_t *       map ) {
+  do {
+    fd_funk_txn_map_query_t query[1];
+    if( FD_UNLIKELY( fd_funk_txn_map_query_try( map, xid, NULL, query, 0 ) ) ) return NULL;
+    fd_funk_txn_t * ele = fd_funk_txn_map_query_ele( query );
+    if( FD_LIKELY( !fd_funk_txn_map_query_test( query ) ) ) return ele;
+  } while( 1 );
 }
 
 /* fd_funk_txn_xid returns a pointer in the local address space of the
@@ -135,11 +163,7 @@ FD_FN_CONST static inline fd_funk_txn_xid_t const * fd_funk_txn_xid( fd_funk_txn
 /* fd_funk_txn_{parent,child_head,child_tail,sibling_prev,sibling_next}
    return a pointer in the caller's address space to the corresponding
    relative in-preparation transaction of in-preparation transaction
-   txn.  Assumes map == fd_funk_txn_map( funk, fd_funk_wksp( funk ) ),
-   funk is a current local join and txn points to an in-preparation funk
-   transaction in the caller's address space.  The returned pointer
-   lifetime and address space is as described in fd_funk_txn_query.
-   These are not fortified against map data corruption.
+   txn.
 
    Specifically:
 
@@ -160,13 +184,13 @@ FD_FN_CONST static inline fd_funk_txn_xid_t const * fd_funk_txn_xid( fd_funk_txn
    no siblings, there are no transaction histories competing with txn
    globally. */
 
-#define FD_FUNK_ACCESSOR(field)                     \
-FD_FN_PURE static inline fd_funk_txn_t *            \
-fd_funk_txn_##field( fd_funk_txn_t * txn,           \
-                     fd_funk_txn_t * map ) {        \
-  ulong idx = fd_funk_txn_idx( txn->field##_cidx ); \
-  if( idx==FD_FUNK_TXN_IDX_NULL ) return NULL;      \
-  return map + idx;                                 \
+#define FD_FUNK_ACCESSOR(field)                          \
+FD_FN_PURE static inline fd_funk_txn_t *                 \
+fd_funk_txn_##field( fd_funk_txn_t const *      txn,     \
+                     fd_funk_txn_pool_t const * pool ) { \
+  ulong idx = fd_funk_txn_idx( txn->field##_cidx );      \
+  if( idx==FD_FUNK_TXN_IDX_NULL ) return NULL;           \
+  return pool->ele + idx;                                \
 }
 
 FD_FUNK_ACCESSOR( parent       )
@@ -200,18 +224,32 @@ fd_funk_txn_is_only_child( fd_funk_txn_t const * txn ) {
 
 typedef struct fd_funk_rec fd_funk_rec_t;
 
-/* Return the first record in a transaction. Returns NULL if the
+/* Return the first (oldest) record in a transaction. Returns NULL if the
    transaction has no records yet. */
 
-FD_FN_PURE fd_funk_rec_t const *
+fd_funk_rec_t const *
 fd_funk_txn_first_rec( fd_funk_t *           funk,
                        fd_funk_txn_t const * txn );
+
+/* Return the last (newest) record in a transaction. Returns NULL if the
+   transaction has no records yet. */
+
+fd_funk_rec_t const *
+fd_funk_txn_last_rec( fd_funk_t *           funk,
+                      fd_funk_txn_t const * txn );
 
 /* Return the next record in a transaction. Returns NULL if the
    transaction has no more records. */
 
-FD_FN_PURE fd_funk_rec_t const *
+fd_funk_rec_t const *
 fd_funk_txn_next_rec( fd_funk_t *           funk,
+                      fd_funk_rec_t const * rec );
+
+/* Return the previous record in a transaction. Returns NULL if the
+   transaction has no more records. */
+
+fd_funk_rec_t const *
+fd_funk_txn_prev_rec( fd_funk_t *           funk,
                       fd_funk_rec_t const * rec );
 
 /* Operations */
@@ -249,19 +287,14 @@ fd_funk_txn_next_rec( fd_funk_t *           funk,
        fd_funk_publish( funk, fd_funk_txn_descendant( funk, map ) );
 
    would publish as much currently uncontested transaction history as
-   possible around txn.
-
-   Assumes map == fd_funk_txn_map( funk, fd_funk_wksp( funk ) ), funk is
-   a current local join and txn points to an in-preparation transaction
-   of funk in the caller's address space.  The lifetime of the returned
-   pointer is as described in fd_funk_txn_query. */
+   possible around txn. */
 
 FD_FN_PURE static inline fd_funk_txn_t *
 fd_funk_txn_ancestor( fd_funk_txn_t * txn,
-                      fd_funk_txn_t * map ) {
+                      fd_funk_txn_pool_t * pool ) {
   for(;;) {
     if( !fd_funk_txn_is_only_child( txn ) ) break;
-    fd_funk_txn_t * parent = fd_funk_txn_parent( txn, map );
+    fd_funk_txn_t * parent = fd_funk_txn_parent( txn, pool );
     if( !parent ) return NULL;
     txn = parent;
   }
@@ -270,10 +303,10 @@ fd_funk_txn_ancestor( fd_funk_txn_t * txn,
 
 FD_FN_PURE static inline fd_funk_txn_t *
 fd_funk_txn_descendant( fd_funk_txn_t * txn,
-                        fd_funk_txn_t * map ) {
-  if( !fd_funk_txn_is_only_child( txn ) ) return NULL; /* TODO: debatable, make contract? */
+                        fd_funk_txn_pool_t * pool ) {
+  if( !fd_funk_txn_is_only_child( txn ) ) return NULL;
   for(;;) { /* txn is an only child at this point */
-    fd_funk_txn_t * child = fd_funk_txn_child_head( txn, map );
+    fd_funk_txn_t * child = fd_funk_txn_child_head( txn, pool );
     if( !child || !fd_funk_txn_is_only_child( child ) ) break;
     txn = child;
   }
@@ -306,10 +339,10 @@ fd_funk_txn_descendant( fd_funk_txn_t * txn,
    lifetime of the returned pointer is as described in
    fd_funk_txn_query.
 
-   At start of preparation, the records in the txn are a clone of the
+   At start of preparation, the records in the txn are a virtual clone of the
    records in its parent transaction.  The funk records can be modified
    when the funk has no children.  Similarly, the records of an
-   in-preparation transaction can be freely modified when the funk has
+   in-preparation transaction can be freely modified when it has
    no children.
 
    Assumes funk is a current local join.  Reasons for failure include
@@ -376,6 +409,9 @@ fd_funk_txn_cancel_children( fd_funk_t *     funk,
                              fd_funk_txn_t * txn,
                              int             verbose );
 
+/* fd_funk_txn_cancel_all cancels all in-preparation
+   transactions. Only the last published transaction remains. */
+
 ulong
 fd_funk_txn_cancel_all( fd_funk_t *     funk,
                         int             verbose );
@@ -384,23 +420,6 @@ fd_funk_txn_cancel_all( fd_funk_t *     funk,
    of txn's in-preparation ancestors.  Returns the number of
    transactions published.  Any competing histories to this chain will
    be cancelled.
-
-   This follows a principle of least information loss.  Specifically,
-   publications proceed incrementally from the oldest ancestor to txn
-   inclusive.  When a transaction is published, the transaction is first
-   committed to permanent storage.  If this is unsuccessful, the publish
-   is stopped at this transaction and the transaction remains
-   unpublished.  Otherwise, the transaction's siblings and their
-   descendants are cancelled.
-
-   As such, it is possible in a funk implementation (e.g. permanent
-   storage I/O errors) for fd_funk_txn_publish to only publish some of
-   the ancestors.  Partial publication will only happen on error.  On
-   such a failure, no information is lost about the transaction that
-   failed to publish, its siblings or its descendants.  Likewise, all
-   the failed transaction's ancestors were reliably published.  Funk
-   last publish, query, the various traversals and so forth can be used
-   to diagnose the details about such situations.
 
    Assumes funk is a current local join.  Reasons for failure include
    NULL funk, txn does not point to an in-preparation funk transaction.
@@ -429,40 +448,49 @@ fd_funk_txn_publish_into_parent( fd_funk_t *     funk,
                                  fd_funk_txn_t * txn,
                                  int             verbose );
 
-/* fd_funk_txn_merge merges all the children into their parent
-   transaction. The intention is to support gathering small,
-   short-term transactions into a large transaction. Strictly
-   speaking, this API isn't required, but a list of small children can
-   be more efficiently and conveniently managed as a single large
-   transaction if the intention is to publish all of them at
-   once. Recall that child transactions can be cancelled due to an
-   error without affecting the parent transaction, which allows
-   robust, incremental assembly of a very big transaction.
+/* fd_funk_txn_all_iter_t iterators over all funk transaction objects.
+   Usage is:
 
-   The children must not have grandchildren.
+   fd_funk_txn_all_iter_t txn_iter[1];
+   for( fd_funk_txn_all_iter_new( funk, txn_iter ); !fd_funk_txn_all_iter_done( txn_iter ); fd_funk_txn_all_iter_next( txn_iter ) ) {
+     fd_funk_txn_t const * txn = fd_funk_txn_all_iter_ele_const( txn_iter );
+     ...
+   }
+*/
 
-   Returns FD_FUNK_SUCCESS on success or an error code on failure.
+struct fd_funk_txn_all_iter {
+  fd_funk_txn_map_t txn_map;
+  ulong chain_cnt;
+  ulong chain_idx;
+  fd_funk_txn_map_iter_t txn_map_iter;
+};
 
-   Assumes funk is a current local join.  Reasons for failure include
-   NULL funk or txn does not point to an in-preparation funk
-   transaction.  If verbose is non-zero, these will FD_LOG_WARNING level
-   details about the reason for failure. */
+typedef struct fd_funk_txn_all_iter fd_funk_txn_all_iter_t;
 
-int
-fd_funk_txn_merge_all_children( fd_funk_t *     funk,
-                                fd_funk_txn_t * parent_txn,
-                                int             verbose );
+void fd_funk_txn_all_iter_new( fd_funk_t * funk, fd_funk_txn_all_iter_t * iter );
+
+int fd_funk_txn_all_iter_done( fd_funk_txn_all_iter_t * iter );
+
+void fd_funk_txn_all_iter_next( fd_funk_txn_all_iter_t * iter );
+
+fd_funk_txn_t const * fd_funk_txn_all_iter_ele_const( fd_funk_txn_all_iter_t * iter );
+fd_funk_txn_t * fd_funk_txn_all_iter_ele( fd_funk_txn_all_iter_t * iter );
 
 /* Misc */
 
 /* fd_funk_txn_verify verifies a transaction map.  Returns
    FD_FUNK_SUCCESS if the transaction map appears intact and
    FD_FUNK_ERR_INVAL if not (logs details).  Meant to be called as part
-   of fd_funk_verify.  As such, it assumes funk is non-NULL and
-   fd_funk_{wksp,txn_map} have already been verified to work. */
+   of fd_funk_verify. */
 
 int
 fd_funk_txn_verify( fd_funk_t * funk );
+
+/* fd_funk_txn_valid returns true if txn appears to be a pointer to
+   a valid in-prep transaction. */
+
+int
+fd_funk_txn_valid( fd_funk_t const * funk, fd_funk_txn_t const * txn );
 
 FD_PROTOTYPES_END
 

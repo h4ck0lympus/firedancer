@@ -3,10 +3,9 @@
 #include "fd_solcap_reader.h"
 #include "fd_solcap.pb.h"
 #include "../../ballet/base58/fd_base58.h"
-#include "../runtime/fd_runtime.h"
 #include "../types/fd_types.h"
 #include "../types/fd_types_yaml.h"
-#include "../nanopb/pb_decode.h"
+#include "../../ballet/nanopb/pb_decode.h"
 
 #include <errno.h>
 #include <stdio.h>
@@ -17,6 +16,10 @@
 /* TODO: Ugly -- These should not be hard coded! */
 #define SOLCAP_FILE_NAME_LEN (13UL)
 #define SOLCAP_SUFFIX_LEN    (7UL) /* .solcap */
+
+#if FD_USING_GCC && __GNUC__ >= 15
+#pragma GCC diagnostic ignored "-Wunterminated-string-initialization"
+#endif
 
 static const uchar
 _vote_program_address[ 32 ] =
@@ -242,12 +245,6 @@ fd_solcap_account_pretty_print( uchar const   pubkey[ static 32 ],
 
   FD_SCRATCH_SCOPE_BEGIN {
 
-    fd_bincode_decode_ctx_t decode = {
-      .data    = data,
-      .dataend = data + data_sz,
-      .valloc  = fd_scratch_virtual()
-    };
-
     fd_flamenco_yaml_t * yaml =
       fd_flamenco_yaml_init( fd_flamenco_yaml_new(
           fd_scratch_alloc( fd_flamenco_yaml_align(), fd_flamenco_yaml_footprint() ) ),
@@ -265,41 +262,29 @@ fd_solcap_account_pretty_print( uchar const   pubkey[ static 32 ],
     fd_base58_decode_32( "SysvarStakeHistory1111111111111111111111111", _sysvar_stake_history );
 
     if( 0==memcmp( owner, _vote_program_address, 32UL ) ) {
-      fd_vote_state_versioned_t vote_state[1];
-      int err = fd_vote_state_versioned_decode( vote_state, &decode );
-      if( FD_UNLIKELY( err!=0 ) ) return err;
-
-      fd_vote_state_versioned_walk( yaml, vote_state, fd_flamenco_yaml_walk, NULL, 0U );
+      fd_vote_state_versioned_t * vote_state = fd_bincode_decode_scratch( vote_state_versioned, data, data_sz, NULL );
+      if( FD_UNLIKELY( !vote_state ) ) return -ENOMEM;
+      fd_vote_state_versioned_walk( yaml, vote_state, fd_flamenco_yaml_walk, NULL, 0U, 0U );
     } else if( 0==memcmp( owner, _stake_program_address, 32UL ) ) {
-      fd_stake_state_v2_t stake_state[1];
-      int err = fd_stake_state_v2_decode( stake_state, &decode );
-      if( FD_UNLIKELY( err!=0 ) ) return err;
-
-      fd_stake_state_v2_walk( yaml, stake_state, fd_flamenco_yaml_walk, NULL, 0U );
+      fd_stake_state_v2_t * stake_state = fd_bincode_decode_scratch( stake_state_v2, data, data_sz, NULL );
+      if( FD_UNLIKELY( !stake_state ) ) return -ENOMEM;
+      fd_stake_state_v2_walk( yaml, stake_state, fd_flamenco_yaml_walk, NULL, 0U, 0U );
     } else if( 0==memcmp( pubkey, _sysvar_clock, 32UL ) ) {
-      fd_sol_sysvar_clock_t clock[1];
-      int err = fd_sol_sysvar_clock_decode( clock, &decode );
-      if( FD_UNLIKELY( err!=0 ) ) return err;
-
-      fd_sol_sysvar_clock_walk( yaml, clock, fd_flamenco_yaml_walk, NULL, 0U );
+      fd_sol_sysvar_clock_t * clock = fd_bincode_decode_scratch( sol_sysvar_clock, data, data_sz, NULL );
+      if( FD_UNLIKELY( !clock ) ) return -ENOMEM;
+      fd_sol_sysvar_clock_walk( yaml, clock, fd_flamenco_yaml_walk, NULL, 0U, 0U );
     } else if( 0==memcmp( pubkey, _sysvar_rent, 32UL ) ) {
-      fd_rent_t rent[1];
-      int err = fd_rent_decode( rent, &decode );
-      if( FD_UNLIKELY( err!=0 ) ) return err;
-
-      fd_rent_walk( yaml, rent, fd_flamenco_yaml_walk, NULL, 0U );
+      fd_rent_t * rent = fd_bincode_decode_scratch( rent, data, data_sz, NULL );
+      if( FD_UNLIKELY( !rent ) ) return -ENOMEM;
+      fd_rent_walk( yaml, rent, fd_flamenco_yaml_walk, NULL, 0U, 0U );
     } else if( 0==memcmp( pubkey, _sysvar_epoch_rewards, 32UL ) ) {
-      fd_sysvar_epoch_rewards_t epoch_rewards[1];
-      int err = fd_sysvar_epoch_rewards_decode( epoch_rewards, &decode );
-      if( FD_UNLIKELY( err!=0 ) ) return err;
-
-      fd_sysvar_epoch_rewards_walk( yaml, epoch_rewards, fd_flamenco_yaml_walk, NULL, 0U );
+      fd_sysvar_epoch_rewards_t * epoch_rewards = fd_bincode_decode_scratch( sysvar_epoch_rewards, data, data_sz, NULL );
+      if( FD_UNLIKELY( !epoch_rewards ) ) return -ENOMEM;
+      fd_sysvar_epoch_rewards_walk( yaml, epoch_rewards, fd_flamenco_yaml_walk, NULL, 0U, 0U );
     } else if( 0==memcmp( pubkey, _sysvar_stake_history, 32UL ) ) {
-      fd_stake_history_t stake_history[1];
-      int err = fd_stake_history_decode( stake_history, &decode );
-      if( FD_UNLIKELY( err!=0 ) ) return err;
-
-      fd_stake_history_walk( yaml, stake_history, fd_flamenco_yaml_walk, NULL, 0U );
+      fd_stake_history_t * stake_history = fd_bincode_decode_scratch( stake_history, data, data_sz, NULL );
+      if( FD_UNLIKELY( !stake_history ) ) return -ENOMEM;
+      fd_stake_history_walk( yaml, stake_history, fd_flamenco_yaml_walk, NULL, 0U, 0U );
     }
 
     int err = ferror( file );
@@ -724,6 +709,13 @@ fd_solcap_diff_bank( fd_solcap_differ_t * diff ) {
             "(%s) account_delta_hash:  %s\n",
             diff->file_paths[0], FD_BASE58_ENC_32_ALLOCA( pre[0].account_delta_hash ),
             diff->file_paths[1], FD_BASE58_ENC_32_ALLOCA( pre[1].account_delta_hash ) );
+  }
+  if( 0!=memcmp( pre[0].accounts_lt_hash_checksum, pre[1].accounts_lt_hash_checksum, 32UL ) ) {
+    only_account_mismatch = 1;
+    printf( "(%s) accounts_lt_hash_checksum:  %s\n"
+            "(%s) accounts_lt_hash_checksum:  %s\n",
+            diff->file_paths[0], FD_BASE58_ENC_32_ALLOCA( pre[0].accounts_lt_hash_checksum ),
+            diff->file_paths[1], FD_BASE58_ENC_32_ALLOCA( pre[1].accounts_lt_hash_checksum ) );
   }
   if( 0!=memcmp( pre[0].prev_bank_hash, pre[1].prev_bank_hash, 32UL ) ) {
     only_account_mismatch = 0;

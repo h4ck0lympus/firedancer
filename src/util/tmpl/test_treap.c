@@ -1,4 +1,9 @@
 #include "../fd_util.h"
+#if FD_HAS_HOSTED
+#include <sys/types.h>
+#include <sys/wait.h>
+#include <unistd.h>
+#endif
 
 #define CIDX_T uchar
 #define VAL_T  schar
@@ -233,6 +238,7 @@ lreap_to_treap( lreap_t * in,
 
 static void
 test_merge( fd_rng_t * rng, int optimize_iteration ) {
+
 #define MERGE_VERIFY_AND_CLEAR()  do {                                        \
     if( optimize_iteration ) {                                                \
       FD_TEST( !lreap_verify( a, pool ) );                                    \
@@ -257,7 +263,7 @@ test_merge( fd_rng_t * rng, int optimize_iteration ) {
       FD_TEST( treap_ele_cnt( c_b )==0UL     );                               \
       FD_TEST( !treap_verify( merged, pool ) );                               \
       for( ulong j=0UL; j<ele_max; j++ ) treap_idx_remove( merged, j, pool ); \
-      /* c_a and c_b are both empty, so propogate back to a, b */             \
+      /* c_a and c_b are both empty, so propagate back to a, b */             \
       lreap_join( lreap_new( lreap_delete( lreap_leave( a ) ), ele_max ) );   \
       lreap_join( lreap_new( lreap_delete( lreap_leave( b ) ), ele_max ) );   \
     }                                                                         \
@@ -329,7 +335,56 @@ test_merge( fd_rng_t * rng, int optimize_iteration ) {
   pool_delete ( pool_leave ( pool ) );
 }
 
+static void
+test_duplicate( fd_rng_t * rng ) {
+  ulong ele_max = 254UL;
 
+  treap_t _treap[2];
+  ele_t * pool = pool_join( pool_new( scratch, ele_max ) );
+  treap_t * treap = treap_join( treap_new( _treap, ele_max ) );
+  /* Make them all equal */
+  for( ulong j=0UL; j<ele_max; j++ ) pool[ j ].val = 0;
+
+  for( ulong i=0UL; i<100UL; i++ ) {
+    ulong inserted_order[ 256UL ];
+    ulong free          [ 256UL ];
+    for( ulong j=0UL; j<ele_max; j++ ) free[ j ] = j;
+
+    treap_seed( pool, ele_max, fd_ulong_hash( i ) );
+    for( ulong j=0UL; j<ele_max; j++ ) {
+      ulong selected_idx = fd_rng_ulong_roll( rng, ele_max-j );
+      ulong selected = free[ selected_idx ];
+      free[ selected_idx ] = free[ ele_max-1UL-j ];
+      inserted_order[ j ] = selected;
+
+      treap_idx_insert( treap, selected, pool );
+    }
+
+    FD_TEST( !treap_verify( treap, pool ) );
+
+    ulong j=0UL;
+    for( treap_fwd_iter_t iter = treap_fwd_iter_init( treap, pool );
+        !treap_fwd_iter_done( iter );
+        iter = treap_fwd_iter_next( iter, pool ) ) {
+      ulong idx = treap_fwd_iter_idx( iter );
+      FD_TEST( idx==inserted_order[ j++ ] );
+    }
+    for( ulong j=0UL; j<ele_max; j++ ) treap_idx_remove( treap, j, pool );
+  }
+  treap_delete( treap_leave( treap ) );
+
+  treap_t * a = treap_join( treap_new( _treap+0, ele_max ) );
+  treap_t * b = treap_join( treap_new( _treap+1, ele_max ) );
+
+  for( ulong j=0UL; j<ele_max; j++ ) pool[ j ].val = (schar)( (int)fd_rng_uint_roll( rng, 30 )-15 ); /* Lots of duplicates */
+  for( ulong i=0UL; i<100UL; i++ ) {
+    for( ulong j=0UL; j<ele_max; j++ ) treap_idx_insert( fd_ptr_if( !!fd_rng_uint_roll( rng, 2U ), a, b ), j, pool );
+    FD_TEST( !treap_verify( treap_merge( a, b, pool ), pool ) );
+    for( ulong j=0UL; j<ele_max; j++ ) treap_idx_remove( a, j, pool );
+  }
+  treap_delete( treap_leave( a ) );
+  treap_delete( treap_leave( b ) );
+}
 
 int
 main( int     argc,
@@ -430,7 +485,7 @@ main( int     argc,
     FD_TEST( !treap_verify( treap, pool ) );
 
     uint r  = fd_rng_uint( rng );
-    int  op = (int)( r & 3U ); r >>= 2;
+    uint  op = r%5;
     switch( op ) {
 
     case 0: { /* Test query */
@@ -511,12 +566,66 @@ main( int     argc,
       break;
     }
 
+    case 4: { /* Test lower bound */
+      int q = ((int)fd_rng_uint_roll( rng, 1U+(uint)ele_max )); /* q in [0,ele_max] */
+      ulong idx = treap_idx_ge( treap, (schar)q, pool );
+      if( q>=(int)ele_max ) {
+        FD_TEST( treap_idx_is_null( idx ) );
+        break;
+      }
+
+      ulong left_options = ((ulong)(~0UL<<q)) & val_pmap;
+      if( !left_options ) FD_TEST( treap_idx_is_null( idx ) ); /* nothing >= q in map */
+      else {
+        int check_val  = fd_ulong_find_lsb(left_options);
+        FD_TEST( (idx<ele_max) && check_val==(int)pool[idx].val );
+      }
+      break;
+    }
+
     default:
       break;
     }
   }
 
   FD_TEST( !treap_verify( treap, pool ) );
+
+     /* test handholding */
+   #if FD_HAS_HOSTED && FD_TMPL_USE_HANDHOLDING
+   #define FD_EXPECT_LOG_CRIT( CALL ) do {                            \
+       FD_LOG_DEBUG(( "Testing that "#CALL" triggers FD_LOG_CRIT" )); \
+       pid_t pid = fork();                                            \
+       FD_TEST( pid >= 0 );                                           \
+       if( pid == 0 ) {                                               \
+         fd_log_level_logfile_set( 6 );                               \
+         __typeof__(CALL) res = (CALL);                               \
+         __asm__("" : "+r"(res));                                     \
+         _exit( 0 );                                                  \
+       }                                                              \
+       int status = 0;                                                \
+       wait( &status );                                               \
+                                                                      \
+       FD_TEST( WIFSIGNALED(status) && WTERMSIG(status)==6 );         \
+     } while( 0 )
+
+     FD_EXPECT_LOG_CRIT( treap_idx_remove( treap, 64, pool ) );
+     FD_EXPECT_LOG_CRIT( treap_idx_insert( treap, 64, pool ) );
+
+     treap_delete( treap_leave( treap ) );
+     treap = treap_join( treap_new( _treap, 64UL ) );
+     FD_LOG_NOTICE(( "verify: %d", treap_verify( treap, pool ) ));
+     pool_delete( pool_leave( pool ) );
+     pool = pool_join( pool_new( scratch, 64UL ) );
+     for( ulong i=0UL; i<64UL; i++ ) {
+       ulong idx = pool_idx_acquire( pool );
+       pool[ idx ].val       = (schar)i;
+       pool[ idx ].prio_cidx = (uchar)(i^36UL);
+       treap_idx_insert( treap, idx, pool );
+     }
+     FD_EXPECT_LOG_CRIT( treap_idx_insert( treap, 2, pool ) );
+   #else
+     FD_LOG_WARNING(( "skip: testing handholding, requires hosted" ));
+   #endif
 
   /* Test leave */
 
@@ -534,6 +643,8 @@ main( int     argc,
   test_merge( rng, 1 );
   test_merge( rng, 0 );
 
+  test_duplicate( rng );
+
   fd_rng_delete( fd_rng_leave( rng ) );
 
   test_iteration_all();
@@ -542,4 +653,3 @@ main( int     argc,
   fd_halt();
   return 0;
 }
-

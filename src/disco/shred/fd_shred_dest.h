@@ -10,32 +10,29 @@
    to compute the destination of a specific shred for the leader and
    non-leader.  This is where the Turbine tree logic is implemented. */
 
-/* For a given FEC, we might need to produce 200 destinations for each
-   of 134 shreds, which is a lot of destinations!  Full destination
+/* For a given FEC, we might need to produce "fanout" destinations for
+   each of 134 shreds, which is a lot of destinations!  Full destination
    information (ip, port, mac) is 12 B. A pointer is 8 B, but an index
-   can be as small as 2 B, since currently Turbine doesn't work with
-   more than fanout^2 nodes which is less than USHORT_MAX.  Thus, we go
-   with the index, which can cheaply be mapped to the full information
-   using fd_shred_dest_idx_to_dest below. */
-typedef ushort fd_shred_dest_idx_t;
+   can be as small as 4 B, since currently Turbine doesn't work with
+   more than fanout^2 nodes, which is less than UINT_MAX for a maximum
+   fanout of 1536 (the fanout is dependent on feature activation). Thus,
+   we go with the index, which can cheaply be mapped to the full
+   information using fd_shred_dest_idx_to_dest below. */
+typedef uint fd_shred_dest_idx_t;
 
 
 #define FD_SHRED_DEST_MAX_SHRED_CNT (134UL) /* DATA_SHREDS_MAX+PARITY_SHREDS_MAX */
-#define FD_SHRED_DEST_NO_DEST       (USHORT_MAX)
+#define FD_SHRED_DEST_NO_DEST       (UINT_MAX)
+#define FD_SHRED_DEST_MAX_FANOUT    (1536UL)
 
 /* fd_shred_dest_weighted_t specifies a destination to which a shred might be
    sent.  The information comes from Gossip typically. */
 struct fd_shred_dest_weighted {
   fd_pubkey_t  pubkey;   /* The validator's identity key */
   ulong  stake_lamports; /* Stake, measured in lamports, or 0 for an unstaked validator */
-  uint   ip4;            /* The validator's IP address, in host byte order */
+  uint   ip4;            /* The validator's IP address, in network byte order */
   ushort port;           /* The TVU port, in host byte order */
-  uchar  mac_addr[6]; /* The mac address that should be used as the
-                         destination field in the ethernet header.  This is
-                         typically the gateway mac address, not the validator's
-                         mac address (which is neither easy nor helpful to
-                         know). */
-};
+}; /* be careful ip and host are in different byte order */
 typedef struct fd_shred_dest_weighted fd_shred_dest_weighted_t;
 
 /* Internal type, forward declared to be able to declare the struct
@@ -228,5 +225,15 @@ fd_shred_dest_idx_to_dest( fd_shred_dest_t * sdest, fd_shred_dest_idx_t idx ) {
    pubkey is known as a destination.  If the pubkey is not know, returns
    FD_SHRED_DEST_NO_DEST. */
 fd_shred_dest_idx_t fd_shred_dest_pubkey_to_idx( fd_shred_dest_t * sdest, fd_pubkey_t const * pubkey );
+
+/* fd_shred_dest_update_source changes the shred destination
+   computation's notion of source.  sdest must be a valid local join.
+   idx must be in [0, staked_cnt+unstaked_cnt).  In particular, idx must
+   not be FD_SHRED_DEST_NO_DEST.  idx is as returned from
+   fd_shred_dest_pubkey_to_idx. */
+static inline void
+fd_shred_dest_update_source( fd_shred_dest_t * sdest, fd_shred_dest_idx_t idx ) {
+  sdest->source_validator_orig_idx = idx;
+}
 
 #endif /* HEADER_fd_src_disco_shred_fd_shred_dest_h */

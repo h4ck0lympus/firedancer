@@ -1,4 +1,5 @@
 #include "fd_wksp_private.h"
+#include "../pod/fd_pod.h"
 
 /* fd_wksp_private_{join,leave}_func are used to automagically handle
    the first join / last leave by the fd_wksp_attach / fd_wksp_detach. */
@@ -186,7 +187,7 @@ fd_wksp_delete_named( char const * name ) {
     fd_shmem_leave( shwksp, NULL, NULL );
     return FD_WKSP_ERR_FAIL;
   }
-    
+
   fd_shmem_leave( shwksp, NULL, NULL ); /* logs details, after the unlink as per UNIX file semantics */
   return FD_WKSP_SUCCESS;
 }
@@ -525,4 +526,3 @@ fd_wksp_pod_unmap( void * obj ) {
 
   fd_wksp_unmap( obj ); /* logs details */
 }
-

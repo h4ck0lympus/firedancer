@@ -1,14 +1,34 @@
 #include "fd_funk.h"
+#include "fd_funk_base.h"
 #include <stdio.h>
 
 ulong
 fd_funk_align( void ) {
-  return alignof(fd_funk_t);
+  return FD_FUNK_ALIGN;
 }
 
 ulong
-fd_funk_footprint( void ) {
-  return sizeof(fd_funk_t);
+fd_funk_footprint( ulong txn_max,
+                   ulong rec_max ) {
+  if( FD_UNLIKELY( rec_max>UINT_MAX ) ) return 0UL;
+
+  ulong l = FD_LAYOUT_INIT;
+
+  l = FD_LAYOUT_APPEND( l, alignof(fd_funk_shmem_t), sizeof(fd_funk_shmem_t) );
+
+  ulong txn_chain_cnt = fd_funk_txn_map_chain_cnt_est( txn_max );
+  l = FD_LAYOUT_APPEND( l, fd_funk_txn_map_align(), fd_funk_txn_map_footprint( txn_chain_cnt ) );
+  l = FD_LAYOUT_APPEND( l, fd_funk_txn_pool_align(), fd_funk_txn_pool_footprint() );
+  l = FD_LAYOUT_APPEND( l, alignof(fd_funk_txn_t), sizeof(fd_funk_txn_t) * txn_max );
+
+  ulong rec_chain_cnt = fd_funk_rec_map_chain_cnt_est( rec_max );
+  l = FD_LAYOUT_APPEND( l, fd_funk_rec_map_align(), fd_funk_rec_map_footprint( rec_chain_cnt ) );
+  l = FD_LAYOUT_APPEND( l, fd_funk_rec_pool_align(), fd_funk_rec_pool_footprint() );
+  l = FD_LAYOUT_APPEND( l, alignof(fd_funk_rec_t), sizeof(fd_funk_rec_t) * rec_max );
+
+  l = FD_LAYOUT_APPEND( l, fd_alloc_align(), fd_alloc_footprint() );
+
+  return l;
 }
 
 /* TODO: Consider letter user just passing a join of alloc to use,
@@ -21,7 +41,8 @@ fd_funk_new( void * shmem,
              ulong  seed,
              ulong  txn_max,
              ulong  rec_max ) {
-  fd_funk_t * funk = (fd_funk_t *)shmem;
+  fd_funk_shmem_t * funk = shmem;
+  fd_wksp_t *       wksp = fd_wksp_containing( funk );
 
   if( FD_UNLIKELY( !funk ) ) {
     FD_LOG_WARNING(( "NULL funk" ));
@@ -38,119 +59,72 @@ fd_funk_new( void * shmem,
     return NULL;
   }
 
-  fd_wksp_t * wksp = fd_wksp_containing( funk );
   if( FD_UNLIKELY( !wksp ) ) {
     FD_LOG_WARNING(( "shmem must be part of a workspace" ));
     return NULL;
   }
 
-  if( txn_max>FD_FUNK_TXN_IDX_NULL ) { /* See note in fd_funk.h about this limit */
+  if( FD_UNLIKELY( txn_max>FD_FUNK_TXN_IDX_NULL ) ) { /* See note in fd_funk.h about this limit */
     FD_LOG_WARNING(( "txn_max too large for index compression" ));
     return NULL;
   }
 
-  void * txn_shmem = fd_wksp_alloc_laddr( wksp, fd_funk_txn_map_align(), fd_funk_txn_map_footprint( txn_max ), wksp_tag );
-  if( FD_UNLIKELY( !txn_shmem ) ) {
-    FD_LOG_WARNING(( "txn_max too large for workspace" ));
+  if( FD_UNLIKELY( rec_max>UINT_MAX ) ) {
+    FD_LOG_WARNING(( "invalid rec_max" ));
     return NULL;
   }
 
-  void * txn_shmap = fd_funk_txn_map_new( txn_shmem, txn_max, seed );
-  if( FD_UNLIKELY( !txn_shmap ) ) {
-    FD_LOG_WARNING(( "fd_funk_txn_map_new failed" ));
-    fd_wksp_free_laddr( txn_shmem );
-    return NULL;
-  }
+  FD_SCRATCH_ALLOC_INIT( l, funk+1 );
 
-  fd_funk_txn_t * txn_map = fd_funk_txn_map_join( txn_shmap );
-  if( FD_UNLIKELY( !txn_map ) ) {
-    FD_LOG_WARNING(( "fd_funk_txn_map_join failed" ));
-    fd_wksp_free_laddr( fd_funk_txn_map_delete( txn_shmap ) );
-    return NULL;
-  }
+  ulong txn_chain_cnt = fd_funk_txn_map_chain_cnt_est( txn_max );
+  void * txn_map = FD_SCRATCH_ALLOC_APPEND( l, fd_funk_txn_map_align(), fd_funk_txn_map_footprint( txn_chain_cnt ) );
+  void * txn_pool = FD_SCRATCH_ALLOC_APPEND( l, fd_funk_txn_pool_align(), fd_funk_txn_pool_footprint() );
+  fd_funk_txn_t * txn_ele = (fd_funk_txn_t *)FD_SCRATCH_ALLOC_APPEND( l, alignof(fd_funk_txn_t), sizeof(fd_funk_txn_t) * txn_max );
 
-  void * rec_shmem = fd_wksp_alloc_laddr( wksp, fd_funk_rec_map_align(), fd_funk_rec_map_footprint( rec_max ), wksp_tag );
-  if( FD_UNLIKELY( !rec_shmem ) ) {
-    FD_LOG_WARNING(( "rec_max too large for workspace" ));
-    fd_wksp_free_laddr( fd_funk_txn_map_delete( fd_funk_txn_map_leave( txn_map ) ) );
-    return NULL;
-  }
+  ulong rec_chain_cnt = fd_funk_rec_map_chain_cnt_est( rec_max );
+  void * rec_map = FD_SCRATCH_ALLOC_APPEND( l, fd_funk_rec_map_align(), fd_funk_rec_map_footprint( rec_chain_cnt ) );
+  void * rec_pool = FD_SCRATCH_ALLOC_APPEND( l, fd_funk_rec_pool_align(), fd_funk_rec_pool_footprint() );
+  fd_funk_rec_t * rec_ele = (fd_funk_rec_t *)FD_SCRATCH_ALLOC_APPEND( l, alignof(fd_funk_rec_t), sizeof(fd_funk_rec_t) * rec_max );
 
-  void * rec_shmap = fd_funk_rec_map_new( rec_shmem, rec_max, seed );
-  if( FD_UNLIKELY( !rec_shmap ) ) {
-    FD_LOG_WARNING(( "fd_funk_rec_map_new failed" ));
-    fd_wksp_free_laddr( rec_shmem );
-    fd_wksp_free_laddr( fd_funk_txn_map_delete( fd_funk_txn_map_leave( txn_map ) ) );
-    return NULL;
-  }
+  void * alloc = FD_SCRATCH_ALLOC_APPEND( l, fd_alloc_align(), fd_alloc_footprint() );
 
-  fd_funk_rec_t * rec_map = fd_funk_rec_map_join( rec_shmap );
-  if( FD_UNLIKELY( !rec_map ) ) {
-    FD_LOG_WARNING(( "fd_funk_rec_map_join failed" ));
-    fd_wksp_free_laddr( fd_funk_rec_map_delete( rec_shmap ) );
-    fd_wksp_free_laddr( fd_funk_txn_map_delete( fd_funk_txn_map_leave( txn_map ) ) );
-    return NULL;
-  }
+  FD_TEST( _l == (ulong)funk + fd_funk_footprint( txn_max, rec_max ) );
 
-  void * alloc_shmem = fd_wksp_alloc_laddr( wksp, fd_alloc_align(), fd_alloc_footprint(), wksp_tag );
-  if( FD_UNLIKELY( !alloc_shmem ) ) {
-    FD_LOG_WARNING(( "fd_alloc too large for workspace" ));
-    fd_wksp_free_laddr( fd_funk_rec_map_delete( fd_funk_rec_map_leave( rec_map ) ) );
-    fd_wksp_free_laddr( fd_funk_txn_map_delete( fd_funk_txn_map_leave( txn_map ) ) );
-    return NULL;
-  }
-
-  void * alloc_shalloc = fd_alloc_new( alloc_shmem, wksp_tag );
-  if( FD_UNLIKELY( !alloc_shalloc ) ) {
-    FD_LOG_WARNING(( "fd_allow_new failed" ));
-    fd_wksp_free_laddr( alloc_shalloc );
-    fd_wksp_free_laddr( fd_funk_rec_map_delete( fd_funk_rec_map_leave( rec_map ) ) );
-    fd_wksp_free_laddr( fd_funk_txn_map_delete( fd_funk_txn_map_leave( txn_map ) ) );
-    return NULL;
-  }
-
-  fd_alloc_t * alloc = fd_alloc_join( alloc_shalloc, 0UL ); /* TODO: Consider letting user pass the cgroup hint? */
-  if( FD_UNLIKELY( !alloc ) ) {
-    FD_LOG_WARNING(( "fd_alloc_join failed" ));
-    fd_wksp_free_laddr( fd_alloc_delete( alloc_shalloc ) );
-    fd_wksp_free_laddr( fd_funk_rec_map_delete( fd_funk_rec_map_leave( rec_map ) ) );
-    fd_wksp_free_laddr( fd_funk_txn_map_delete( fd_funk_txn_map_leave( txn_map ) ) );
-    return NULL;
-  }
-
-  fd_memset( funk, 0, fd_funk_footprint() );
+  fd_memset( funk, 0, sizeof(fd_funk_shmem_t) );
 
   funk->funk_gaddr = fd_wksp_gaddr_fast( wksp, funk );
   funk->wksp_tag   = wksp_tag;
   funk->seed       = seed;
   funk->cycle_tag  = 3UL; /* various verify functions use tags 0-2 */
 
-  funk->txn_max         = txn_max;
-  funk->txn_map_gaddr   = fd_wksp_gaddr_fast( wksp, txn_map ); /* Note that this persists the join until delete */
+  funk->txn_map_gaddr = fd_wksp_gaddr_fast( wksp, fd_funk_txn_map_new( txn_map, txn_chain_cnt, seed ) );
+  void * txn_pool2 = fd_funk_txn_pool_new( txn_pool );
+  funk->txn_pool_gaddr = fd_wksp_gaddr_fast( wksp, txn_pool2 );
+  fd_funk_txn_pool_t txn_join[1];
+  fd_funk_txn_pool_join( txn_join, txn_pool2, txn_ele, txn_max );
+  fd_funk_txn_pool_reset( txn_join, 0UL );
+  funk->txn_ele_gaddr = fd_wksp_gaddr_fast( wksp, txn_ele );
+  funk->txn_max = txn_max;
   funk->child_head_cidx = fd_funk_txn_cidx( FD_FUNK_TXN_IDX_NULL );
   funk->child_tail_cidx = fd_funk_txn_cidx( FD_FUNK_TXN_IDX_NULL );
 
   fd_funk_txn_xid_set_root( funk->root         );
   fd_funk_txn_xid_set_root( funk->last_publish );
 
-  funk->rec_max       = rec_max;
-  funk->rec_map_gaddr = fd_wksp_gaddr_fast( wksp, rec_map ); /* Note that this persists the join until delete */
+  funk->rec_map_gaddr = fd_wksp_gaddr_fast( wksp, fd_funk_rec_map_new( rec_map, rec_chain_cnt, seed ) );
+  void * rec_pool2 = fd_funk_rec_pool_new( rec_pool );
+  funk->rec_pool_gaddr = fd_wksp_gaddr_fast( wksp, rec_pool2 );
+  fd_funk_rec_pool_t rec_join[1];
+  fd_funk_rec_pool_join( rec_join, rec_pool2, rec_ele, rec_max );
+  fd_funk_rec_pool_reset( rec_join, 0UL );
+  funk->rec_ele_gaddr = fd_wksp_gaddr_fast( wksp, rec_ele );
+  funk->rec_max = (uint)rec_max;
   funk->rec_head_idx  = FD_FUNK_REC_IDX_NULL;
   funk->rec_tail_idx  = FD_FUNK_REC_IDX_NULL;
 
-  funk->alloc_gaddr = fd_wksp_gaddr_fast( wksp, alloc ); /* Note that this persists the join until delete */
+  funk->alloc_gaddr = fd_wksp_gaddr_fast( wksp, fd_alloc_join( fd_alloc_new( alloc, wksp_tag ), 0UL ) );
 
-  ulong tmp_max;
-  fd_funk_partvec_t * partvec = (fd_funk_partvec_t *)fd_alloc_malloc_at_least( alloc, fd_funk_partvec_align(), fd_funk_partvec_footprint(0U), &tmp_max );
-  if( FD_UNLIKELY( !partvec ) ) {
-    FD_LOG_WARNING(( "partvec alloc failed" ));
-    fd_wksp_free_laddr( fd_alloc_delete( alloc_shalloc ) );
-    fd_wksp_free_laddr( fd_funk_rec_map_delete( fd_funk_rec_map_leave( rec_map ) ) );
-    fd_wksp_free_laddr( fd_funk_txn_map_delete( fd_funk_txn_map_leave( txn_map ) ) );
-    return NULL;
-  }
-  partvec->num_part = 0U;
-  funk->partvec_gaddr = fd_wksp_gaddr_fast( wksp, partvec );
+  funk->lock = 0;
 
   FD_COMPILER_MFENCE();
   FD_VOLATILE( funk->magic ) = FD_FUNK_MAGIC;
@@ -160,27 +134,36 @@ fd_funk_new( void * shmem,
 }
 
 fd_funk_t *
-fd_funk_join( void * shfunk ) {
-  fd_funk_t * funk = (fd_funk_t *)shfunk;
-
-  if( FD_UNLIKELY( !funk ) ) {
+fd_funk_join( fd_funk_t * ljoin,
+              void *      shfunk ) {
+  if( FD_UNLIKELY( !shfunk ) ) {
     FD_LOG_WARNING(( "NULL shfunk" ));
     return NULL;
   }
 
-  if( FD_UNLIKELY( !fd_ulong_is_aligned( (ulong)funk, fd_funk_align() ) ) ) {
+  if( FD_UNLIKELY( !fd_ulong_is_aligned( (ulong)shfunk, fd_funk_align() ) ) ) {
     FD_LOG_WARNING(( "misaligned shfunk" ));
     return NULL;
   }
 
-  fd_wksp_t * wksp = fd_wksp_containing( funk );
+  fd_wksp_t * wksp = fd_wksp_containing( shfunk );
   if( FD_UNLIKELY( !wksp ) ) {
     FD_LOG_WARNING(( "shfunk must be part of a workspace" ));
     return NULL;
   }
 
-  if( FD_UNLIKELY( funk->magic!=FD_FUNK_MAGIC ) ) {
-    FD_LOG_WARNING(( "bad magic" ));
+  fd_funk_shmem_t * shmem = shfunk;
+  if( FD_UNLIKELY( shmem->magic!=FD_FUNK_MAGIC ) ) {
+    if (shmem->magic == FD_FUNK_MAGIC+1) {
+      FD_LOG_WARNING(( "attempted to join a funk that crashed in a critical section" ));
+    } else {
+      FD_LOG_WARNING(( "bad magic" ));
+    }
+    return NULL;
+  }
+
+  if( FD_UNLIKELY( !ljoin ) ) {
+    FD_LOG_WARNING(( "NULL ljoin" ));
     return NULL;
   }
 
@@ -188,60 +171,159 @@ fd_funk_join( void * shfunk ) {
   fd_wksp_mprotect( wksp, 1 );
 #endif
 
-  return funk;
-}
+  fd_funk_t * funk = ljoin;
+  memset( funk, 0, sizeof(fd_funk_t) );
 
-void *
-fd_funk_leave( fd_funk_t * funk ) {
+  funk->shmem = shfunk;
+  funk->wksp  = wksp;
 
-  if( FD_UNLIKELY( !funk ) ) {
-    FD_LOG_WARNING(( "NULL funk" ));
+  if( FD_UNLIKELY( !fd_funk_txn_pool_join( funk->txn_pool, fd_wksp_laddr( wksp, shmem->txn_pool_gaddr ), fd_wksp_laddr( wksp, shmem->txn_ele_gaddr ), shmem->txn_max ) ) ) {
+    FD_LOG_WARNING(( "failed to join txn_pool" ));
     return NULL;
   }
-
-  return (void *)funk;
-}
-
-void *
-fd_funk_delete( void * shfunk ) {
-  fd_funk_t * funk = (fd_funk_t *)shfunk;
-
-  if( FD_UNLIKELY( !funk ) ) {
-    FD_LOG_WARNING(( "NULL shfunk" ));
+  if( FD_UNLIKELY( !fd_funk_txn_map_join( funk->txn_map, fd_wksp_laddr( wksp, shmem->txn_map_gaddr ), fd_wksp_laddr_fast( wksp, shmem->txn_ele_gaddr ), shmem->txn_max ) ) ) {
+    FD_LOG_WARNING(( "failed to join txn_map" ));
     return NULL;
   }
-
-  if( FD_UNLIKELY( !fd_ulong_is_aligned( (ulong)funk, fd_funk_align() ) ) ) {
-    FD_LOG_WARNING(( "misaligned shfunk" ));
+  if( FD_UNLIKELY( !fd_funk_rec_map_join( funk->rec_map, fd_wksp_laddr( wksp, shmem->rec_map_gaddr ), fd_wksp_laddr( wksp, shmem->rec_ele_gaddr ), shmem->rec_max ) ) ) {
+    FD_LOG_WARNING(( "failed to join rec_map" ));
     return NULL;
   }
-
-  fd_wksp_t * wksp = fd_wksp_containing( funk );
-  if( FD_UNLIKELY( !wksp ) ) {
-    FD_LOG_WARNING(( "shfunk must be part of a workspace" ));
+  if( FD_UNLIKELY( !fd_funk_rec_pool_join( funk->rec_pool, fd_wksp_laddr( wksp, shmem->rec_pool_gaddr ), fd_wksp_laddr_fast( wksp, shmem->rec_ele_gaddr ), shmem->rec_max ) ) ) {
+    FD_LOG_WARNING(( "failed to join rec_pool" ));
     return NULL;
   }
-
-  if( FD_UNLIKELY( funk->magic!=FD_FUNK_MAGIC ) ) {
-    FD_LOG_WARNING(( "bad magic" ));
+  funk->alloc = fd_wksp_laddr( wksp, shmem->alloc_gaddr );
+  if( FD_UNLIKELY( !fd_alloc_join( funk->alloc, fd_tile_idx() ) ) ) {
+    FD_LOG_WARNING(( "failed to join funk alloc" ));
     return NULL;
   }
-
-  /* Free all value resources here */
-
-  fd_wksp_free_laddr( fd_alloc_delete       ( fd_alloc_leave       ( fd_funk_alloc  ( funk, wksp ) ) ) );
-  fd_wksp_free_laddr( fd_funk_rec_map_delete( fd_funk_rec_map_leave( fd_funk_rec_map( funk, wksp ) ) ) );
-  fd_wksp_free_laddr( fd_funk_txn_map_delete( fd_funk_txn_map_leave( fd_funk_txn_map( funk, wksp ) ) ) );
-
-  FD_COMPILER_MFENCE();
-  FD_VOLATILE( funk->magic ) = 0UL;
-  FD_COMPILER_MFENCE();
 
   return funk;
 }
 
 int
-fd_funk_verify( fd_funk_t * funk ) {
+fd_funk_purify( void * shfunk ) {
+  /* Join should work even if there was a crash */
+  fd_funk_t ljoin[1];
+  fd_funk_t * funk = fd_funk_join( ljoin, shfunk );
+  if( funk == NULL ) return FD_FUNK_ERR_PURIFY;
+
+  /* Reset the txn map. We discard any pending transactions. */
+  fd_funk_txn_map_reset( funk->txn_map );
+  fd_funk_txn_pool_reset( funk->txn_pool, 0 );
+  funk->shmem->child_head_cidx = funk->shmem->child_tail_cidx = fd_funk_txn_cidx( FD_FUNK_TXN_IDX_NULL );
+
+  return fd_funk_rec_purify( funk );
+}
+
+void *
+fd_funk_leave( fd_funk_t * funk,
+               void **     opt_shfunk ) {
+
+  if( FD_UNLIKELY( !funk ) ) {
+    FD_LOG_WARNING(( "NULL funk" ));
+    if( opt_shfunk ) *opt_shfunk = NULL;
+    return NULL;
+  }
+  void * shfunk = funk->shmem;
+
+  memset( funk, 0, sizeof(fd_funk_t) );
+
+  if( opt_shfunk ) *opt_shfunk = shfunk;
+  return (void *)funk;
+}
+
+void *
+fd_funk_delete( void * shfunk ) {
+
+  if( FD_UNLIKELY( !shfunk ) ) {
+    FD_LOG_WARNING(( "NULL shfunk" ));
+    return NULL;
+  }
+
+  if( FD_UNLIKELY( !fd_ulong_is_aligned( (ulong)shfunk, fd_funk_align() ) ) ) {
+    FD_LOG_WARNING(( "misaligned shfunk" ));
+    return NULL;
+  }
+
+  fd_wksp_t * wksp = fd_wksp_containing( shfunk );
+  if( FD_UNLIKELY( !wksp ) ) {
+    FD_LOG_WARNING(( "shfunk must be part of a workspace" ));
+    return NULL;
+  }
+
+  fd_funk_shmem_t * shmem = shfunk;
+  if( FD_UNLIKELY( shmem->magic!=FD_FUNK_MAGIC ) ) {
+    FD_LOG_WARNING(( "bad magic" ));
+    return NULL;
+  }
+
+  /* Free all fd_alloc allocations made, individually
+     (FIXME consider walking the element pool instead of the map?) */
+
+  fd_alloc_t * alloc = fd_alloc_join( fd_wksp_laddr_fast( wksp, shmem->alloc_gaddr ), fd_tile_idx() );
+
+  void * shmap = fd_wksp_laddr_fast( wksp, shmem->rec_map_gaddr );
+  void * shele = fd_wksp_laddr_fast( wksp, shmem->rec_ele_gaddr );
+  fd_funk_rec_map_t rec_map[1];
+  if( FD_UNLIKELY( !fd_funk_rec_map_join( rec_map, shmap, shele, 0UL ) ) ) {
+    FD_LOG_ERR(( "failed to join rec_map (corrupt funk?)" ));
+    return NULL;
+  }
+  ulong chain_cnt = fd_funk_rec_map_chain_cnt( rec_map );
+  for( ulong chain_idx=0UL; chain_idx<chain_cnt; chain_idx++ ) {
+    for(
+        fd_funk_rec_map_iter_t iter = fd_funk_rec_map_iter( rec_map, chain_idx );
+        !fd_funk_rec_map_iter_done( iter );
+        iter = fd_funk_rec_map_iter_next( iter )
+    ) {
+      fd_funk_val_flush( fd_funk_rec_map_iter_ele( iter ), alloc, wksp );
+    }
+  }
+
+  fd_funk_rec_map_leave( rec_map );
+
+  /* Free the fd_alloc instance */
+
+  fd_wksp_free_laddr( fd_alloc_delete( fd_alloc_leave( alloc ) ) );
+
+  FD_COMPILER_MFENCE();
+  FD_VOLATILE( shmem->magic ) = 0UL;
+  FD_COMPILER_MFENCE();
+
+  return shmem;
+}
+
+void
+fd_funk_delete_fast( void * shfunk ) {
+
+  if( FD_UNLIKELY( !shfunk ) ) {
+    FD_LOG_WARNING(( "NULL shfunk" ));
+  }
+
+  if( FD_UNLIKELY( !fd_ulong_is_aligned( (ulong)shfunk, fd_funk_align() ) ) ) {
+    FD_LOG_WARNING(( "misaligned shfunk" ));
+  }
+
+  fd_funk_shmem_t * shmem = shfunk;
+  if( FD_UNLIKELY( shmem->magic!=FD_FUNK_MAGIC ) ) {
+    FD_LOG_WARNING(( "bad magic" ));
+  }
+
+  fd_wksp_t * wksp = fd_wksp_containing( shmem );
+  if( FD_UNLIKELY( !wksp ) ) {
+    FD_LOG_WARNING(( "shfunk must be part of a workspace" ));
+  }
+
+  ulong const tags[1] = { shmem->wksp_tag };
+  fd_wksp_tag_free( wksp, tags, 1UL );
+
+}
+
+int
+fd_funk_verify( fd_funk_t * join ) {
+  fd_funk_shmem_t * funk = join->shmem;
 
 # define TEST(c) do {                                                                           \
     if( FD_UNLIKELY( !(c) ) ) { FD_LOG_WARNING(( "FAIL: %s", #c )); return FD_FUNK_ERR_INVAL; } \
@@ -255,12 +337,12 @@ fd_funk_verify( fd_funk_t * funk ) {
 
   ulong funk_gaddr = funk->funk_gaddr;
   TEST( funk_gaddr );
-  fd_wksp_t * wksp = fd_funk_wksp( funk );
+  fd_wksp_t * wksp = fd_funk_wksp( join );
   TEST( wksp );
   TEST( fd_wksp_laddr_fast( wksp, funk_gaddr )==(void *)funk );
   TEST( fd_wksp_gaddr_fast( wksp, funk       )==funk_gaddr   );
 
-  ulong wksp_tag = fd_funk_wksp_tag( funk );
+  ulong wksp_tag = fd_funk_wksp_tag( join );
   TEST( !!wksp_tag );
 
   ulong seed = funk->seed; /* seed can be anything */
@@ -269,16 +351,15 @@ fd_funk_verify( fd_funk_t * funk ) {
 
   /* Test transaction map */
 
-  ulong txn_max = funk->txn_max;
+  ulong txn_max = fd_funk_txn_pool_ele_max( join->txn_pool );
   TEST( txn_max<=FD_FUNK_TXN_IDX_NULL );
 
   ulong txn_map_gaddr = funk->txn_map_gaddr;
   TEST( txn_map_gaddr );
-  TEST( fd_wksp_tag( wksp, txn_map_gaddr-1UL )==wksp_tag ); /* When txn_max is 0, txn_map_gaddr can be first byte after alloc */
-  fd_funk_txn_t * txn_map = fd_funk_txn_map( funk, wksp );
-  TEST( txn_map );
-  TEST( txn_max==fd_funk_txn_map_key_max( txn_map ) );
-  TEST( seed   ==fd_funk_txn_map_seed   ( txn_map ) );
+  fd_funk_txn_map_t * txn_map = fd_funk_txn_map( join );
+  ulong txn_chain_cnt = fd_funk_txn_map_chain_cnt_est( txn_max );
+  TEST( txn_chain_cnt==fd_funk_txn_map_chain_cnt( txn_map ) );
+  TEST( seed==fd_funk_txn_map_seed( txn_map ) );
 
   ulong child_head_idx = fd_funk_txn_idx( funk->child_head_cidx );
   ulong child_tail_idx = fd_funk_txn_idx( funk->child_tail_cidx );
@@ -297,33 +378,32 @@ fd_funk_verify( fd_funk_t * funk ) {
 
   if( !txn_max ) TEST( fd_funk_txn_idx_is_null( child_tail_idx ) );
 
-  fd_funk_txn_xid_t const * root = fd_funk_root( funk );
+  fd_funk_txn_xid_t const * root = fd_funk_root( join );
   TEST( root ); /* Practically guaranteed */
   TEST( fd_funk_txn_xid_eq_root( root ) );
 
   fd_funk_txn_xid_t * last_publish = funk->last_publish;
   TEST( last_publish ); /* Practically guaranteed */
-  /* (*last_publish) only be root at creation and anything but root
-     post creation.  But we don't which situation applies here so this
+  /* (*last_publish) only be root at creation and anything but root post
+     creation.  But we don't know which situation applies here so this
      could be anything. */
 
-  TEST( !fd_funk_txn_verify( funk ) );
+  TEST( !fd_funk_txn_verify( join ) );
 
   /* Test record map */
 
-  ulong rec_max = funk->rec_max;
+  ulong rec_max = fd_funk_rec_pool_ele_max( join->rec_pool );
   TEST( rec_max<=FD_FUNK_TXN_IDX_NULL );
 
   ulong rec_map_gaddr = funk->rec_map_gaddr;
   TEST( rec_map_gaddr );
-  TEST( fd_wksp_tag( wksp, rec_map_gaddr-1UL )==wksp_tag ); /* When rec_max is zero, rec_map_gaddr can be first byte after alloc */
-  fd_funk_rec_t * rec_map = fd_funk_rec_map( funk, wksp );
-  TEST( rec_map );
-  TEST( rec_max==fd_funk_rec_map_key_max( rec_map ) );
-  TEST( seed   ==fd_funk_rec_map_seed   ( rec_map ) );
+  fd_funk_rec_map_t * rec_map = fd_funk_rec_map( join );
+  ulong rec_chain_cnt = fd_funk_rec_map_chain_cnt_est( rec_max );
+  TEST( rec_chain_cnt==fd_funk_rec_map_chain_cnt( rec_map ) );
+  TEST( seed==fd_funk_rec_map_seed( rec_map ) );
 
-  ulong rec_head_idx = funk->rec_head_idx;
-  ulong rec_tail_idx = funk->rec_tail_idx;
+  uint rec_head_idx = funk->rec_head_idx;
+  uint rec_tail_idx = funk->rec_tail_idx;
 
   int null_rec_head = fd_funk_rec_idx_is_null( rec_head_idx );
   int null_rec_tail = fd_funk_rec_idx_is_null( rec_tail_idx );
@@ -339,134 +419,18 @@ fd_funk_verify( fd_funk_t * funk ) {
 
   if( !rec_max ) TEST( fd_funk_rec_idx_is_null( rec_tail_idx ) );
 
-  TEST( !fd_funk_rec_verify( funk ) );
-  TEST( !fd_funk_part_verify( funk ) );
+  TEST( !fd_funk_rec_verify( join ) );
 
   /* Test values */
 
   ulong alloc_gaddr = funk->alloc_gaddr;
   TEST( alloc_gaddr );
-  TEST( fd_wksp_tag( wksp, alloc_gaddr )==wksp_tag );
-  fd_alloc_t * alloc = fd_funk_alloc( funk, wksp );
+  fd_alloc_t * alloc = fd_funk_alloc( join );
   TEST( alloc );
 
-  TEST( !fd_funk_val_verify( funk ) );
+  TEST( !fd_funk_val_verify( join ) );
 
 # undef TEST
 
   return FD_FUNK_SUCCESS;
-}
-
-static char *
-fd_smart_size( ulong sz, char * tmp, size_t tmpsz ) {
-  if( sz <= (1UL<<7) )
-    snprintf( tmp, tmpsz, "%lu B", sz );
-  else if( sz <= (1UL<<17) )
-    snprintf( tmp, tmpsz, "%.3f KB", ((double)sz/((double)(1UL<<10))) );
-  else if( sz <= (1UL<<27) )
-    snprintf( tmp, tmpsz, "%.3f MB", ((double)sz/((double)(1UL<<20))) );
-  else
-    snprintf( tmp, tmpsz, "%.3f GB", ((double)sz/((double)(1UL<<30))) );
-  return tmp;
-}
-
-void
-fd_funk_log_mem_usage( fd_funk_t * funk ) {
-  char tmp1[100];
-  char tmp2[100];
-
-  FD_LOG_NOTICE(( "funk base footprint: %s",
-                  fd_smart_size( fd_funk_footprint(), tmp1, sizeof(tmp1) ) ));
-  fd_wksp_t * wksp = fd_funk_wksp( funk );
-  fd_funk_txn_t const * txn_map = fd_funk_txn_map( funk, wksp );
-  FD_LOG_NOTICE(( "txn table footprint: %s (%lu entries used out of %lu, %lu%%)",
-                  fd_smart_size( fd_funk_txn_map_footprint( funk->txn_max ), tmp1, sizeof(tmp1) ),
-                  fd_funk_txn_map_key_cnt( txn_map ),
-                  fd_funk_txn_map_key_max( txn_map ),
-                  (100U*fd_funk_txn_map_key_cnt( txn_map )) / fd_funk_txn_map_key_max( txn_map ) ));
-  fd_funk_rec_t * rec_map = fd_funk_rec_map( funk, wksp );
-  FD_LOG_NOTICE(( "rec table footprint: %s (%lu entries used out of %lu, %lu%%)",
-                  fd_smart_size( fd_funk_rec_map_footprint( funk->rec_max ), tmp1, sizeof(tmp1) ),
-                  fd_funk_rec_map_key_cnt( rec_map ),
-                  fd_funk_rec_map_key_max( rec_map ),
-                  (100U*fd_funk_rec_map_key_cnt( rec_map )) / fd_funk_rec_map_key_max( rec_map ) ));
-  ulong val_cnt = 0;
-  ulong val_min = ULONG_MAX;
-  ulong val_max = 0;
-  ulong val_used = 0;
-  ulong val_alloc = 0;
-  for( fd_funk_rec_map_iter_t iter = fd_funk_rec_map_iter_init( rec_map );
-       !fd_funk_rec_map_iter_done( rec_map, iter );
-       iter = fd_funk_rec_map_iter_next( rec_map, iter ) ) {
-    fd_funk_rec_t * rec = fd_funk_rec_map_iter_ele( rec_map, iter );
-    val_cnt ++;
-    val_min = fd_ulong_min( val_min, rec->val_sz );
-    val_max = fd_ulong_max( val_max, rec->val_sz );
-    val_used += rec->val_sz;
-    val_alloc += rec->val_max;
-  }
-  FD_LOG_NOTICE(( "  rec count: %lu, min size: %lu, avg_size: %lu, max_size: %lu, total_size: %s, total_allocated: %s",
-                  val_cnt, val_min, val_used/val_cnt, val_max,
-                  fd_smart_size( val_used, tmp1, sizeof(tmp1) ),
-                  fd_smart_size( val_alloc, tmp2, sizeof(tmp2) ) ));
-  FD_LOG_NOTICE(( "part vec footprint: %s",
-                  fd_smart_size( fd_funk_partvec_footprint(0U), tmp1, sizeof(tmp1) ) ));
-}
-
-#include "../flamenco/fd_rwlock.h"
-static fd_rwlock_t lock[ 1 ] = {0};
-
-void
-fd_funk_start_write( fd_funk_t * funk ) {
-  fd_rwlock_write( lock );
-#ifdef FD_FUNK_WKSP_PROTECT
-  fd_wksp_mprotect( fd_funk_wksp( funk ), 0 );
-#endif
-# if FD_HAS_THREADS
-  register ulong oldval;
-  for(;;) {
-    oldval = funk->write_lock;
-    if( FD_LIKELY( FD_ATOMIC_CAS( &funk->write_lock, oldval, oldval+1U) == oldval ) ) break;
-    FD_SPIN_PAUSE();
-  }
-  if( FD_UNLIKELY(oldval&1UL) ) {
-     FD_LOG_CRIT(( "attempt to lock funky when it is already locked" ));
-  }
-  FD_COMPILER_MFENCE();
-# else
-  (void)funk;
-# endif
-}
-
-void
-fd_funk_end_write( fd_funk_t * funk ) {
-# if FD_HAS_THREADS
-  FD_COMPILER_MFENCE();
-  register ulong oldval;
-  for(;;) {
-    oldval = funk->write_lock;
-    if( FD_LIKELY( FD_ATOMIC_CAS( &funk->write_lock, oldval, oldval+1U) == oldval ) ) break;
-    FD_SPIN_PAUSE();
-  }
-  if( FD_UNLIKELY(!(oldval&1UL)) ) {
-    FD_LOG_CRIT(( "attempt to unlock funky when it is already unlocked" ));
-  }
-# else
-  (void)funk;
-# endif
-#ifdef FD_FUNK_WKSP_PROTECT
-  fd_wksp_mprotect( fd_funk_wksp( funk ), 1 );
-#endif
-  fd_rwlock_unwrite( lock );
-}
-
-void
-fd_funk_check_write( fd_funk_t * funk ) {
-  ulong val = funk->write_lock;
-  if( FD_UNLIKELY(!(val&1UL)) ) FD_LOG_CRIT(( "missing call to fd_funk_start_write" ));
-}
-
-void
-fd_funk_speed_load_mode( fd_funk_t * funk, int flag ) {
-  funk->speed_load = flag;
 }

@@ -13,16 +13,16 @@
      myset_t myset_null   ( void           ); // return {}
      myset_t myset_full   ( void           ); // return ~{}
      myset_t myset_full_if( int c          ); // return c ? ~{} : {}
-     myset_t myset_ele    ( ulong i        ); // return { i }
-     myset_t myset_ele_if ( int c, ulong i ); // return c ? { i } : {}
-     
+     myset_t myset_ele    ( ulong i        ); // return { i }          // Assumes 0<=i<max
+     myset_t myset_ele_if ( int c, ulong i ); // return c ? { i } : {} // Assumes 0<=i<max
+
      // Index operations
      ulong myset_max  ( void      ); // return the maximum number of elements that can be held by the set,
                                      // will be in (0,8*sizeof(myset_t)]
      ulong myset_cnt  ( myset_t x ); // return the current number of elements in the set, will be in [0,myset_max()]
      ulong myset_first( myset_t x ); // return the index of the first element in the set, will be in [0,myset_max()),
                                      // U.B. if set is null
-     
+
      // Boolean operations
      int myset_valid_idx( ulong i              ); // returns 1 if i is a valid set index (i.e. idx < myset_max())
      int myset_valid    ( myset_t x            ); // returns 1 if x a valid set (i.e. no bits idx >= myset_max() are set)
@@ -31,17 +31,17 @@
      int myset_test     ( myset_t x, ulong i   ); // returns 1 if element i is in set x
      int myset_eq       ( myset_t x, myset_t y ); // returns 1 if x and y are the same sets
      int myset_subset   ( myset_t x, myset_t y ); // returns 1 if x is a subset of y
-     
+
      // Unary operations
      myset_t myset_copy      ( myset_t x ); // returns x
      myset_t myset_complement( myset_t x ); // returns ~x
-     
+
      // Binary operations
      myset_t myset_union    ( myset_t x, myset_t y ); // returns x u y
-     myset_t myset_intersect( myset_t x, myset_t y ); // returns x n y 
+     myset_t myset_intersect( myset_t x, myset_t y ); // returns x n y
      myset_t myset_subtract ( myset_t x, myset_t y ); // returns x - y
      myset_t myset_xor      ( myset_t x, myset_t y ); // returns (x u y) - (x n y)
-     
+
      // Trinary operations
      myset_t myset_if( int c, myset_t t, myset_t f ); // returns c ? t : f
 
@@ -60,13 +60,26 @@
      myset_iter_t myset_iter_done( myset_iter_t iter );
      myset_iter_t myset_iter_next( myset_iter_t iter );
      ulong        myset_iter_idx ( myset_iter_t iter );
-     
+
      // Misc
+
      myset_t myset_insert( myset_t x, ulong i ); // short for myset_union   ( x, myset_ele( i ) )
      myset_t myset_remove( myset_t x, ulong i ); // short for myset_subtract( x, myset_ele( i ) )
 
-     myset_t myset_insert_if( int c, myset_t x, ulong i ); // Fast implementation of "c ? myset_insert( x, i ) : x;"
-     myset_t myset_remove_if( int c, myset_t x, ulong i ); // Fast implementation of "c ? myset_remove( x, i ) : y;"
+     myset_t myset_insert_if( int c, myset_t x, ulong i ); // Fast impl of "c ? myset_insert( x, i ) : x;"
+     myset_t myset_remove_if( int c, myset_t x, ulong i ); // Fast impl of "c ? myset_remove( x, i ) : x;"
+
+     // Range APIs do fast O(1) operations for a contiguous range within
+     // a myset.  Ranges are specified on the half-open interval [l,h).
+     // These all assume 0<=l<=h<=max.
+
+     myset_t myset_range( ulong l, ulong h );                   // returns set containing elements [l,h).
+
+     myset_t myset_insert_range( myset_t x, ulong l, ulong h ); // returns myset_union    ( x, myset_range( l, h ) )
+     myset_t myset_select_range( myset_t x, ulong l, ulong h ); // returns myset_intersect( x, myset_range( l, h ) )
+     myset_t myset_remove_range( myset_t x, ulong l, ulong h ); // returns myset_subtract ( x, myset_range( l, h ) )
+
+     ulong myset_range_cnt( myset_t x, ulong l, ulong h );      // returns myset_cnt( myset_select_range( x, l, h ) )
 
      // With the exceptions of myidx_valid_idx and myset_valid, all
      // these assume their inputs are valid and produce valid well
@@ -119,15 +132,20 @@
 #define SET_POP_LSB FD_EXPAND_THEN_CONCAT3(fd_,SET_TYPE,_pop_lsb)
 #endif
 
+#if FD_TMPL_USE_HANDHOLDING
+#include "../log/fd_log.h"
+#endif
+
 /* Implementation *****************************************************/
 
 #define SET_(x)FD_EXPAND_THEN_CONCAT3(SET_NAME,_,x)
 
 enum {
-  SET_(MAX)             = (SET_MAX),
-  SET_(PRIVATE_BIT_CNT) = 8*(int)sizeof(SET_TYPE),
-  SET_(PRIVATE_ZP_CNT)  = SET_(PRIVATE_BIT_CNT) - SET_(MAX)
-}; 
+  SET_(MAX)              = (SET_MAX),
+  SET_(PRIVATE_BIT_CNT)  = 8*(int)sizeof(SET_TYPE),
+  SET_(PRIVATE_ZP_CNT)   = SET_(PRIVATE_BIT_CNT) - SET_(MAX),
+  SET_(PRIVATE_IDX_MASK) = SET_(PRIVATE_BIT_CNT) - 1
+};
 
 FD_STATIC_ASSERT( 0<SET_(MAX) && SET_(MAX)<=SET_(PRIVATE_BIT_CNT),              range );
 FD_STATIC_ASSERT( (ulong)SET_(PRIVATE_BIT_CNT)<=(1UL<<(8*sizeof(SET_IDX_T)-1)), range );
@@ -146,30 +164,51 @@ SET_(full_if)( int c ) {
   return (SET_(t))(((SET_(t))(((SET_(t))!c)-((SET_(t))1))) & SET_(full)());
 }
 
-FD_FN_CONST static inline SET_(t) SET_(ele)   (        SET_IDX_T i ) { return (SET_(t))(((SET_(t))  1) << i);   }
-FD_FN_CONST static inline SET_(t) SET_(ele_if)( int c, SET_IDX_T i ) { return (SET_(t))(((SET_(t))!!c) << i);   }
+/* Handles >=0 for negative types too */
+FD_FN_CONST static inline int SET_(valid_idx)( SET_IDX_T i ) { return ((ulong)(long)i)<((ulong)SET_(MAX)); }
+
+FD_FN_CONST static inline SET_(t)
+SET_(ele)( SET_IDX_T i ) {
+# if FD_TMPL_USE_HANDHOLDING
+  if( FD_UNLIKELY( !SET_(valid_idx)( i ) ) ) FD_LOG_CRIT(( "invalid index" ));
+# endif
+  return (SET_(t))(((SET_(t))1) << i);
+}
+
+FD_FN_CONST static inline SET_(t)
+SET_(ele_if)( int c, SET_IDX_T i ) {
+# if FD_TMPL_USE_HANDHOLDING
+  if( FD_UNLIKELY( !SET_(valid_idx)( i ) ) ) FD_LOG_CRIT(( "invalid index" ));
+# endif
+  return (SET_(t))(((SET_(t))!!c) << i);
+}
 
 FD_FN_CONST static inline SET_IDX_T SET_(max)  ( void      ) { return (SET_IDX_T)SET_(MAX);       }
 FD_FN_CONST static inline SET_IDX_T SET_(cnt)  ( SET_(t) x ) { return (SET_IDX_T)SET_POPCNT(x);   }
 FD_FN_CONST static inline SET_IDX_T SET_(first)( SET_(t) x ) { return (SET_IDX_T)SET_FIND_LSB(x); }
 
-/* Handles >=0 for negative types too */
-FD_FN_CONST static inline int SET_(valid_idx)( SET_IDX_T i              ) { return ((ulong)(long)i)<((ulong)SET_(MAX)); }
+FD_FN_CONST static inline int SET_(valid)    ( SET_(t)   x ) { return !(x & (SET_(t))~SET_(full)()); }
+FD_FN_CONST static inline int SET_(is_null)  ( SET_(t)   x ) { return !x;                            }
+FD_FN_CONST static inline int SET_(is_full)  ( SET_(t)   x ) { return x==SET_(full)();               }
 
-FD_FN_CONST static inline int SET_(valid)    ( SET_(t)   x              ) { return !(x & ~SET_(full)());                }
-FD_FN_CONST static inline int SET_(is_null)  ( SET_(t)   x              ) { return !x;                                  }
-FD_FN_CONST static inline int SET_(is_full)  ( SET_(t)   x              ) { return x==SET_(full)();                     }
-FD_FN_CONST static inline int SET_(test)     ( SET_(t)   x, SET_IDX_T i ) { return (int)((x>>i) & ((SET_(t))1));        }
-FD_FN_CONST static inline int SET_(eq)       ( SET_(t)   x, SET_(t)   y ) { return x==y;                                }
-FD_FN_CONST static inline int SET_(subset)   ( SET_(t)   x, SET_(t)   y ) { return x==(x & y);                          }
+FD_FN_CONST static inline int
+SET_(test) ( SET_(t) x, SET_IDX_T i ) {
+# if FD_TMPL_USE_HANDHOLDING
+  if( FD_UNLIKELY( !SET_(valid_idx)( i ) ) ) FD_LOG_CRIT(( "invalid index" ));
+# endif
+  return (int)((x>>i) & ((SET_(t))1));
+}
+
+FD_FN_CONST static inline int SET_(eq)       ( SET_(t)   x, SET_(t)   y ) { return x==y;       }
+FD_FN_CONST static inline int SET_(subset)   ( SET_(t)   x, SET_(t)   y ) { return x==(x & y); }
 
 FD_FN_CONST static inline SET_(t) SET_(copy)      ( SET_(t) x ) { return x;                }
 FD_FN_CONST static inline SET_(t) SET_(complement)( SET_(t) x ) { return x ^ SET_(full)(); }
 
 FD_FN_CONST static inline SET_(t) SET_(union)    ( SET_(t) x, SET_(t) y ) { return x | y;  }
 FD_FN_CONST static inline SET_(t) SET_(intersect)( SET_(t) x, SET_(t) y ) { return x & y;  }
-FD_FN_CONST static inline SET_(t) SET_(subtract) ( SET_(t) x, SET_(t) y ) { return (SET_(t))(x & ~y); }
-FD_FN_CONST static inline SET_(t) SET_(xor)      ( SET_(t) x, SET_(t) y ) { return x ^  y;  }
+FD_FN_CONST static inline SET_(t) SET_(subtract) ( SET_(t) x, SET_(t) y ) { return x & (SET_(t))~y; }
+FD_FN_CONST static inline SET_(t) SET_(xor)      ( SET_(t) x, SET_(t) y ) { return x ^ y;  }
 
 FD_FN_CONST static inline SET_(t) SET_(if)( int c, SET_(t) t, SET_(t) f ) { return c ? t : f; }
 
@@ -179,10 +218,38 @@ FD_FN_CONST static inline SET_(iter_t) SET_(iter_next)( SET_(iter_t) iter ) { re
 FD_FN_CONST static inline SET_IDX_T    SET_(iter_idx) ( SET_(iter_t) iter ) { return (SET_IDX_T)SET_FIND_LSB( iter ); }
 
 FD_FN_CONST static inline SET_(t) SET_(insert)( SET_(t) x, SET_IDX_T i ) { return x | SET_(ele)(i); }
-FD_FN_CONST static inline SET_(t) SET_(remove)( SET_(t) x, SET_IDX_T i ) { return (SET_(t))(x & ~SET_(ele)(i)); }
+FD_FN_CONST static inline SET_(t) SET_(remove)( SET_(t) x, SET_IDX_T i ) { return x & (SET_(t))~SET_(ele)(i); }
 
-FD_FN_CONST static inline SET_(t) SET_(insert_if)( int c, SET_(t) x, SET_IDX_T i ) { return x | SET_(ele_if)(c,i); }
-FD_FN_CONST static inline SET_(t) SET_(remove_if)( int c, SET_(t) x, SET_IDX_T i ) { return (SET_(t))(x & ~SET_(ele_if)(c,i)); }
+FD_FN_CONST static inline SET_(t) SET_(insert_if)( int c, SET_(t) x, SET_IDX_T i ) { return x |  SET_(ele_if)(c,i); }
+FD_FN_CONST static inline SET_(t) SET_(remove_if)( int c, SET_(t) x, SET_IDX_T i ) { return x & (SET_(t))~SET_(ele_if)(c,i); }
+
+FD_FN_CONST static inline SET_(t) SET_(range)( SET_IDX_T l, SET_IDX_T h ) {
+# if FD_TMPL_USE_HANDHOLDING
+  /* Note: the 0<=l test is commented because compilers make babies cry
+     with superfluous warnings when SET_IDX_T is an unsigned type. */
+  if( FD_UNLIKELY( !( /*(((SET_(t))0)<=l) &*/ (l<=h) & (h<=SET_(max)()) ) ) ) FD_LOG_CRIT(( "invalid range" ));
+# endif
+  /* Compute (2^h) - (2^l) == ones for bits [l,h), with no UB in the
+     case where l and/or h == BIT_CNT */
+  return (SET_(t))( (((SET_(t))(h<=(SET_IDX_T)SET_(PRIVATE_IDX_MASK))) << (h & (SET_IDX_T)SET_(PRIVATE_IDX_MASK)))
+                  - (((SET_(t))(l<=(SET_IDX_T)SET_(PRIVATE_IDX_MASK))) << (l & (SET_IDX_T)SET_(PRIVATE_IDX_MASK))) );
+}
+
+FD_FN_CONST static inline SET_(t) SET_(insert_range)( SET_(t) x, SET_IDX_T l, SET_IDX_T h ) {
+  return x | SET_(range)(l,h);
+}
+
+FD_FN_CONST static inline SET_(t) SET_(select_range)( SET_(t) x, SET_IDX_T l, SET_IDX_T h ) {
+  return x & SET_(range)(l,h);
+}
+
+FD_FN_CONST static inline SET_(t) SET_(remove_range)( SET_(t) x, SET_IDX_T l, SET_IDX_T h ) {
+  return x & (SET_(t))~SET_(range)(l,h);
+}
+
+FD_FN_CONST static inline SET_IDX_T SET_(range_cnt)( SET_(t) x, SET_IDX_T l, SET_IDX_T h ) {
+  return (SET_IDX_T)SET_POPCNT( x & SET_(range)(l,h) );
+}
 
 FD_PROTOTYPES_END
 
@@ -194,4 +261,3 @@ FD_PROTOTYPES_END
 #undef SET_MAX
 #undef SET_TYPE
 #undef SET_NAME
-

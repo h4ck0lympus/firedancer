@@ -75,7 +75,7 @@ fd_pcapng_iter_strerror( int    error,
   static FD_TL char err_cstr_buf[ 1024UL ];
   char * err_cstr = fd_cstr_init( err_cstr_buf );
   if( error==EPROTO ) {
-    return fd_cstr_printf( err_cstr, sizeof(err_cstr_buf), NULL, "parse error at %#lx", ftell(file) );
+    return fd_cstr_printf( err_cstr, sizeof(err_cstr_buf), NULL, "parse error at %#lx", (ulong)ftell(file) );
   } else if( error==-1 && !feof( file ) ) {
     return "end of section";
   } else {
@@ -93,7 +93,7 @@ fd_pcapng_peek_block( FILE *                  stream,
   if( FD_UNLIKELY( pos<0L ) )
     return ferror( stream );
   if( FD_UNLIKELY( !fd_ulong_is_aligned( (ulong)pos, 4U ) ) ) {
-    FD_LOG_DEBUG(( "pcapng: misaligned stream at %#lx", pos ));
+    FD_LOG_DEBUG(( "pcapng: misaligned stream at %#lx", (ulong)pos ));
     return EPROTO;
   }
 
@@ -108,7 +108,7 @@ fd_pcapng_peek_block( FILE *                  stream,
   if( FD_UNLIKELY( (hdr.block_sz <   12U) /* header and footer are mandatory */
                  | (hdr.block_sz >32768U) /* way too large */
                  | (!fd_ulong_is_aligned( hdr.block_sz, 4U )) ) ) {
-    FD_LOG_DEBUG(( "pcapng: block with invalid size %#x at %#lx", hdr.block_sz, pos ));
+    FD_LOG_DEBUG(( "pcapng: block with invalid size %#x at %#lx", hdr.block_sz, (ulong)pos ));
     return EPROTO;
   }
 
@@ -127,7 +127,7 @@ fd_pcapng_peek_block( FILE *                  stream,
 
   /* Check that header and footer match */
   if( FD_UNLIKELY( hdr.block_sz != block_sz ) ) {
-    FD_LOG_DEBUG(( "pcapng: block size in header and footer don't match at %#lx", pos ));
+    FD_LOG_DEBUG(( "pcapng: block size in header and footer don't match at %#lx", (ulong)pos ));
     return EPROTO;
   }
 
@@ -549,10 +549,21 @@ fd_pcapng_iter_err( fd_pcapng_iter_t const * iter ) {
     }                                                                  \
     *(ushort *)( buf+cursor ) = ( (ushort)(t) ); cursor+=2UL;          \
     *(ushort *)( buf+cursor ) = ( (ushort)_sz ); cursor+=2UL;          \
-    fd_memcpy  ( buf+cursor, (v), _sz );                               \
-    fd_memset  ( buf+cursor+_sz, 0, _sz_align-_sz );                   \
+    if( _sz ) fd_memcpy( buf+cursor, (v), _sz );                       \
+    fd_memset( buf+cursor+_sz, 0, _sz_align-_sz );                     \
     cursor+=_sz_align;                                                 \
   } while(0);
+
+#define FD_PCAPNG_FWRITE_NULLOPT()                                     \
+  do {                                                                 \
+    if( FD_UNLIKELY( cursor+4UL > FD_PCAPNG_BLOCK_SZ ) ) {             \
+      FD_LOG_WARNING(( "oversz pcapng block" ));                       \
+      return 0UL;                                                      \
+    }                                                                  \
+    fd_memset( buf+cursor, 0, 4UL );                                   \
+    cursor+=4UL;                                                       \
+  } while(0);
+
 
 /* FD_PCAPNG_FWRITE_BLOCK_TERM terminates a block buffer being
    serialized in the context of an fwrite-style function. */
@@ -591,7 +602,7 @@ fd_pcapng_fwrite_shb( fd_pcapng_shb_opts_t const * opt,
     if( opt->os       ) FD_PCAPNG_FWRITE_OPT( FD_PCAPNG_SHB_OPT_OS,       strlen( opt->os       ), opt->os       );
     if( opt->userappl ) FD_PCAPNG_FWRITE_OPT( FD_PCAPNG_SHB_OPT_USERAPPL, strlen( opt->userappl ), opt->userappl );
   }
-  FD_PCAPNG_FWRITE_OPT( 0, 0, NULL );
+  FD_PCAPNG_FWRITE_NULLOPT();
 
   FD_PCAPNG_FWRITE_BLOCK_TERM();
 
@@ -634,7 +645,7 @@ fd_pcapng_fwrite_idb( uint                         link_type,
       FD_PCAPNG_FWRITE_OPT( FD_PCAPNG_IDB_OPT_HARDWARE,  fd_cstr_nlen( opt->hardware, 64UL ), opt->hardware );
 
   }
-  FD_PCAPNG_FWRITE_OPT( 0, 0, NULL );
+  FD_PCAPNG_FWRITE_NULLOPT();
 
   FD_PCAPNG_FWRITE_BLOCK_TERM();
 

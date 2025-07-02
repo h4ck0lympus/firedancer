@@ -4,8 +4,10 @@
 #include "stem/fd_stem.h"
 #include "shred/fd_shredder.h"
 #include "../ballet/shred/fd_shred.h"
-#include "../ballet/pack/fd_pack.h"
+#include "pack/fd_pack.h"
 #include "topo/fd_topo.h"
+#include "bundle/fd_bundle_crank.h"
+#include "fd_txn_m_t.h"
 
 #include <linux/filter.h>
 
@@ -61,22 +63,75 @@ struct fd_became_leader {
      publish to show peers they were skipped correctly.  This is used
      to adjust some pack limits. */
   ulong total_skipped_ticks;
+
+  /* The epoch of the slot for which we are becoming leader. */
+  ulong epoch;
+
+  /* Consensus-critical cost limits for the slot we are becoming leader.
+     These are typically unchanging, but may change after a feature
+     activation. */
+  struct {
+    ulong slot_max_cost;
+    ulong slot_max_vote_cost;
+    ulong slot_max_write_cost_per_acct;
+  } limits;
+
+  /* Information from the accounts database as of the start of the slot
+     determined by the bank above that is necessary to crank the bundle
+     tip programs properly.  If bundles are not enabled (determined
+     externally, but the relevant tiles should know), these fields are
+     set to 0. */
+  struct {
+    fd_bundle_crank_tip_payment_config_t config[1];
+    uchar                                tip_receiver_owner[32];
+    uchar                                last_blockhash[32];
+  } bundle[1];
 };
 typedef struct fd_became_leader fd_became_leader_t;
+
+struct fd_rooted_bank {
+  void * bank;
+  ulong  slot;
+};
+
+typedef struct fd_rooted_bank fd_rooted_bank_t;
+
+struct fd_completed_bank {
+   ulong slot;
+   uchar hash[32];
+};
+
+typedef struct fd_completed_bank fd_completed_bank_t;
 
 struct fd_microblock_trailer {
   /* The hash of the transactions in the microblock, ready to be
      mixed into PoH. */
   uchar hash[ 32UL ];
 
-  /* Bank index to return the bank busy seq on to indicate that
-     we are done processing these accounts. */
-  ulong bank_idx;
+   /* A sequentially increasing index of the first transaction in the
+     microblock, across all slots ever processed by pack.  This is used
+     by monitoring tools that maintain an ordered history of
+     transactions. */
+  ulong pack_txn_idx;
 
-  /* Sequence number to return on the bank_busy fseq to indicate
-     that the accounts have been fully processed and can be
-     released to pack for reuse. */
-  ulong bank_busy_seq;
+  /* The tips included in the transaction, in lamports. 0 for non-bundle
+     transactions */
+  ulong tips;
+
+  /* If the duration of a microblock is the difference between the
+     publish timestamp of the microblock from pack and the publish
+     timestamp of the microblock from bank, then these represent the
+     elapsed time between the start of the microblock and the 3 state
+     transitions (ready->start loading, loading -> execute, execute ->
+     done) for the first transaction.
+
+     For example, if a microblock starts at t=10 and ends at t=20, and
+     txn_exec_end_pct is UCHAR_MAX / 2, then this transaction started
+     executing at roughly 10+(20-10)*(128/UCHAR_MAX)=15 */
+  uchar txn_start_pct;
+  uchar txn_load_end_pct;
+  uchar txn_end_pct;
+  uchar txn_preload_end_pct;
 };
 typedef struct fd_microblock_trailer fd_microblock_trailer_t;
 
@@ -91,6 +146,22 @@ struct fd_microblock_bank_trailer {
      which guarantees it is valid while pack or bank tiles might be
      using it. */
   void const * bank;
+
+  /* The sequentially increasing index of the microblock, across all
+     banks.  This is used by PoH to ensure microblocks get committed
+     in the same order they are executed. */
+  ulong microblock_idx;
+
+  /* A sequentially increasing index of the first transaction in the
+     microblock, across all slots ever processed by pack.  This is used
+     by monitoring tools that maintain an ordered history of
+     transactions. */
+  ulong pack_txn_idx;
+
+  /* If the microblock is a bundle, with a set of potentially
+     conflicting transactions that should be executed in order, and
+     all either commit or fail atomically. */
+  int is_bundle;
 };
 typedef struct fd_microblock_bank_trailer fd_microblock_bank_trailer_t;
 

@@ -1,5 +1,5 @@
 #include "fd_sysvar_instructions.h"
-#include "../fd_account.h"
+#include "../fd_borrowed_account.h"
 #include "../fd_system_ids.h"
 
 static ulong
@@ -31,30 +31,49 @@ instructions_serialized_size( fd_instr_info_t const *   instrs,
   return serialized_size;
 }
 
-int
+/* https://github.com/anza-xyz/agave/blob/v2.1.1/svm/src/account_loader.rs#L547-L576 */
+void
 fd_sysvar_instructions_serialize_account( fd_exec_txn_ctx_t *      txn_ctx,
                                           fd_instr_info_t const *  instrs,
                                           ushort                   instrs_cnt ) {
   ulong serialized_sz = instructions_serialized_size( instrs, instrs_cnt );
 
-  fd_borrowed_account_t * rec = NULL;
-  int err = fd_txn_borrowed_account_view( txn_ctx, &fd_sysvar_instructions_id, &rec );
-  if( FD_UNLIKELY( err != FD_ACC_MGR_SUCCESS && rec == NULL ) )
-    return FD_ACC_MGR_ERR_READ_FAILED;
-  
-  fd_account_meta_t * meta = fd_valloc_malloc( txn_ctx->valloc, FD_ACCOUNT_META_ALIGN, sizeof(fd_account_meta_t) + serialized_sz );
-  void * data = (uchar *)meta + sizeof(fd_account_meta_t);
+  fd_txn_account_t * rec = NULL;
+  int err = fd_exec_txn_ctx_get_account_with_key( txn_ctx,
+                                                  &fd_sysvar_instructions_id,
+                                                  &rec,
+                                                  fd_txn_account_check_exists );
+  if( FD_UNLIKELY( err!=FD_ACC_MGR_SUCCESS && rec==NULL ) ) {
+    /* The way we use this, this should NEVER hit since the borrowed accounts should be set up
+       before this is called, and this is only called if the sysvar instructions account is in
+       the borrowed accounts list. */
+    FD_LOG_ERR(( "Failed to view sysvar instructions borrowed account. It may not be included in the txn account keys." ));
+  }
 
-  rec->const_meta = rec->meta = meta;
-  rec->const_data = rec->data = data;
+  /* This stays within the FD spad allocation bounds because...
+     1. Case 1: rec->meta!=NULL
+        - rec->meta was set up in `fd_executor_setup_accounts_for_txn()` and data was allocated from the spad
+        - No need to allocate meta and data here
+     2. Case 2: rec->meta==NULL
+        - `fd_executor_setup_accounts_for_txn()` did not make an spad allocation for this account
+        - spad memory is sized out for allocations for 128 (max number) accounts
+        - sizeof(fd_account_meta_t) + serialized_sz will always be less than FD_ACC_TOT_SZ_MAX
+        - at most 127 accounts could be using spad memory right now, so this allocation is safe */
+  if( !rec->vt->is_mutable( rec ) ) {
+    fd_txn_account_setup_meta_mutable( rec, txn_ctx->spad, serialized_sz );
+  }
 
-  memcpy( rec->meta->info.owner, fd_sysvar_owner_id.key, sizeof(fd_pubkey_t) );
-  rec->meta->info.lamports = 0; // TODO: This cannot be right... well, it gets destroyed almost instantly...
-  rec->meta->info.executable = 0;
-  rec->meta->info.rent_epoch = 0;
-  rec->meta->dlen = serialized_sz;
+  /* Agave sets up the borrowed account for the instructions sysvar to contain
+     default values except for the data which is serialized into the account. */
 
-  uchar * serialized_instructions = rec->data;
+  rec->vt->set_owner( rec, &fd_sysvar_owner_id );
+  rec->vt->set_lamports( rec, 0UL );
+  rec->vt->set_executable( rec, 0 );
+  rec->vt->set_rent_epoch( rec, 0UL );
+  rec->vt->set_data_len( rec, serialized_sz );
+  rec->starting_lamports = 0UL;
+
+  uchar * serialized_instructions = rec->vt->get_data_mut( rec );
   ulong offset = 0;
 
   // TODO: do we needs bounds checking?
@@ -80,16 +99,17 @@ fd_sysvar_instructions_serialize_account( fd_exec_txn_ctx_t *      txn_ctx,
 
     for ( ushort j = 0; j < instr->acct_cnt; j++ ) {
       // flags
-      FD_STORE( uchar, serialized_instructions + offset, instr->acct_flags[j] );
+      FD_STORE( uchar, serialized_instructions + offset, fd_instr_get_acc_flags( instr, j ) );
       offset += sizeof(uchar);
 
       // pubkey
-      FD_STORE( fd_pubkey_t, serialized_instructions + offset, instr->acct_pubkeys[j] );
+      ushort idx_in_txn = instr->accounts[j].index_in_transaction;
+      FD_STORE( fd_pubkey_t, serialized_instructions + offset, txn_ctx->account_keys[ idx_in_txn ] );
       offset += sizeof(fd_pubkey_t);
     }
 
     // program_id_pubkey
-    FD_STORE( fd_pubkey_t, serialized_instructions + offset, instr->program_id_pubkey );
+    FD_STORE( fd_pubkey_t, serialized_instructions + offset, txn_ctx->account_keys[ instr->program_id ] );
     offset += sizeof(fd_pubkey_t);
 
     // instr_data_len
@@ -104,34 +124,18 @@ fd_sysvar_instructions_serialize_account( fd_exec_txn_ctx_t *      txn_ctx,
   //
   FD_STORE( ushort, serialized_instructions + offset, 0 );
   offset += sizeof(ushort);
-
-  return FD_ACC_MGR_SUCCESS;
 }
 
-int
-fd_sysvar_instructions_cleanup_account( fd_exec_txn_ctx_t *  txn_ctx ) {
-  fd_borrowed_account_t * rec = NULL;
-  int err = fd_txn_borrowed_account_modify( txn_ctx, &fd_sysvar_instructions_id, 0, &rec );
-  if( FD_UNLIKELY( err != FD_ACC_MGR_SUCCESS ) )
-    return FD_ACC_MGR_ERR_READ_FAILED;
-
-  fd_valloc_free( txn_ctx->valloc, rec->meta );
-  rec->const_meta = rec->meta = NULL;
-  rec->const_data = rec->data = NULL;
-
-  return FD_ACC_MGR_SUCCESS;
-}
-
-int
-fd_sysvar_instructions_update_current_instr_idx( fd_exec_txn_ctx_t *  txn_ctx,
+/* Stores the current instruction index in the instructions sysvar account.
+   https://github.com/anza-xyz/solana-sdk/blob/instructions-sysvar%40v2.2.1/instructions-sysvar/src/lib.rs#L164-L167 */
+void
+fd_sysvar_instructions_update_current_instr_idx( fd_txn_account_t * rec,
                                                  ushort             current_instr_idx ) {
-  fd_borrowed_account_t * rec = NULL;
-  int err = fd_txn_borrowed_account_modify( txn_ctx, &fd_sysvar_instructions_id, 0, &rec );
-  if( FD_UNLIKELY( err != FD_ACC_MGR_SUCCESS ) )
-    return FD_ACC_MGR_ERR_READ_FAILED;
+  /* Extra safety checks */
+  if( FD_UNLIKELY( rec->vt->get_data_len( rec )<sizeof(ushort) ) ) {
+    return;
+  }
 
-  uchar * serialized_current_instr_idx = rec->data + (rec->meta->dlen - sizeof(ushort));
+  uchar * serialized_current_instr_idx = rec->vt->get_data_mut( rec ) + (rec->vt->get_data_len( rec ) - sizeof(ushort));
   FD_STORE( ushort, serialized_current_instr_idx, current_instr_idx );
-
-  return FD_ACC_MGR_SUCCESS;
 }

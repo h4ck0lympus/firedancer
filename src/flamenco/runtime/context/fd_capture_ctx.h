@@ -10,6 +10,7 @@ struct __attribute__((aligned(FD_CAPTURE_CTX_ALIGN))) fd_capture_ctx {
   ulong magic; /* ==FD_CAPTURE_CTX_MAGIC */
 
   /* Solcap */
+  ulong                    solcap_start_slot;
   int                      trace_dirfd;
   int                      trace_mode;
   fd_solcap_writer_t *     capture;
@@ -20,19 +21,25 @@ struct __attribute__((aligned(FD_CAPTURE_CTX_ALIGN))) fd_capture_ctx {
   char const *             checkpt_path;    /* Wksp checkpoint format */
   char const *             checkpt_archive; /* Funk archive format */
 
-  /* Prune */
-  fd_funk_t *              pruned_funk; /* Capturing accessed accounts during execution*/
-
   /*======== PROTOBUF ========*/
   char const *             dump_proto_output_dir;
   char const *             dump_proto_sig_filter;
   ulong                    dump_proto_start_slot;
 
   /* Instruction Capture */
-  int                      dump_insn_to_pb;
+  int                      dump_instr_to_pb;
 
   /* Transaction Capture */
   int                      dump_txn_to_pb;
+
+  /* Block Capture */
+  int                      dump_block_to_pb;
+
+  /* Syscall Capture */
+  int                      dump_syscall_to_pb;
+
+  /* ELF Capture */
+  int                      dump_elf_to_pb;
 };
 typedef struct fd_capture_ctx fd_capture_ctx_t;
 #define FD_CAPTURE_CTX_FOOTPRINT ( sizeof(fd_capture_ctx_t) + fd_solcap_writer_footprint() )
@@ -51,6 +58,20 @@ fd_capture_ctx_leave( fd_capture_ctx_t * ctx );
 
 void *
 fd_capture_ctx_delete( void * mem );
+
+/* Temporary locks to protect the blockstore txn_map. See comment in
+   fd_runtime_write_transaction_status. */
+void
+fd_capture_ctx_txn_status_start_read( void );
+
+void
+fd_capture_ctx_txn_status_end_read( void );
+
+void
+fd_capture_ctx_txn_status_start_write( void );
+
+void
+fd_capture_ctx_txn_status_end_write( void );
 
 FD_PROTOTYPES_END
 

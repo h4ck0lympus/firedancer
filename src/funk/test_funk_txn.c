@@ -26,7 +26,7 @@ main( int     argc,
   ulong        wksp_tag = fd_env_strip_cmdline_ulong( &argc, &argv, "--wksp-tag",  NULL,          1234UL );
   ulong        seed     = fd_env_strip_cmdline_ulong( &argc, &argv, "--seed",      NULL,          5678UL );
   ulong        txn_max  = fd_env_strip_cmdline_ulong( &argc, &argv, "--txn-max",   NULL,            32UL );
-  ulong        rec_max  = fd_env_strip_cmdline_ulong( &argc, &argv, "--rec-max",   NULL,            32UL );
+  uint         rec_max  = fd_env_strip_cmdline_uint(  &argc, &argv, "--rec-max",   NULL,              32 );
   ulong        iter_max = fd_env_strip_cmdline_ulong( &argc, &argv, "--iter-max",  NULL,       1048576UL );
   int          verbose  = fd_env_strip_cmdline_int  ( &argc, &argv, "--verbose",   NULL,               0 );
 
@@ -44,16 +44,18 @@ main( int     argc,
 
   if( FD_UNLIKELY( !wksp ) ) FD_LOG_ERR(( "Unable to attach to wksp" ));
 
-  FD_LOG_NOTICE(( "Testing with --wksp-tag %lu --seed %lu --txn-max %lu --rxn-max %lu --iter-max %lu --verbose %i",
+  FD_LOG_NOTICE(( "Testing with --wksp-tag %lu --seed %lu --txn-max %lu --rxn-max %u --iter-max %lu --verbose %i",
                   wksp_tag, seed, txn_max, rec_max, iter_max, verbose ));
 
-  fd_funk_t * funk = fd_funk_join( fd_funk_new( fd_wksp_alloc_laddr( wksp, fd_funk_align(), fd_funk_footprint(), wksp_tag ),
-                                                wksp_tag, seed, txn_max, rec_max ) );
+  void * shfunk = fd_funk_new( fd_wksp_alloc_laddr(
+      wksp, fd_funk_align(), fd_funk_footprint( txn_max, rec_max ), wksp_tag ),
+      wksp_tag, seed, txn_max, rec_max );
+  fd_funk_t funk_[1];
+  fd_funk_t * funk = fd_funk_join( funk_, shfunk );
   if( FD_UNLIKELY( !funk ) ) FD_LOG_ERR(( "Unable to create funk" ));
 
-  fd_funk_start_write( funk );
-
-  fd_funk_txn_t * map = fd_funk_txn_map( funk, wksp );
+  fd_funk_txn_map_t *  map  = fd_funk_txn_map( funk );
+  fd_funk_txn_pool_t * pool = fd_funk_txn_pool( funk );
 
   for( ulong rem=1000000UL; rem; rem-- ) {
     ulong idx = (ulong)fd_rng_uint( rng );
@@ -65,8 +67,7 @@ main( int     argc,
 
   fd_funk_txn_xid_t const * last_publish = fd_funk_last_publish( funk );
 
-  FD_TEST( !fd_funk_txn_cnt    ( map ) );
-  FD_TEST( !fd_funk_txn_is_full( map ) );
+  FD_TEST( !fd_funk_txn_is_full( funk ) );
 
   fd_funk_txn_xid_t recent_xid[ 64 ]; for( ulong idx=0UL; idx<64UL; idx++ ) recent_xid[ idx ] = fd_funk_generate_xid();
   ulong recent_cursor = 0UL;
@@ -120,7 +121,7 @@ main( int     argc,
     case 4: { /* prepare from most recent published with a dead xid (succeed if not full) */
       if( FD_UNLIKELY( !~live_pmap ) ) break;
       uint idx; RANDOM_SET_BIT_IDX( ~live_pmap );
-      int is_full = fd_funk_txn_is_full( map );
+      int is_full = fd_funk_txn_is_full( funk );
       if( FD_UNLIKELY( fd_funk_txn_xid_eq( &recent_xid[idx], last_publish ) ) ) break;
       fd_funk_txn_t * txn = fd_funk_txn_prepare( funk, NULL, &recent_xid[idx], verbose );
       if( is_full ) FD_TEST( !txn );
@@ -132,7 +133,7 @@ main( int     argc,
       fd_funk_txn_xid_t * xid = &recent_xid[ recent_cursor ];
       *xid = fd_funk_generate_xid();
       recent_cursor = (recent_cursor+1UL) & 63UL;
-      int is_full = fd_funk_txn_is_full( map );
+      int is_full = fd_funk_txn_is_full( funk );
       fd_funk_txn_t * txn = fd_funk_txn_prepare( funk, NULL, xid, verbose );
       if( is_full ) FD_TEST( !txn );
       else          FD_TEST( txn && fd_funk_txn_xid_eq( fd_funk_txn_xid( txn ), xid ) );
@@ -154,7 +155,7 @@ main( int     argc,
       if( FD_UNLIKELY( fd_funk_txn_xid_eq( &recent_xid[idx1], last_publish ) ) ) break;
       fd_funk_txn_t * parent = fd_funk_txn_query( &recent_xid[idx], map );
       FD_TEST( parent && fd_funk_txn_xid_eq( fd_funk_txn_xid( parent ), &recent_xid[idx] ) );
-      int is_full = fd_funk_txn_is_full( map );
+      int is_full = fd_funk_txn_is_full( funk );
       fd_funk_txn_t * txn = fd_funk_txn_prepare( funk, parent, &recent_xid[idx1], verbose );
       if( is_full ) FD_TEST( !txn );
       else          FD_TEST( txn && fd_funk_txn_xid_eq( fd_funk_txn_xid( txn ), &recent_xid[idx1] ) );
@@ -169,7 +170,7 @@ main( int     argc,
       fd_funk_txn_xid_t * xid = &recent_xid[ recent_cursor ];
       *xid = fd_funk_generate_xid();
       recent_cursor = (recent_cursor+1UL) & 63UL;
-      int is_full = fd_funk_txn_is_full( map );
+      int is_full = fd_funk_txn_is_full( funk );
       fd_funk_txn_t * txn = fd_funk_txn_prepare( funk, parent, xid, verbose );
       if( is_full ) FD_TEST( !txn );
       else          FD_TEST( txn && fd_funk_txn_xid_eq( fd_funk_txn_xid( txn ), xid ) );
@@ -190,7 +191,9 @@ main( int     argc,
       uint idx; RANDOM_SET_BIT_IDX( ~live_pmap );
       fd_funk_txn_t * txn = fd_funk_txn_query( &recent_xid[idx], map );
       FD_TEST( !txn );
+#ifdef FD_FUNK_HANDHOLDING
       FD_TEST( fd_funk_txn_cancel( funk, txn, verbose )==0UL );
+#endif
       break;
     }
 
@@ -199,7 +202,9 @@ main( int     argc,
       xid[0] = fd_funk_generate_xid();
       fd_funk_txn_t * txn = fd_funk_txn_query( xid, map );
       FD_TEST( !txn );
+#ifdef FD_FUNK_HANDHOLDING
       FD_TEST( fd_funk_txn_cancel( funk, txn, verbose )==0UL );
+#endif
       break;
     }
 
@@ -218,7 +223,9 @@ main( int     argc,
       uint idx; RANDOM_SET_BIT_IDX( ~live_pmap );
       fd_funk_txn_t * txn = fd_funk_txn_query( &recent_xid[idx], map );
       FD_TEST( !txn );
+#ifdef FD_FUNK_HANDHOLDING
       FD_TEST( fd_funk_txn_publish( funk, txn, verbose )==0UL );
+#endif
       break;
     }
 
@@ -227,18 +234,21 @@ main( int     argc,
       xid[0] = fd_funk_generate_xid();
       fd_funk_txn_t * txn = fd_funk_txn_query( xid, map );
       FD_TEST( !txn );
+#ifdef FD_FUNK_HANDHOLDING
       FD_TEST( fd_funk_txn_publish( funk, txn, verbose )==0UL );
+#endif
       break;
     }
 
     default: { /* various sanity checks */
       uint idx = r & 63U; r >>= 6;
       fd_funk_txn_t * txn = fd_funk_txn_query( &recent_xid[idx], map );
+#ifdef FD_FUNK_HANDHOLDING
       fd_funk_txn_xid_t xid[1];
       xid[0] = fd_funk_generate_xid();
 
       fd_funk_txn_t * dead = NULL;
-      if( txn_max && !fd_funk_txn_query( fd_funk_txn_xid( &map[0] ), map ) ) dead = &map[0];
+      if( txn_max && !fd_funk_txn_query( fd_funk_txn_xid( &pool->ele[0] ), map ) ) dead = &pool->ele[0];
 
       fd_funk_txn_t bad[1]; fd_funk_txn_xid_copy( &bad->xid, xid );
 
@@ -260,15 +270,16 @@ main( int     argc,
       FD_TEST( !fd_funk_txn_publish( funk, NULL, verbose ) );                 /* NULL txn */
       FD_TEST( !fd_funk_txn_publish( funk, bad,  verbose ) );                 /* tx not in map */
       if( dead ) FD_TEST( !fd_funk_txn_publish( funk, dead, verbose ) );      /* tx not in prep */
+#endif
 
       if( txn ) {
         FD_TEST( fd_funk_txn_xid_eq( fd_funk_txn_xid( txn ), &recent_xid[idx] ) );
 
-        fd_funk_txn_t * parent      = fd_funk_txn_parent      ( txn, map );
-        fd_funk_txn_t * first_born  = fd_funk_txn_child_head  ( txn, map );
-        fd_funk_txn_t * last_born   = fd_funk_txn_child_tail  ( txn, map );
-        fd_funk_txn_t * older_sib   = fd_funk_txn_sibling_prev( txn, map );
-        fd_funk_txn_t * younger_sib = fd_funk_txn_sibling_next( txn, map );
+        fd_funk_txn_t * parent      = fd_funk_txn_parent      ( txn, pool );
+        fd_funk_txn_t * first_born  = fd_funk_txn_child_head  ( txn, pool );
+        fd_funk_txn_t * last_born   = fd_funk_txn_child_tail  ( txn, pool );
+        fd_funk_txn_t * older_sib   = fd_funk_txn_sibling_prev( txn, pool );
+        fd_funk_txn_t * younger_sib = fd_funk_txn_sibling_next( txn, pool );
 
         /* Make sure transaction suitable marked as frozen */
 
@@ -284,20 +295,20 @@ main( int     argc,
         /* Make sure txn's children know that txn is the parent (in both
            directions) */
 
-        for( cur = first_born; cur; cur = fd_funk_txn_sibling_next( cur, map ) ) FD_TEST( fd_funk_txn_parent( cur, map )==txn );
-        for( cur = last_born;  cur; cur = fd_funk_txn_sibling_prev( cur, map ) ) FD_TEST( fd_funk_txn_parent( cur, map )==txn );
+        for( cur = first_born; cur; cur = fd_funk_txn_sibling_next( cur, pool ) ) FD_TEST( fd_funk_txn_parent( cur, pool )==txn );
+        for( cur = last_born;  cur; cur = fd_funk_txn_sibling_prev( cur, pool ) ) FD_TEST( fd_funk_txn_parent( cur, pool )==txn );
 
         /* Make sure txn's parent knows this txn is a child (in both
            directions) */
 
-        if( !parent ) cur = fd_funk_last_publish_child_head( funk, map );
-        else          cur = fd_funk_txn_child_head( parent, map );
-        for( ; cur; cur = fd_funk_txn_sibling_next( cur, map ) ) if( cur==txn ) break;
+        if( !parent ) cur = fd_funk_last_publish_child_head( funk, pool );
+        else          cur = fd_funk_txn_child_head( parent, pool );
+        for( ; cur; cur = fd_funk_txn_sibling_next( cur, pool ) ) if( cur==txn ) break;
         FD_TEST( cur );
 
-        if( !parent ) cur = fd_funk_last_publish_child_tail( funk, map );
-        else          cur = fd_funk_txn_child_tail( parent, map );
-        for( ; cur; cur = fd_funk_txn_sibling_prev( cur, map ) ) if( cur==txn ) break;
+        if( !parent ) cur = fd_funk_last_publish_child_tail( funk, pool );
+        else          cur = fd_funk_txn_child_tail( parent, pool );
+        for( ; cur; cur = fd_funk_txn_sibling_prev( cur, pool ) ) if( cur==txn ) break;
         FD_TEST( cur );
       }
 
@@ -305,12 +316,13 @@ main( int     argc,
     }
     }
 
+#ifdef FD_FUNK_HANDHOLDING
     FD_TEST( !fd_funk_verify( funk ) );
+#endif
   }
 
-  fd_funk_end_write( funk );
-
-  fd_wksp_free_laddr( fd_funk_delete( fd_funk_leave( funk ) ) );
+  fd_funk_leave( funk, NULL );
+  fd_wksp_free_laddr( fd_funk_delete( shfunk ) );
   if( name ) fd_wksp_detach( wksp );
   else       fd_wksp_delete_anonymous( wksp );
 

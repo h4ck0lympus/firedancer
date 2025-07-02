@@ -7,6 +7,7 @@ DIR="$( realpath -e -- "$DIR"; )";    # Resolve its full path if need be
 cd $DIR/../..
 
 OBJDIR=${OBJDIR:-build/native/gcc}
+NUM_PROCESSES=${NUM_PROCESSES:-12}
 
 if [ "$LOG_PATH" == "" ]; then
   LOG_PATH="`mktemp -d`"
@@ -22,42 +23,41 @@ GIT_REF=${GIT_REF:-$(cat contrib/test/test-vectors-fixtures/test-vectors-commit-
 echo $GIT_REF
 
 if [ ! -d dump/test-vectors ]; then
-  pushd dump
-  git clone --depth=1 -q https://github.com/firedancer-io/test-vectors.git
+  cd dump
+  git clone -q --depth=1 https://github.com/firedancer-io/test-vectors.git
   cd test-vectors
-  git fetch --depth=1 -q origin $GIT_REF
-  git checkout -q $GIT_REF
-  popd
 else
-  pushd dump/test-vectors
-  git fetch --depth=1 -q origin $GIT_REF
-  git checkout -q $GIT_REF
-  popd
+  cd dump/test-vectors
 fi
 
-LOG=$LOG_PATH/test_exec_syscall
-cat contrib/test/test-vectors-fixtures/syscall-fixtures/*.list | xargs -P 4 -n 1000 ./$OBJDIR/unit-test/test_exec_sol_compat --log-path $LOG
+git fetch -q --depth=1 origin $GIT_REF
+git checkout -q $GIT_REF
+cd ../..
 
-LOG=$LOG_PATH/test_exec_cpi
-cat contrib/test/test-vectors-fixtures/cpi-fixtures/*.list | xargs -P 4 -n 1000 ./$OBJDIR/unit-test/test_exec_sol_compat --log-path $LOG
+LOG=$LOG_PATH/test_exec_block
+cat contrib/test/test-vectors-fixtures/block-fixtures/*.list | xargs -P $NUM_PROCESSES -n 1000 ./$OBJDIR/unit-test/test_exec_sol_compat --log-path $LOG --wksp-page-sz 1073741824 --tile-cpus 5-6
+
+LOG=$LOG_PATH/test_exec_syscall
+cat contrib/test/test-vectors-fixtures/syscall-fixtures/*.list | xargs -P $NUM_PROCESSES -n 1000 ./$OBJDIR/unit-test/test_exec_sol_compat --log-path $LOG --wksp-page-sz 1073741824
 
 LOG=$LOG_PATH/test_exec_interp
-cat contrib/test/test-vectors-fixtures/vm-interp-fixtures/*.list | xargs -P 4 -n 1000 ./$OBJDIR/unit-test/test_exec_sol_compat --log-path $LOG
+cat contrib/test/test-vectors-fixtures/vm-interp-fixtures/*.list | xargs -P $NUM_PROCESSES -n 1000 ./$OBJDIR/unit-test/test_exec_sol_compat --log-path $LOG --wksp-page-sz 1073741824
+find dump/test-vectors/vm_interp/fixtures/v0 -type f -name '*.fix' | xargs -P $NUM_PROCESSES -n 1000 ./$OBJDIR/unit-test/test_exec_sol_compat --log-path $LOG --wksp-page-sz 1073741824
+find dump/test-vectors/vm_interp/fixtures/v1 -type f -name '*.fix' | xargs -P $NUM_PROCESSES -n 1000 ./$OBJDIR/unit-test/test_exec_sol_compat --log-path $LOG --wksp-page-sz 1073741824
+find dump/test-vectors/vm_interp/fixtures/v2 -type f -name '*.fix' | xargs -P $NUM_PROCESSES -n 1000 ./$OBJDIR/unit-test/test_exec_sol_compat --log-path $LOG --wksp-page-sz 1073741824
+find dump/test-vectors/vm_interp/fixtures/v3 -type f -name '*.fix' | xargs -P $NUM_PROCESSES -n 1000 ./$OBJDIR/unit-test/test_exec_sol_compat --log-path $LOG --wksp-page-sz 1073741824
 
 LOG=$LOG_PATH/test_exec_precompiles
-cat contrib/test/test-vectors-fixtures/precompile-fixtures/*.list | xargs -P 4 -n 1000 ./$OBJDIR/unit-test/test_exec_sol_compat --log-path $LOG
+cat contrib/test/test-vectors-fixtures/precompile-fixtures/*.list | xargs -P $NUM_PROCESSES -n 1000 ./$OBJDIR/unit-test/test_exec_sol_compat --log-path $LOG --wksp-page-sz 1073741824
 
 LOG=$LOG_PATH/test_exec_txn
-cat contrib/test/test-vectors-fixtures/txn-fixtures/*.list | xargs -P 4 ./$OBJDIR/unit-test/test_exec_sol_compat --log-path $LOG
+cat contrib/test/test-vectors-fixtures/txn-fixtures/*.list | xargs -P $NUM_PROCESSES ./$OBJDIR/unit-test/test_exec_sol_compat --log-path $LOG --wksp-page-sz 1073741824
 
 zstd -df dump/test-vectors/elf_loader/fixtures/*.zst
 LOG=$LOG_PATH/test_elf_loader
-cat contrib/test/test-vectors-fixtures/elf-loader-fixtures/*.list | xargs -P 4 -n 1000 ./$OBJDIR/unit-test/test_exec_sol_compat --log-path $LOG
+cat contrib/test/test-vectors-fixtures/elf-loader-fixtures/*.list | xargs -P $NUM_PROCESSES -n 1000 ./$OBJDIR/unit-test/test_exec_sol_compat --log-path $LOG --wksp-page-sz 1073741824
 
 LOG=$LOG_PATH/test_exec_instr
-cat contrib/test/test-vectors-fixtures/instr-fixtures/*.list | xargs -P 4 -n 1000 ./$OBJDIR/unit-test/test_exec_instr --log-path $LOG
-
-LOG=$LOG_PATH/test_vm_validate
-cat contrib/test/test-vectors-fixtures/vm-validate-fixtures/*.list | xargs -P 4 -n 1000 ./$OBJDIR/unit-test/test_exec_sol_compat --log-path $LOG
+cat contrib/test/test-vectors-fixtures/instr-fixtures/*.list | xargs -P $NUM_PROCESSES -n 1000 ./$OBJDIR/unit-test/test_exec_sol_compat --log-path $LOG --wksp-page-sz 1073741824
 
 echo Test vectors success

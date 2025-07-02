@@ -9,10 +9,9 @@ fd_deshredder_init( fd_deshredder_t *   shredder,
                     ulong               shred_cnt ) {
   shredder->shreds    = shreds;
   shredder->shred_cnt = (uint)shred_cnt;
-  shredder->data_off  = 0U;
   shredder->buf       = buf;
   shredder->bufsz     = bufsz;
-  shredder->result    = -FD_SHRED_EPIPE;
+  shredder->result    = FD_SHRED_EPIPE;
 }
 
 long
@@ -23,17 +22,16 @@ fd_deshredder_next( fd_deshredder_t * const shredder ) {
   /* Consume shreds, appending each shred buffer into entry buffer */
   for(;;) {
     /* Sanity check: No unexpected "end of shred batch" */
-    if( FD_UNLIKELY( shredder->shred_cnt == 0U ) )
+    if( FD_UNLIKELY( shredder->shred_cnt == 0U ) ) {
+      shredder->result = FD_SHRED_EPIPE;
       break;
+    }
 
     fd_shred_t const * shred = *shredder->shreds;
 
     /* Sanity check: Type must be data shred */
     uchar shred_type = fd_shred_type( shred->variant );
-    if( FD_UNLIKELY( shred_type!=FD_SHRED_TYPE_LEGACY_DATA
-                  && shred_type!=FD_SHRED_TYPE_MERKLE_DATA
-                  && shred_type!=FD_SHRED_TYPE_MERKLE_DATA_CHAINED
-                  && shred_type!=FD_SHRED_TYPE_MERKLE_DATA_CHAINED_RESIGNED ) )
+    if( FD_UNLIKELY( !fd_shred_is_data( shred_type ) ) )
       return -FD_SHRED_EINVAL;
 
     /* Ensure entry fits next shred */

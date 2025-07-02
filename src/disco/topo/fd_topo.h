@@ -2,8 +2,10 @@
 #define HEADER_fd_src_disco_topo_fd_topo_h
 
 #include "../stem/fd_stem.h"
-#include "../quic/fd_tpu.h"
 #include "../../tango/fd_tango.h"
+#include "../../waltz/xdp/fd_xdp1.h"
+#include "../../ballet/base58/fd_base58.h"
+#include "../../util/net/fd_net_headers.h"
 
 /* Maximum number of workspaces that may be present in a topology. */
 #define FD_TOPO_MAX_WKSPS         (256UL)
@@ -21,7 +23,10 @@
 /* Maximum number of objects that a tile can use. */
 #define FD_TOPO_MAX_TILE_OBJS      ( 256UL)
 
-/* A workspace is a Firedance specific memory management structure that
+/* Maximum number of additional ip addresses */
+#define FD_NET_MAX_SRC_ADDR 4
+
+/* A workspace is a Firedancer specific memory management structure that
    sits on top of 1 or more memory mapped gigantic or huge pages mounted
    to the hugetlbfs. */
 typedef struct {
@@ -56,22 +61,36 @@ typedef struct {
   char  name[ 13UL ]; /* The name of this link, like "pack_bank". There can be multiple of each link name in a topology. */
   ulong kind_id;      /* The ID of this link within its name.  If there are N links of a particular name, they have IDs [0, N).  The pair (name, kind_id) uniquely identifies a link, as does "id" on its own. */
 
-  int   is_reasm; /* If the link is a reassembly buffer. */
   ulong depth;    /* The depth of the mcache representing the link. */
   ulong mtu;      /* The MTU of data fragments in the mcache.  A value of 0 means there is no dcache. */
   ulong burst;    /* The max amount of MTU sized data fragments that might be bursted to the dcache. */
 
   ulong mcache_obj_id;
   ulong dcache_obj_id;
-  ulong reasm_obj_id;
 
   /* Computed fields.  These are not supplied as configuration but calculated as needed. */
   struct {
     fd_frag_meta_t * mcache; /* The mcache of this link. */
     void *           dcache; /* The dcache of this link, if it has one. */
-    fd_tpu_reasm_t * reasm;  /* The reassembly buffer of this link, if it has one. */
   };
+
+  uint permit_no_consumers : 1;  /* Permit a topology where this link has no consumers */
+  uint permit_no_producers : 1;  /* Permit a topology where this link has no producers */
 } fd_topo_link_t;
+
+struct fd_topo_net_tile {
+  ulong umem_dcache_obj_id;  /* dcache for XDP UMEM frames */
+  uint  bind_address;
+
+  ushort shred_listen_port;
+  ushort quic_transaction_listen_port;
+  ushort legacy_transaction_listen_port;
+  ushort gossip_listen_port;
+  ushort repair_intake_listen_port;
+  ushort repair_serve_listen_port;
+  ushort send_src_port;
+};
+typedef struct fd_topo_net_tile fd_topo_net_tile_t;
 
 /* A tile is a unique process that is spawned by Firedancer to represent
    one thread of execution.  Firedancer sandboxes all tiles to their own
@@ -84,7 +103,7 @@ typedef struct {
    All input links will be automatically polled by the tile
    infrastructure, and output links will automatically source and manage
    credits from consumers. */
-typedef struct {
+struct fd_topo_tile {
   ulong id;                     /* The ID of this tile.  Indexed from [0, tile_cnt).  When placed in a topology, the ID must be the index of the tile in the tiles list. */
   char  name[ 7UL ];            /* The name of this tile.  There can be multiple of each tile name in a topology. */
   ulong kind_id;                /* The ID of this tile within its name.  If there are n tile of a particular name, they have IDs [0, N).  The pair (name, kind_id) uniquely identifies a tile, as does "id" on its own. */
@@ -104,6 +123,7 @@ typedef struct {
 
   ulong tile_obj_id;
   ulong metrics_obj_id;
+  ulong keyswitch_obj_id;
   ulong in_link_fseq_obj_id[ FD_TOPO_MAX_TILE_IN_LINKS ];
 
   ulong uses_obj_cnt;
@@ -124,42 +144,74 @@ typedef struct {
   /* Configuration fields.  These are required to be known by the topology so it can determine the
      total size of Firedancer in memory. */
   union {
+    fd_topo_net_tile_t net;
+
     struct {
-      char   interface[ 16 ];
+      fd_topo_net_tile_t net;
+      char interface[ 16 ];
+
+      /* xdp specific options */
       ulong  xdp_rx_queue_size;
       ulong  xdp_tx_queue_size;
-      ulong  xdp_aio_depth;
-      char   xdp_mode[4];
+      ulong  free_ring_depth;
+      long   tx_flush_timeout_ns;
+      char   xdp_mode[8];
       int    zero_copy;
-      uint   src_ip_addr;
-      uchar  src_mac_addr[6];
 
-      ushort shred_listen_port;
-      ushort quic_transaction_listen_port;
-      ushort legacy_transaction_listen_port;
-      ushort gossip_listen_port;
-      ushort repair_intake_listen_port;
-      ushort repair_serve_listen_port;
-    } net;
+      ulong netdev_dbl_buf_obj_id; /* dbl_buf containing netdev_tbl */
+      ulong fib4_main_obj_id;      /* fib4 containing main route table */
+      ulong fib4_local_obj_id;     /* fib4 containing local route table */
+      ulong neigh4_obj_id;         /* neigh4 hash map header */
+      ulong neigh4_ele_obj_id;     /* neigh4 hash map slots */
+    } xdp;
 
     struct {
-      ulong  depth;
+      fd_topo_net_tile_t net;
+      /* sock specific options */
+      int so_sndbuf;
+      int so_rcvbuf;
+    } sock;
+
+    struct {
+      ulong netdev_dbl_buf_obj_id; /* dbl_buf containing netdev_tbl */
+      ulong fib4_main_obj_id;      /* fib4 containing main route table */
+      ulong fib4_local_obj_id;     /* fib4 containing local route table */
+      char  neigh_if[ 16 ];        /* neigh4 interface name */
+      ulong neigh4_obj_id;         /* neigh4 hash map header */
+      ulong neigh4_ele_obj_id;     /* neigh4 hash map slots */
+    } netlink;
+
+    struct {
+      uint   out_depth;
       uint   reasm_cnt;
       ulong  max_concurrent_connections;
       ulong  max_concurrent_handshakes;
-      ulong  max_inflight_quic_packets;
-      ulong  max_concurrent_streams_per_connection;
-      uint   ip_addr;
-      uchar  src_mac_addr[ 6 ];
       ushort quic_transaction_listen_port;
       ulong  idle_timeout_millis;
-      char   identity_key_path[ PATH_MAX ];
+      uint   ack_delay_millis;
       int    retry;
     } quic;
 
     struct {
       ulong tcache_depth;
+    } verify;
+
+    struct {
+      ulong tcache_depth;
     } dedup;
+
+    struct {
+      char  url[ 256 ];
+      ulong url_len;
+      char  sni[ 256 ];
+      ulong sni_len;
+      char  identity_key_path[ PATH_MAX ];
+      char  key_log_path[ PATH_MAX ];
+      ulong buf_sz;
+      ulong ssl_heap_sz;
+      ulong keepalive_interval_nanos;
+      uchar tls_cert_verify : 1;
+    } bundle;
 
     struct {
       ulong max_pending_transactions;
@@ -167,24 +219,42 @@ typedef struct {
       int   larger_max_cost_per_block;
       int   larger_shred_limits_per_block;
       int   use_consumed_cus;
-      char  identity_key_path[ PATH_MAX ];
+      int   schedule_strategy;
+      struct {
+        int   enabled;
+        uchar tip_distribution_program_addr[ 32 ];
+        uchar tip_payment_program_addr[ 32 ];
+        uchar tip_distribution_authority[ 32 ];
+        ulong commission_bps;
+        char  identity_key_path[ PATH_MAX ];
+        char  vote_account_path[ PATH_MAX ]; /* or pubkey is okay */
+      } bundle;
     } pack;
 
     struct {
+      int   lagged_consecutive_leader_start;
       int   plugins_enabled;
       ulong bank_cnt;
       char  identity_key_path[ PATH_MAX ];
+      struct {
+        int   enabled;
+        uchar tip_payment_program_addr[ 32 ];
+        uchar tip_distribution_program_addr[ 32 ];
+        char  vote_account_path[ PATH_MAX ];
+      } bundle;
     } poh;
 
     struct {
       ulong  depth;
-      uint   ip_addr;
-      uchar  src_mac_addr[ 6 ];
       ulong  fec_resolver_depth;
       char   identity_key_path[ PATH_MAX ];
       ushort shred_listen_port;
       int    larger_shred_limits_per_block;
       ulong  expected_shred_version;
+      struct {
+        uint   ip;   /* in network byte order */
+        ushort port; /* in host byte order */
+      } adtl_dest; /* be careful ip and host are in different byte order */
     } shred;
 
     struct {
@@ -196,48 +266,80 @@ typedef struct {
     } sign;
 
     struct {
+      uint   listen_addr;
       ushort listen_port;
 
       int    is_voting;
 
       char   cluster[ 32 ];
       char   identity_key_path[ PATH_MAX ];
+
+      ulong  max_http_connections;
+      ulong  max_websocket_connections;
+      ulong  max_http_request_length;
+      ulong  send_buffer_size_mb;
+      int    schedule_strategy;
     } gui;
 
     struct {
+      uint   prometheus_listen_addr;
       ushort prometheus_listen_port;
     } metric;
 
     struct {
+      ulong fec_max;
+      ulong max_vote_accounts;
 
-      /* specified by [tiles.replay] */
-
-      char  blockstore_checkpt[ PATH_MAX ];
-      int   blockstore_publish;
       int   tx_metadata_storage;
-      char  capture[ PATH_MAX ];
+      ulong funk_obj_id;
       char  funk_checkpt[ PATH_MAX ];
-      ulong funk_rec_max;
-      ulong funk_sz_gb;
-      ulong funk_txn_max;
-      char  funk_file[ PATH_MAX ];
       char  genesis[ PATH_MAX ];
       char  incremental[ PATH_MAX ];
       char  slots_replayed[ PATH_MAX ];
+      char  shred_cap[ PATH_MAX ];
       char  snapshot[ PATH_MAX ];
+      char  snapshot_dir[ PATH_MAX ];
       char  status_cache[ PATH_MAX ];
-      ulong tpool_thread_count;
       char  cluster_version[ 32 ];
-
-      /* not specified by [tiles.replay] */
+      char  tower_checkpt[ PATH_MAX ];
+      int   plugins_enabled;
 
       char  identity_key_path[ PATH_MAX ];
       uint  ip_addr;
-      uchar src_mac_addr[ 6 ];
-      int   vote;
       char  vote_account_path[ PATH_MAX ];
-      ulong bank_tile_count;
+
+      char  blockstore_file[ PATH_MAX ];
+      char  blockstore_checkpt[ PATH_MAX ];
+
+      /* not specified in TOML */
+
+      int   incremental_src_type;
+      int   snapshot_src_type;
+
+      ulong enable_features_cnt;
+      char  enable_features[ 16 ][ FD_BASE58_ENCODED_32_SZ ];
+
+      ulong enable_bank_hash_cmp;
+
+      ulong capture_start_slot;
+      char  solcap_capture[ PATH_MAX ];
+      char  dump_proto_dir[ PATH_MAX ];
+      int   dump_block_to_pb;
     } replay;
+
+    struct {
+      ulong funk_obj_id;
+
+      ulong capture_start_slot;
+      char  dump_proto_dir[ PATH_MAX ];
+      int   dump_instr_to_pb;
+      int   dump_txn_to_pb;
+      int   dump_syscall_to_pb;
+    } exec;
+
+    struct {
+      ulong funk_obj_id;
+    } writer;
 
     struct {
       ushort send_to_port;
@@ -258,21 +360,16 @@ typedef struct {
       float cu_price_spread;
     } benchg;
 
-    /* Firedancer-only tile configs */
-
     struct {
       ushort  gossip_listen_port;
+#     define FD_TOPO_GOSSIP_ENTRYPOINTS_MAX 16
       ulong   entrypoints_cnt;
-      uint    entrypoints[16];
-      ulong   peer_ports_cnt;
-      ushort  peer_ports[16];
-
+      fd_ip4_port_t entrypoints[ FD_TOPO_GOSSIP_ENTRYPOINTS_MAX ];
       uint    ip_addr;
-      uchar   src_mac_addr[ 6 ];
       char    identity_key_path[ PATH_MAX ];
       ushort  tvu_port;
-      ushort  tvu_fwd_port;
       ushort  tpu_port;
+      ushort  tpu_quic_port;
       ushort  tpu_vote_port;
       ushort  repair_serve_port;
       ulong   expected_shred_version;
@@ -281,16 +378,17 @@ typedef struct {
     struct {
       ushort  repair_intake_listen_port;
       ushort  repair_serve_listen_port;
+      char    good_peer_cache_file[ PATH_MAX ];
 
       /* non-config */
 
-      uint    ip_addr;
-      uchar   src_mac_addr[ 6 ];
+      int     good_peer_cache_file_fd;
       char    identity_key_path[ PATH_MAX ];
+      ulong   max_pending_shred_sets;
+      ulong   slot_max;
     } repair;
 
     struct {
-      char  blockstore_restore[ PATH_MAX ];
       char  slots_pending[PATH_MAX];
 
       ulong expected_shred_version;
@@ -300,23 +398,65 @@ typedef struct {
       char  identity_key_path[ PATH_MAX ];
       char  shred_cap_archive[ PATH_MAX ];
       char  shred_cap_replay[ PATH_MAX ];
+      ulong shred_cap_end_slot;
+
+      char  blockstore_file[ PATH_MAX ];
+      char  blockstore_restore[ PATH_MAX ];
     } store_int;
 
     struct {
-      ushort  tpu_listen_port;
+      ushort  send_src_port;
 
       /* non-config */
 
       uint    ip_addr;
-      uchar   src_mac_addr[ 6 ];
       char  identity_key_path[ PATH_MAX ];
-    } sender;
+    } send;
 
     struct {
+      ulong   funk_obj_id;
+      ushort  rpc_port;
+      ushort  tpu_port;
+      uint    tpu_ip_addr;
+      char    identity_key_path[ PATH_MAX ];
+      uint    block_index_max;
+      uint    txn_index_max;
+      uint    acct_index_max;
+      char    history_file[ PATH_MAX ];
+    } rpcserv;
+
+    struct {
+      uint fake_dst_ip;
+    } pktgen;
+
+    struct {
+      ulong end_slot;
+      char  archiver_path[ PATH_MAX ];
+
+      /* Set internally by the archiver tile */
+      int archive_fd;
+    } archiver;
+
+    struct {
+      ulong funk_obj_id;
       char  identity_key_path[ PATH_MAX ];
-    } eqvoc;
+      char  vote_acc_path[ PATH_MAX ];
+    } tower;
+    struct {
+      char   folder_path[ PATH_MAX ];
+      ushort repair_intake_listen_port;
+      ulong   write_buffer_size; /* Size of the write buffer for the capture tile */
+
+      /* Set internally by the capture tile */
+      int shreds_fd;
+      int requests_fd;
+      int fecs_fd;
+      int peers_fd;
+    } shredcap;
   };
-} fd_topo_tile_t;
+};
+
+typedef struct fd_topo_tile fd_topo_tile_t;
 
 typedef struct {
   ulong id;
@@ -330,7 +470,7 @@ typedef struct {
 /* An fd_topo_t represents the overall structure of a Firedancer
    configuration, describing all the workspaces, tiles, and links
    between them. */
-typedef struct fd_topo_t {
+struct fd_topo {
   char           app_name[ 256UL ];
   uchar          props[ 16384UL ];
 
@@ -346,13 +486,20 @@ typedef struct fd_topo_t {
 
   ulong          agave_affinity_cnt;
   ulong          agave_affinity_cpu_idx[ FD_TILE_MAX ];
-} fd_topo_t;
+
+  ulong          max_page_size; /* 2^21 or 2^30 */
+  ulong          gigantic_page_threshold; /* see [hugetlbfs.gigantic_page_threshold_mib]*/
+};
+typedef struct fd_topo fd_topo_t;
 
 typedef struct {
   char const * name;
 
   int          keep_host_networking;
+  int          allow_connect;
   ulong        rlimit_file_cnt;
+  ulong        rlimit_address_space;
+  ulong        rlimit_data;
   int          for_tpool;
 
   ulong (*populate_allowed_seccomp)( fd_topo_t const * topo, fd_topo_tile_t const * tile, ulong out_cnt, struct sock_filter * out );
@@ -363,7 +510,18 @@ typedef struct {
   void  (*privileged_init         )( fd_topo_t * topo, fd_topo_tile_t * tile );
   void  (*unprivileged_init       )( fd_topo_t * topo, fd_topo_tile_t * tile );
   void  (*run                     )( fd_topo_t * topo, fd_topo_tile_t * tile );
+  ulong (*rlimit_file_cnt_fn      )( fd_topo_t const * topo, fd_topo_tile_t const * tile );
 } fd_topo_run_tile_t;
+
+struct fd_topo_obj_callbacks {
+  char const * name;
+  ulong (* footprint )( fd_topo_t const * topo, fd_topo_obj_t const * obj );
+  ulong (* align     )( fd_topo_t const * topo, fd_topo_obj_t const * obj );
+  ulong (* loose     )( fd_topo_t const * topo, fd_topo_obj_t const * obj );
+  void  (* new       )( fd_topo_t const * topo, fd_topo_obj_t const * obj );
+};
+
+typedef struct fd_topo_obj_callbacks fd_topo_obj_callbacks_t;
 
 FD_PROTOTYPES_BEGIN
 
@@ -377,10 +535,13 @@ fd_topo_workspace_align( void ) {
   return 4096UL;
 }
 
-FD_FN_PURE static inline void *
+static inline void *
 fd_topo_obj_laddr( fd_topo_t const * topo,
                    ulong             obj_id ) {
   fd_topo_obj_t const * obj = &topo->objs[ obj_id ];
+  FD_TEST( obj_id<FD_TOPO_MAX_OBJS );
+  FD_TEST( obj->id == obj_id );
+  FD_TEST( obj->offset );
   return (void *)((ulong)topo->workspaces[ obj->wksp_id ].wksp + obj->offset);
 }
 
@@ -449,9 +610,9 @@ fd_topo_find_tile_in_link( fd_topo_t const *      topo,
 
 FD_FN_PURE static inline ulong
 fd_topo_find_tile_out_link( fd_topo_t const *      topo,
-                           fd_topo_tile_t const * tile,
-                           char const *           name,
-                           ulong                  kind_id ) {
+                            fd_topo_tile_t const * tile,
+                            char const *           name,
+                            ulong                  kind_id ) {
   for( ulong i=0; i<tile->out_cnt; i++ ) {
     if( FD_UNLIKELY( !strcmp( topo->links[ tile->out_link_id[ i ] ].name, name ) )
         && topo->links[ tile->out_link_id[ i ] ].kind_id == kind_id ) return i;
@@ -505,6 +666,42 @@ fd_topo_link_reliable_consumer_cnt( fd_topo_t const *      topo,
   }
 
   return cnt;
+}
+
+FD_FN_PURE static inline ulong
+fd_topo_tile_consumer_cnt( fd_topo_t const *      topo,
+                           fd_topo_tile_t const * tile ) {
+  (void)topo;
+  return tile->out_cnt;
+}
+
+FD_FN_PURE static inline ulong
+fd_topo_tile_reliable_consumer_cnt( fd_topo_t const *      topo,
+                                    fd_topo_tile_t const * tile ) {
+  ulong reliable_cons_cnt = 0UL;
+  for( ulong i=0UL; i<topo->tile_cnt; i++ ) {
+    fd_topo_tile_t const * consumer_tile = &topo->tiles[ i ];
+    for( ulong j=0UL; j<consumer_tile->in_cnt; j++ ) {
+      for( ulong k=0UL; k<tile->out_cnt; k++ ) {
+        if( FD_UNLIKELY( consumer_tile->in_link_id[ j ]==tile->out_link_id[ k ] && consumer_tile->in_link_reliable[ j ] ) ) {
+          reliable_cons_cnt++;
+        }
+      }
+    }
+  }
+  return reliable_cons_cnt;
+}
+
+FD_FN_PURE static inline ulong
+fd_topo_tile_producer_cnt( fd_topo_t const *     topo,
+                           fd_topo_tile_t const * tile ) {
+  (void)topo;
+  ulong in_cnt = 0UL;
+  for( ulong i=0UL; i<tile->in_cnt; i++ ) {
+    if( FD_UNLIKELY( !tile->in_link_poll[ i ] ) ) continue;
+    in_cnt++;
+  }
+  return in_cnt;
 }
 
 /* Join (map into the process) all shared memory (huge/gigantic pages)
@@ -592,13 +789,13 @@ void
 fd_topo_workspace_fill( fd_topo_t *      topo,
                         fd_topo_wksp_t * wksp );
 
-/* Apply a function to every object that is resident in the given
+/* Apply a new function to every object that is resident in the given
    workspace in the topology. */
 
 void
-fd_topo_wksp_apply( fd_topo_t *      topo,
-                    fd_topo_wksp_t * wksp,
-                    void (* fn )( fd_topo_t const * topo, fd_topo_obj_t const * obj ) );
+fd_topo_wksp_new( fd_topo_t const *          topo,
+                  fd_topo_wksp_t const *     wksp,
+                  fd_topo_obj_callbacks_t ** callbacks );
 
 /* Same as fd_topo_fill_tile but fills in all tiles in the topology. */
 
@@ -613,6 +810,14 @@ void *
 fd_topo_tile_stack_join( char const * app_name,
                          char const * tile_name,
                          ulong        tile_kind_id );
+
+/* Install the XDP program needed by the net tiles into the local device
+   and return the xsk_map_fd.  bind_addr is an optional IPv4 address to
+   used for filtering by dst IP. */
+
+fd_xdp_fds_t
+fd_topo_install_xdp( fd_topo_t const * topo,
+                     uint              bind_addr );
 
 /* fd_topo_run_single_process runs all the tiles in a single process
    (the calling process).  This spawns a thread for each tile, switches
@@ -640,12 +845,12 @@ fd_topo_tile_stack_join( char const * app_name,
    started regardless of if they are Agave tiles or not. */
 
 void
-fd_topo_run_single_process( fd_topo_t * topo,
-                            int         agave,
-                            uint        uid,
-                            uint        gid,
-                            fd_topo_run_tile_t (* tile_run )( fd_topo_tile_t * tile ),
-                            int *       done_futex );
+fd_topo_run_single_process( fd_topo_t *       topo,
+                            int               agave,
+                            uint              uid,
+                            uint              gid,
+                            fd_topo_run_tile_t (* tile_run )( fd_topo_tile_t const * tile ),
+                            int *             done_futex );
 
 /* fd_topo_run_tile runs the given tile directly within the current
    process (and thread).  The function will never return, as tiles are
@@ -687,6 +892,7 @@ fd_topo_run_tile( fd_topo_t *          topo,
                   fd_topo_tile_t *     tile,
                   int                  sandbox,
                   int                  keep_controlling_terminal,
+                  int                  dumpable,
                   uint                 uid,
                   uint                 gid,
                   int                  allow_fd,
@@ -715,15 +921,15 @@ fd_topo_run_tile( fd_topo_t *          topo,
    to be allocated (for example XSK buffers) is also not included.  The
    actual amount of memory used will not be less than this value. */
 FD_FN_PURE ulong
-fd_topo_mlock_max_tile( fd_topo_t * topo );
+fd_topo_mlock_max_tile( fd_topo_t const * topo );
 
 /* Same as fd_topo_mlock_max_tile, but for loading the entire topology
-   topology into one process, rather than a separate process per tile.
-   This is used, for example, by the configuration code when it creates
-   all the workspaces, or the monitor that maps the entire system into
-   one address space. */
+   into one process, rather than a separate process per tile.  This is
+   used, for example, by the configuration code when it creates all the
+   workspaces, or the monitor that maps the entire system into one
+   address space. */
 FD_FN_PURE ulong
-fd_topo_mlock( fd_topo_t * topo );
+fd_topo_mlock( fd_topo_t const * topo );
 
 /* This returns the number of gigantic pages needed by the topology on
    the provided numa node.  It includes pages needed by the workspaces,
@@ -731,8 +937,8 @@ fd_topo_mlock( fd_topo_t * topo );
    and private key storage. */
 
 FD_FN_PURE ulong
-fd_topo_gigantic_page_cnt( fd_topo_t * topo,
-                           ulong       numa_idx );
+fd_topo_gigantic_page_cnt( fd_topo_t const * topo,
+                           ulong             numa_idx );
 
 /* This returns the number of huge pages in the application needed by
    the topology on the provided numa node.  It includes pages needed by
@@ -741,15 +947,9 @@ fd_topo_gigantic_page_cnt( fd_topo_t * topo,
    are needed but are not placed in the hugetlbfs. */
 
 FD_FN_PURE ulong
-fd_topo_huge_page_cnt( fd_topo_t * topo,
-                       ulong       numa_idx,
-                       int         include_anonymous );
-
-/* Check all invariants of the given topology to make sure it is valid.
-   An invalid topology will cause the program to abort with an error
-   message. */
-void
-fd_topo_validate( fd_topo_t const * topo );
+fd_topo_huge_page_cnt( fd_topo_t const * topo,
+                       ulong             numa_idx,
+                       int               include_anonymous );
 
 /* Prints a message describing the topology to an output stream.  If
    stdout is true, will be written to stdout, otherwise will be written

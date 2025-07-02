@@ -9,11 +9,16 @@ the hashing algorithm in xxHash(r39).  xxHash(r39) can be found at
 https://github.com/Cyan4973/xxHash/releases/tag/r39 (note the xxHash
 source code repository has changed location a few times over the years).
 
-From https://github.com/Cyan4973/xxHash/archive/refs/tags/r39.zip at xxHash-r39/LICENSE:
+fd_funk_rec_key_hash is currently a modified version of xxHash3.
+xxHash3 can be found at https://github.com/Cyan4973/xxHash/releases/tag/v0.8.3.
+
+From https://github.com/Cyan4973/xxHash/archive/refs/tags/v0.8.3.zip at xxHash-v0.8.3/LICENSE
 
 xxHash Library
-Copyright (c) 2012-2014, Yann Collet
+Copyright (c) 2012-2021, Yann Collet
 All rights reserved.
+
+BSD 2-Clause License (https://www.opensource.org/licenses/bsd-license.php)
 
 Redistribution and use in source and binary forms, with or without modification,
 are permitted provided that the following conditions are met:
@@ -255,26 +260,6 @@ OpenSSL licensing details can be found at:
 
 =======================================================================
 
-The CBMC verification framework in the 'verification' dir is based on
-https://github.com/model-checking/cbmc-starter-kit
-
-Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
-
-Permission is hereby granted, free of charge, to any person obtaining a copy of this
-software and associated documentation files (the "Software"), to deal in the Software
-without restriction, including without limitation the rights to use, copy, modify,
-merge, publish, distribute, sublicense, and/or sell copies of the Software, and to
-permit persons to whom the Software is furnished to do so.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED,
-INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A
-PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT
-HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
-OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
-SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
-
-=======================================================================
-
 The SipHash implementation in src/ballet/siphash13 is derived from
 https://github.com/antirez/siphash
 
@@ -294,7 +279,7 @@ with this software. If not, see
 
 =======================================================================
 
-'src/flamenco/nanopb' is currently a copy of the Nanopb library at
+'src/ballet/nanopb' is currently a copy of the Nanopb library at
 https://jpa.kapsi.fi/nanopb/ (imported ca 2023-Nov).
 
 Copyright (c) 2011 Petteri Aimonen <jpa at nanopb.mail.kapsi.fi>
@@ -356,7 +341,7 @@ hash f05a2d0019e12850bb482274c1a21ae7a4fb84bd
 
 MIT License
 
-Copyright (c) 2016 
+Copyright (c) 2016
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal
@@ -461,29 +446,88 @@ THE SOFTWARE.
 
 =======================================================================
 
-The dasm header files in src/flamenco/vm/jit are copied from the LuaJIT
-project.  https://luajit.org/  Imported ca 2024-Aug.
+Firedancer binaries include cryptographic subroutines from s2n-bignum.
+Imported ca 2024-Nov.
 
-LuaJIT -- a Just-In-Time Compiler for Lua. https://luajit.org/
+https://github.com/awslabs/s2n-bignum/
 
-Copyright (C) 2005-2023 Mike Pall. All rights reserved.
+SPDX-License-Identifier: Apache-2.0 OR ISC or MIT-0
 
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
+Copyright Amazon.com, Inc. or its affiliates.
 
-The above copyright notice and this permission notice shall be included in
-all copies or substantial portions of the Software.
+Permission to use, copy, modify, and/or distribute this software for any
+purpose with or without fee is hereby granted, provided that the above
+copyright notice and this permission notice appear in all copies.
 
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
-THE SOFTWARE.
+THE SOFTWARE IS PROVIDED "AS IS" AND THE AUTHOR DISCLAIMS ALL WARRANTIES
+WITH REGARD TO THIS SOFTWARE INCLUDING ALL IMPLIED WARRANTIES OF
+MERCHANTABILITY AND FITNESS. IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR
+ANY SPECIAL, DIRECT, INDIRECT, OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES
+WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN AN
+ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF
+OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
 
-[ MIT license: https://www.opensource.org/licenses/mit-license.php ]
+=======================================================================
+
+src/waltz/resolv is currently a modified implementation of the network
+code from musl.  musl can be found at
+https://musl.libc.org/releases/musl-1.2.5.tar.gz
+
+The list of modifications is documented in src/waltz/resolv/README.md
+
+Copyright © 2005-2020 Rich Felker, et al.
+
+Permission is hereby granted, free of charge, to any person obtaining
+a copy of this software and associated documentation files (the
+"Software"), to deal in the Software without restriction, including
+without limitation the rights to use, copy, modify, merge, publish,
+distribute, sublicense, and/or sell copies of the Software, and to
+permit persons to whom the Software is furnished to do so, subject to
+the following conditions:
+
+The above copyright notice and this permission notice shall be
+included in all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
+EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.
+IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
+CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,
+TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
+SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+
+=======================================================================
+
+The fd_h2 library (src/waltz/h2) includes a modified version of the
+HPACK Huffman decoder from nghttp2 (circa 2025-Mar).  Original sources:
+- https://github.com/nghttp2/nghttp2/blob/master/lib/nghttp2_hd.h
+- https://github.com/nghttp2/nghttp2/blob/master/lib/nghttp2_hd_huffman.h
+- https://github.com/nghttp2/nghttp2/blob/master/lib/nghttp2_hd_huffman.c
+- https://github.com/nghttp2/nghttp2/blob/master/lib/nghttp2_hd_huffman_data.c
+
+/*
+ * nghttp2 - HTTP/2 C Library
+ *
+ * Copyright (c) 2013 Tatsuhiro Tsujikawa
+ *
+ * Permission is hereby granted, free of charge, to any person obtaining
+ * a copy of this software and associated documentation files (the
+ * "Software"), to deal in the Software without restriction, including
+ * without limitation the rights to use, copy, modify, merge, publish,
+ * distribute, sublicense, and/or sell copies of the Software, and to
+ * permit persons to whom the Software is furnished to do so, subject to
+ * the following conditions:
+ *
+ * The above copyright notice and this permission notice shall be
+ * included in all copies or substantial portions of the Software.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
+ * EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+ * MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND
+ * NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE
+ * LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
+ * OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION
+ * WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+ */
+
+=======================================================================

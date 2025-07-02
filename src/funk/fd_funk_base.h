@@ -9,7 +9,7 @@
 
    - keys are a fixed length fd_funk_rec_key_t.
 
-   - values are variable size arbitrary binary data with a upper bound
+   - values are variable size arbitrary binary data with an upper bound
      to the size.
 
    - Records are indexed by key.
@@ -38,8 +38,9 @@
 
    - Critically, competing/parallel transaction histories are allowed.
 
-   - A user can to read / write all funk records for the most recently
-     published transactions and all transactions locally in preparation. */
+   - A user can update all funk records for the most recently
+     published transactions (if it is not frozen) or all transactions
+     in preparation (if they are not frozen). */
 
 #include "../util/fd_util.h"
 #include "../util/valloc/fd_valloc.h"
@@ -58,6 +59,7 @@
 #define FD_FUNK_ERR_REC    (-6) /* Failed due to record map issue (e.g. funk rec_max too small) */
 #define FD_FUNK_ERR_MEM    (-7) /* Failed due to wksp issue (e.g. wksp too small) */
 #define FD_FUNK_ERR_SYS    (-8) /* Failed system call (e.g. a file write) */
+#define FD_FUNK_ERR_PURIFY (-9) /* fd_funk_purify failed. */
 
 /* FD_FUNK_REC_KEY_{ALIGN,FOOTPRINT} describe the alignment and
    footprint of a fd_funk_rec_key_t.  ALIGN is a positive integer power
@@ -75,9 +77,9 @@
    accelerating cstr operations further but this is up to the user.) */
 
 union __attribute__((aligned(FD_FUNK_REC_KEY_ALIGN))) fd_funk_rec_key {
-  char  c [ FD_FUNK_REC_KEY_FOOTPRINT ];
   uchar uc[ FD_FUNK_REC_KEY_FOOTPRINT ];
-  ulong ul[ FD_FUNK_REC_KEY_FOOTPRINT / sizeof(ulong) ];
+  uint  ui[ 10 ];
+  ulong ul[  5 ];
 };
 
 typedef union fd_funk_rec_key fd_funk_rec_key_t;
@@ -90,16 +92,16 @@ typedef union fd_funk_rec_key fd_funk_rec_key_t;
 #define FD_FUNK_TXN_XID_ALIGN     (8UL)
 #define FD_FUNK_TXN_XID_FOOTPRINT (16UL)
 
-/* A fd_funk_txn_xid_t identifies a funk transaction.  Compact binary
-   identifiers are encouraged but a cstr can be used so long as it has
-   strlen(cstr)<FD_FUNK_TXN_XID_FOOTPRINT and characters c[i] for i in
-   [strlen(cstr),FD_FUNK_TXN_KEY_FOOTPRINT) zero.  (Also, if encoding a
-   cstr in a transaction id, recommend using first byte to encode the
-   strlen for accelerating cstr operations even further but this is more
-   up to the application.) */
+/* A fd_funk_txn_xid_t identifies a funk transaction currently in
+   preparation.  Compact binary identifiers are encouraged but a cstr
+   can be used so long as it has
+   strlen(cstr)<FD_FUNK_TXN_XID_FOOTPRINT and characters c[i] for i
+   in [strlen(cstr),FD_FUNK_TXN_KEY_FOOTPRINT) zero.  (Also, if
+   encoding a cstr in a transaction id, recommend using first byte to
+   encode the strlen for accelerating cstr operations even further but
+   this is more up to the application.) */
 
 union __attribute__((aligned(FD_FUNK_TXN_XID_ALIGN))) fd_funk_txn_xid {
-  char  c [ FD_FUNK_TXN_XID_FOOTPRINT ];
   uchar uc[ FD_FUNK_TXN_XID_FOOTPRINT ];
   ulong ul[ FD_FUNK_TXN_XID_FOOTPRINT / sizeof(ulong) ];
 };
@@ -124,7 +126,12 @@ struct fd_funk_xid_key_pair {
 
 typedef struct fd_funk_xid_key_pair fd_funk_xid_key_pair_t;
 
-/* A fd_funk_t * is an opaque handle of a local join to a funk instance */
+/* A fd_funk_shmem_t is the top part of a funk object in shared memory. */
+
+struct fd_funk_shmem_private;
+typedef struct fd_funk_shmem_private fd_funk_shmem_t;
+
+/* A fd_funk_t * is local join handle to a funk instance */
 
 struct fd_funk_private;
 typedef struct fd_funk_private fd_funk_t;
@@ -138,13 +145,77 @@ FD_PROTOTYPES_BEGIN
    but not cryptographically secure.  Assumes k is in the caller's
    address space and valid. */
 
-FD_FN_UNUSED FD_FN_PURE static ulong /* Workaround -Winline */
+#if FD_HAS_INT128
+
+/* If the target supports uint128, fd_funk_rec_key_hash is seeded
+   xxHash3 with 64-bit output size. (open source BSD licensed) */
+
+static inline ulong
+fd_xxh3_mul128_fold64( ulong lhs, ulong rhs ) {
+  uint128 product = (uint128)lhs * (uint128)rhs;
+  return (ulong)product ^ (ulong)( product>>64 );
+}
+
+static inline ulong
+fd_xxh3_mix16b( ulong i0, ulong i1,
+             ulong s0, ulong s1,
+             ulong seed ) {
+  return fd_xxh3_mul128_fold64( i0 ^ (s0 + seed), i1 ^ (s1 - seed) );
+}
+
+FD_FN_PURE static inline ulong
+fd_funk_rec_key_hash1( uchar const key[ 32 ],
+                       ulong       rec_type,
+                       ulong       seed ) {
+  seed ^= rec_type;
+  ulong k0 = FD_LOAD( ulong, key+ 0 );
+  ulong k1 = FD_LOAD( ulong, key+ 8 );
+  ulong k2 = FD_LOAD( ulong, key+16 );
+  ulong k3 = FD_LOAD( ulong, key+24 );
+  ulong acc = 32 * 0x9E3779B185EBCA87ULL;
+  acc += fd_xxh3_mix16b( k0, k1, 0xbe4ba423396cfeb8UL, 0x1cad21f72c81017cUL, seed );
+  acc += fd_xxh3_mix16b( k2, k3, 0xdb979083e96dd4deUL, 0x1f67b3b7a4a44072UL, seed );
+  acc = acc ^ (acc >> 37);
+  acc *= 0x165667919E3779F9ULL;
+  acc = acc ^ (acc >> 32);
+  return acc;
+}
+
+FD_FN_PURE static inline ulong
 fd_funk_rec_key_hash( fd_funk_rec_key_t const * k,
                       ulong                     seed ) {
+  seed ^= k->ul[4];
+  /* tons of ILP */
   return (fd_ulong_hash( seed ^ (1UL<<0) ^ k->ul[0] ) ^ fd_ulong_hash( seed ^ (1UL<<1) ^ k->ul[1] ) ) ^
-         (fd_ulong_hash( seed ^ (1UL<<2) ^ k->ul[2] ) ^ fd_ulong_hash( seed ^ (1UL<<3) ^ k->ul[3] ) ) ^
-         (fd_ulong_hash( seed ^ (1UL<<4) ^ k->ul[4] ) ); /* tons of ILP */
+         (fd_ulong_hash( seed ^ (1UL<<2) ^ k->ul[2] ) ^ fd_ulong_hash( seed ^ (1UL<<3) ^ k->ul[3] ) );
 }
+
+#else
+
+/* If the target does not support xxHash3, fallback to the 'old' funk
+   key hash function.
+
+   FIXME This version is vulnerable to HashDoS */
+
+FD_FN_PURE static inline ulong
+fd_funk_rec_key_hash1( uchar const key[ 32 ],
+                       ulong       rec_type,
+                       ulong       seed ) {
+  seed ^= rec_type;
+  /* tons of ILP */
+  return (fd_ulong_hash( seed ^ (1UL<<0) ^ FD_LOAD( ulong, key+ 0 ) )   ^
+          fd_ulong_hash( seed ^ (1UL<<1) ^ FD_LOAD( ulong, key+ 8 ) ) ) ^
+         (fd_ulong_hash( seed ^ (1UL<<2) ^ FD_LOAD( ulong, key+16 ) ) ^
+          fd_ulong_hash( seed ^ (1UL<<3) ^ FD_LOAD( ulong, key+24 ) ) );
+}
+
+FD_FN_PURE static inline ulong
+fd_funk_rec_key_hash( fd_funk_rec_key_t const * k,
+                      ulong                     seed ) {
+  return fd_funk_rec_key_hash1( k->uc, k->ul[4], seed );
+}
+
+#endif /* FD_HAS_INT128 */
 
 /* fd_funk_rec_key_eq returns 1 if keys pointed to by ka and kb are
    equal and 0 otherwise.  Assumes ka and kb are in the caller's address
@@ -152,7 +223,7 @@ fd_funk_rec_key_hash( fd_funk_rec_key_t const * k,
 
 FD_FN_UNUSED FD_FN_PURE static int /* Workaround -Winline */
 fd_funk_rec_key_eq( fd_funk_rec_key_t const * ka,
-                    fd_funk_rec_key_t const * kb ) {
+                       fd_funk_rec_key_t const * kb ) {
   ulong const * a = ka->ul;
   ulong const * b = kb->ul;
   return !( ((a[0]^b[0]) | (a[1]^b[1])) | ((a[2]^b[2]) | (a[3]^b[3])) | (a[4]^b[4]) ) ;
@@ -164,7 +235,7 @@ fd_funk_rec_key_eq( fd_funk_rec_key_t const * ka,
 
 static inline fd_funk_rec_key_t *
 fd_funk_rec_key_copy( fd_funk_rec_key_t *       kd,
-                      fd_funk_rec_key_t const * ks ) {
+                         fd_funk_rec_key_t const * ks ) {
   ulong *       d = kd->ul;
   ulong const * s = ks->ul;
   d[0] = s[0]; d[1] = s[1]; d[2] = s[2]; d[3] = s[3]; d[4] = s[4];
@@ -180,7 +251,7 @@ fd_funk_rec_key_copy( fd_funk_rec_key_t *       kd,
 
 FD_FN_UNUSED FD_FN_PURE static ulong /* Work around -Winline */
 fd_funk_txn_xid_hash( fd_funk_txn_xid_t const * x,
-                      ulong                     seed ) {
+                         ulong                     seed ) {
   return ( fd_ulong_hash( seed ^ (1UL<<0) ^ x->ul[0] ) ^ fd_ulong_hash( seed ^ (1UL<<1) ^ x->ul[1] ) ); /* tons of ILP */
 }
 
@@ -190,7 +261,7 @@ fd_funk_txn_xid_hash( fd_funk_txn_xid_t const * x,
 
 FD_FN_PURE static inline int
 fd_funk_txn_xid_eq( fd_funk_txn_xid_t const * xa,
-                    fd_funk_txn_xid_t const * xb ) {
+                       fd_funk_txn_xid_t const * xb ) {
   ulong const * a = xa->ul;
   ulong const * b = xb->ul;
   return !( (a[0]^b[0]) | (a[1]^b[1]) );
@@ -202,7 +273,7 @@ fd_funk_txn_xid_eq( fd_funk_txn_xid_t const * xa,
 
 static inline fd_funk_txn_xid_t *
 fd_funk_txn_xid_copy( fd_funk_txn_xid_t *       xd,
-                      fd_funk_txn_xid_t const * xs ) {
+                         fd_funk_txn_xid_t const * xs ) {
   ulong *       d = xd->ul;
   ulong const * s = xs->ul;
   d[0] = s[0]; d[1] = s[1];
@@ -230,17 +301,16 @@ fd_funk_txn_xid_set_root( fd_funk_txn_xid_t * x ) {
   return x;
 }
 
-/* fd_funk_xid_key_pair_hash provides a family of hashes that hash a
-   (xid,key) pair to by p to a uniform quasi-random 64-bit integer.
-   seed selects the particular hash function to use and can be an
-   arbitrary 64-bit value.  Returns the hash.  The hash functions are
-   high quality but not cryptographically secure.  Assumes p is in the
-   caller's address space and valid. */
+/* fd_funk_xid_key_pair_hash produces a 64-bit hash case for a
+   xid_key_pair. Assumes p is in the caller's address space and valid. */
 
 FD_FN_PURE static inline ulong
 fd_funk_xid_key_pair_hash( fd_funk_xid_key_pair_t const * p,
-                           ulong                          seed ) {
-  return fd_funk_txn_xid_hash( p->xid, seed ) ^ fd_funk_rec_key_hash( p->key, seed );
+                              ulong                          seed ) {
+  /* We ignore the xid part of the key because we need all the instances
+     of a given record key to appear in the same hash
+     chain. fd_funk_rec_query_global depends on this. */
+  return fd_funk_rec_key_hash( p->key, seed );
 }
 
 /* fd_funk_xid_key_pair_eq returns 1 if (xid,key) pair pointed to by pa
@@ -249,7 +319,7 @@ fd_funk_xid_key_pair_hash( fd_funk_xid_key_pair_t const * p,
 
 FD_FN_UNUSED FD_FN_PURE static int /* Work around -Winline */
 fd_funk_xid_key_pair_eq( fd_funk_xid_key_pair_t const * pa,
-                         fd_funk_xid_key_pair_t const * pb ) {
+                            fd_funk_xid_key_pair_t const * pb ) {
   return fd_funk_txn_xid_eq( pa->xid, pb->xid ) & fd_funk_rec_key_eq( pa->key, pb->key );
 }
 
@@ -259,7 +329,7 @@ fd_funk_xid_key_pair_eq( fd_funk_xid_key_pair_t const * pa,
 
 static inline fd_funk_xid_key_pair_t *
 fd_funk_xid_key_pair_copy( fd_funk_xid_key_pair_t *       pd,
-                           fd_funk_xid_key_pair_t const * ps ) {
+                              fd_funk_xid_key_pair_t const * ps ) {
   fd_funk_txn_xid_copy( pd->xid, ps->xid );
   fd_funk_rec_key_copy( pd->key, ps->key );
   return pd;
@@ -272,8 +342,8 @@ fd_funk_xid_key_pair_copy( fd_funk_xid_key_pair_t *       pd,
 
 static inline fd_funk_xid_key_pair_t *
 fd_funk_xid_key_pair_init( fd_funk_xid_key_pair_t *  p,
-                           fd_funk_txn_xid_t const * x,
-                           fd_funk_rec_key_t const * k ) {
+                              fd_funk_txn_xid_t const * x,
+                              fd_funk_rec_key_t const * k ) {
   fd_funk_txn_xid_copy( p->xid, x );
   fd_funk_rec_key_copy( p->key, k );
   return p;

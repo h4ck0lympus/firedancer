@@ -1,18 +1,19 @@
 #include "../../flamenco/shredcap/fd_shredcap.h"
+#include "../../flamenco/fd_flamenco.h"
 
 /* fd_shredcap is a tool to ingest and verify rocksdb into a fd_shredcap capture.
-   The main commands are "--cmd ingest and --cmd verify". By default, "ingest" 
+   The main commands are "--cmd ingest and --cmd verify". By default, "ingest"
    will perform a verify. An example command is:
-   
-   build/native/clang/bin/fd_shred_cap --pages 10 --rocksdb  /data/ibhatt/hash/rocksdb/ 
+
+   build/native/clang/bin/fd_shred_cap --pages 10 --rocksdb  /data/ibhatt/hash/rocksdb/
    --capturepath ~/bigcap/ --cmd ingest --startslot 250553925 --endslot 250558000.
-   
+
    The --capturepath must be terminated with a '/' char and must be a path to a
-   directory which does not yet exist. The tool will not overwrite exisiting 
+   directory which does not yet exist. The tool will not overwrite exisiting
    directories.
-   
+
    The "populate" command populates a blockstore with a specified block range. It
-   will also contain the bank hash information for each slot. frank_ledger can be 
+   will also contain the bank hash information for each slot. frank_ledger can be
    used to generate checkpoints using a shredstore.  */
 
 #define DEFAULT_SHREDCAP_FILE_SIZE (1737418240UL)
@@ -72,20 +73,20 @@ main( int argc, char ** argv ) {
   fd_blockstore_t * blockstore;
   ulong tag = FD_BLOCKSTORE_MAGIC;
   fd_wksp_tag_query_info_t info;
+  fd_blockstore_t blockstore_ljoin;
   if ( fd_wksp_tag_query( wksp, &tag, 1, &info, 1 ) > 0) {
     shmem = fd_wksp_laddr_fast( wksp, info.gaddr_lo );
-    blockstore = fd_blockstore_join( shmem );
+    blockstore = fd_blockstore_join( &blockstore_ljoin, shmem );
     if ( blockstore == NULL ) {
-      FD_LOG_ERR(( "failed to join a blockstore" )); 
+      FD_LOG_ERR(( "failed to join a blockstore" ));
     }
   } else {
-    shmem = fd_wksp_alloc_laddr( wksp, fd_blockstore_align(), fd_blockstore_footprint(), FD_BLOCKSTORE_MAGIC );
+    shmem = fd_wksp_alloc_laddr( wksp, fd_blockstore_align(), fd_blockstore_footprint( shred_max, slot_history_max, 16, shred_max ), FD_BLOCKSTORE_MAGIC );
     if ( shmem == NULL ) {
       FD_LOG_ERR(( "failed to allocate a blockstore" ));
     }
-    int lg_txn_max = fd_ulong_find_msb( shred_max ) + 1;
 
-    blockstore = fd_blockstore_join( fd_blockstore_new( shmem, 1, hashseed, shred_max, slot_history_max, (ulong)lg_txn_max ) );
+    blockstore = fd_blockstore_join( &blockstore_ljoin, fd_blockstore_new( shmem, 1, hashseed, shred_max, slot_history_max, 16, shred_max ) );
     if ( blockstore == NULL ) {
       fd_wksp_free_laddr( shmem );
       FD_LOG_ERR(( "failed to allocate a blockstore" ));
@@ -112,9 +113,9 @@ main( int argc, char ** argv ) {
   }
   else if ( strcmp( cmd, "populate" ) == 0 ) {
     fd_shredcap_populate_blockstore( capture_path, blockstore, start_slot, end_slot );
-    // TODO: This should eventually extend to checkpointing just the blockstore 
+    // TODO: This should eventually extend to checkpointing just the blockstore
     // such that it can be loaded in.
-  } 
+  }
   else {
     FD_LOG_ERR(( "unknown command=%s", cmd ));
   }

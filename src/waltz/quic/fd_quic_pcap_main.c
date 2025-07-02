@@ -2,11 +2,13 @@
 #include <errno.h>
 #include <stdio.h> /* fputs, fprintf */
 #include <stdlib.h> /* aligned_alloc */
+#include <string.h> /* memcmp */
 #include <unistd.h> /* pread */
 
 #include "fd_quic.h"
 #include "../../ballet/hex/fd_hex.h"
 #include "../../waltz/quic/fd_quic_proto.h"
+#include "../../waltz/quic/fd_quic_proto.c"
 #include "../../waltz/quic/templ/fd_quic_parse_util.h"
 #include "../../util/net/fd_pcap.h"
 #include "../../util/net/fd_pcapng.h"
@@ -282,7 +284,6 @@ quic_pcap_iter_deliver_initial(
 ) {
   (void)iter;
   (void)ip4_saddr;
-  (void)out_pkt_sz;
 
   fd_quic_initial_t initial[1];
   ulong rc = fd_quic_decode_initial( initial, data, data_sz );
@@ -294,8 +295,7 @@ quic_pcap_iter_deliver_initial(
   data_sz     = tot_sz;
 
   fd_quic_crypto_secrets_t secrets[1];
-  fd_quic_gen_initial_secret( secrets, initial->dst_conn_id, initial->dst_conn_id_len );
-  fd_quic_gen_secrets( secrets, fd_quic_enc_level_initial_id );
+  fd_quic_gen_initial_secrets( secrets, initial->dst_conn_id, initial->dst_conn_id_len, /* is_server */ 1 );
 
   fd_quic_crypto_keys_t keys[1];
   fd_quic_gen_keys( keys, secrets->secret[ fd_quic_enc_level_initial_id ][ 0 ] );
@@ -310,8 +310,8 @@ quic_pcap_iter_deliver_initial(
     return;
   }
 
-  uint  pkt_number_sz = ( (uint)data[0] & 0x03u ) + 1u;
-  ulong pkt_number    = fd_quic_parse_bits( data+pnoff, 0, 8u * pkt_number_sz );
+  uint  pkt_number_sz = fd_quic_h0_pkt_num_len( data[0] ) + 1u;
+  ulong pkt_number    = fd_quic_pktnum_decode( data+pnoff, pkt_number_sz );
 
   if( FD_UNLIKELY(
         fd_quic_crypto_decrypt( data, tot_sz, pnoff, pkt_number, keys )
@@ -330,13 +330,15 @@ quic_pcap_iter_deliver_initial(
   fd_quic_crypto_frame_t crypto[1];
   rc = fd_quic_decode_crypto_frame( crypto, data, data_sz );
   if( FD_UNLIKELY( rc==FD_QUIC_PARSE_FAIL ) ) return;
+  data    += rc;
+  data_sz -= rc;
+  ulong left = fd_ulong_min( crypto->length, data_sz );
 
   /* Expect first TLS message to be a ClientHello */
 
-  if( FD_UNLIKELY( crypto->length > data_sz ) ) return;
-  if( FD_UNLIKELY( crypto->length < 6+32    ) ) return;
-  if( crypto->crypto_data[0] != 0x01 ) return; /* ClientHello */
-  uchar const * client_random = crypto->crypto_data + 6;
+  if( FD_UNLIKELY( left < 6+32 ) ) return;
+  if( data[0] != 0x01 ) return; /* ClientHello */
+  uchar const * client_random = data + 6;
   FD_LOG_HEXDUMP_WARNING(( "ClientRandom", client_random, 32 ));
 
 }
@@ -380,10 +382,10 @@ quic_pcap_iter_deliver_datagram(
   //FD_LOG_HEXDUMP_NOTICE(( "datagram", data, data_sz ));
   while( data_sz ) {
 
-    int is_long = fd_quic_extract_hdr_form( data[0] );
+    int is_long = fd_quic_h0_hdr_form( data[0] );
     if( is_long ) {
 
-      int pkt_type = fd_quic_extract_long_packet_type( data[0] );
+      int pkt_type = fd_quic_h0_long_packet_type( data[0] );
       ulong out_pkt_sz = data_sz;
       switch( pkt_type ) {
       case FD_QUIC_PKT_TYPE_INITIAL:
@@ -477,9 +479,9 @@ quic_pcap_iter_run_pcap( quic_pcap_iter_t * iter ) {
     ulong sz = fd_pcap_iter_next( pcap, pkt, sizeof(pkt), &ts );
     if( FD_UNLIKELY( !sz ) ) break;
     if( is_cooked ) {
-      quic_pcap_iter_deliver_ethernet( iter, pkt, sz );
-    } else {
       quic_pcap_iter_deliver_cooked( iter, pkt, sz );
+    } else {
+      quic_pcap_iter_deliver_ethernet( iter, pkt, sz );
     }
   }
 

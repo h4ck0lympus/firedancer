@@ -2,12 +2,11 @@
 #include <stdio.h>
 
 int main(int argc, char** argv) {
-  (void)argc;
-  (void)argv;
   srand(1234);
 
   fake_funk ff(&argc, &argv);
-  for (uint loop = 0; loop < 100U; ++loop) {
+  ff.verify();
+  for (uint loop = 0; loop < 2000U; ++loop) {
     for (uint i = 0; i < 10; ++i)
       ff.random_insert();
     ff.verify();
@@ -53,8 +52,11 @@ int main(int argc, char** argv) {
     for (uint i = 0; i < 10; ++i)
       ff.random_remove();
     ff.verify();
-    ff.random_merge();
+    ff.random_publish_into_parent();
     ff.verify();
+    // ff.random_merge();
+    // ff.verify();
+    if( loop % 100 == 0 ) FD_LOG_NOTICE(( "iter %u", loop ));
   }
 
   printf("test passed!\n");

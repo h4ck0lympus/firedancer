@@ -63,7 +63,7 @@ main( int     argc,
   /* Extract ELF info */
 
   fd_sbpf_elf_info_t elf_info;
-  if( FD_UNLIKELY( !fd_sbpf_elf_peek( &elf_info, bin_buf, bin_sz, /* deploy checks */ 1 ) ) )
+  if( FD_UNLIKELY( !fd_sbpf_elf_peek( &elf_info, bin_buf, bin_sz, /* deploy checks */ 1, FD_SBPF_V0, FD_SBPF_V3 ) ) )
     FD_LOG_ERR(( "FAIL: %s", fd_sbpf_strerror() ));
 
   /* Allocate rodata segment */
@@ -89,7 +89,7 @@ main( int     argc,
   /* Load and reloc program */
 
   for( uint const * x = _syscalls; *x; x++ )
-    fd_sbpf_syscalls_insert( syscalls, *x );
+    fd_sbpf_syscalls_insert( syscalls, (ulong)*x );
 
   int load_err = fd_sbpf_program_load( prog, bin_buf, bin_sz, syscalls, 1 );
 

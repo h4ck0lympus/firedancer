@@ -3,8 +3,8 @@
 
 #include "../fd_disco_base.h"
 
-#include "../../ballet/http/fd_http_server.h"
-#include "../../flamenco/types/fd_types.h"
+#include "../pack/fd_microblock.h"
+#include "../../waltz/http/fd_http_server.h"
 #include "../../flamenco/leaders/fd_leaders.h"
 
 #include "../topo/fd_topo.h"
@@ -40,6 +40,23 @@
 #define FD_GUI_START_PROGRESS_TYPE_HALTED                             (10)
 #define FD_GUI_START_PROGRESS_TYPE_WAITING_FOR_SUPERMAJORITY          (11)
 #define FD_GUI_START_PROGRESS_TYPE_RUNNING                            (12)
+
+/* Ideally, we would store an entire epoch's worth of transactions.  If
+   we assume any given validator will have at most 5% stake, and average
+   transactions per slot is around 10_000, then an epoch will have about
+   432_000*10_000*0.05 transactions (~2^28).
+
+   Unfortunately, the transaction struct is 100+ bytes.  If we sized the
+   array to 2^28 entries then the memory required would be ~26GB.  In
+   order to keep memory usage to a more reasonable level, we'll
+   arbitrarily use a fourth of that size. */
+#define FD_GUI_TXN_HISTORY_SZ (1UL<<26UL)
+
+#define FD_GUI_TXN_FLAGS_STARTED         ( 1U)
+#define FD_GUI_TXN_FLAGS_ENDED           ( 2U)
+#define FD_GUI_TXN_FLAGS_IS_SIMPLE_VOTE  ( 4U)
+#define FD_GUI_TXN_FLAGS_FROM_BUNDLE     ( 8U)
+#define FD_GUI_TXN_FLAGS_LANDED_IN_BLOCK (16U)
 
 struct fd_gui_gossip_peer {
   fd_pubkey_t pubkey[ 1 ];
@@ -90,19 +107,29 @@ struct fd_gui_txn_waterfall {
     ulong quic;
     ulong udp;
     ulong gossip;
+    ulong block_engine;
+    ulong pack_cranked;
   } in;
 
   struct {
     ulong net_overrun;
     ulong quic_overrun;
-    ulong quic_quic_invalid;
-    ulong quic_udp_invalid;
+    ulong quic_frag_drop;
+    ulong quic_abandoned;
+    ulong tpu_quic_invalid;
+    ulong tpu_udp_invalid;
     ulong verify_overrun;
     ulong verify_parse;
     ulong verify_failed;
     ulong verify_duplicate;
     ulong dedup_duplicate;
+    ulong resolv_lut_failed;
+    ulong resolv_expired;
+    ulong resolv_ancient;
+    ulong resolv_no_ledger;
+    ulong resolv_retained;
     ulong pack_invalid;
+    ulong pack_invalid_bundle;
     ulong pack_expired;
     ulong pack_retained;
     ulong pack_wait_full;
@@ -130,21 +157,22 @@ struct fd_gui_tile_timers {
 
 typedef struct fd_gui_tile_timers fd_gui_tile_timers_t;
 
-struct fd_gui_tile_prime_metric {
-  ulong net_in_bytes;
-  ulong quic_conns;
-  ulong verify_drop_numerator;
-  ulong verify_drop_denominator;
-  ulong dedup_drop_numerator;
-  ulong dedup_drop_denominator;
-  ulong pack_fill_numerator;
-  ulong pack_fill_denominator;
-  ulong bank_txn;
-  ulong net_out_bytes;
-  long  ts_nanos;
+struct fd_gui_tile_stats {
+  long  sample_time_nanos;
+
+  ulong net_in_rx_bytes;      /* Number of bytes received by the net or sock tile*/
+  ulong quic_conn_cnt;        /* Number of active QUIC connections */
+  ulong verify_drop_cnt;      /* Number of transactions dropped by verify tiles */
+  ulong verify_total_cnt;     /* Number of transactions received by verify tiles */
+  ulong dedup_drop_cnt;       /* Number of transactions dropped by dedup tile */
+  ulong dedup_total_cnt;      /* Number of transactions received by dedup tile */
+  ulong pack_buffer_cnt;      /* Number of buffered transactions in the pack tile */
+  ulong pack_buffer_capacity; /* Total size of the pack transaction buffer */
+  ulong bank_txn_exec_cnt;    /* Number of transactions processed by the bank tile */
+  ulong net_out_tx_bytes;     /* Number of bytes sent by the net or sock tile */
 };
 
-typedef struct fd_gui_tile_prime_metric fd_gui_tile_prime_metric_t;
+typedef struct fd_gui_tile_stats fd_gui_tile_stats_t;
 
 #define FD_GUI_SLOT_LEADER_UNSTARTED (0UL)
 #define FD_GUI_SLOT_LEADER_STARTED   (1UL)
@@ -153,31 +181,93 @@ typedef struct fd_gui_tile_prime_metric fd_gui_tile_prime_metric_t;
 struct fd_gui_slot {
   ulong slot;
   ulong parent_slot;
+  uint max_compute_units;
   long  completed_time;
   int   mine;
   int   skipped;
   int   must_republish;
   int   level;
-  ulong total_txn_cnt;
-  ulong vote_txn_cnt;
-  ulong failed_txn_cnt;
-  ulong nonvote_failed_txn_cnt;
-  ulong compute_units;
+  uint  total_txn_cnt;
+  uint  vote_txn_cnt;
+  uint  failed_txn_cnt;
+  uint  nonvote_failed_txn_cnt;
+  uint  compute_units;
   ulong transaction_fee;
   ulong priority_fee;
+  ulong tips;
 
-  int leader_state;
+  uchar leader_state;
+
+  struct {
+    long leader_start_time; /* UNIX timestamp of when we first became leader in this slot */
+    long leader_end_time;   /* UNIX timestamp of when we stopped being leader in this slot */
+
+    long reference_ticks;   /* A somewhat arbitrary reference tickcount, that we use for compressing the tickcounts
+                               of transaction start and end times in this slot.  It is, roughly (not exactly), the
+                               minimum of the first transaction start or end tickcount, and the time of the message
+                               from poh to pack telling it to become leader. */
+    long reference_nanos;   /* The UNIX timestamp in nanoseconds of the reference tick value above. */
+
+    uint microblocks_upper_bound; /* An upper bound on the number of microblocks in the slot.  If the number of
+                                     microblocks observed is equal to this, the slot can be considered over.
+                                     Generally, the bound is set to a "final" state by a done packing message,
+                                     which sets it to the exact number of microblocks, but sometimes this message
+                                     is not sent, if the max upper bound published by poh was already correct. */
+    uint begin_microblocks; /* The number of microblocks we have seen be started (sent) from pack to banks. */
+    uint end_microblocks;   /* The number of microblocks we have seen be ended (sent) from banks to poh.  The
+                               slot is only considered over if the begin and end microblocks seen are both equal
+                               to the microblock upper bound. */
+
+    ulong   start_offset; /* The smallest pack transaction index for this slot. The first transaction for this slot will
+                             be written to gui->txs[ start_offset%FD_GUI_TXN_HISTORY_SZ ]. */
+    ulong   end_offset;   /* The largest pack transaction index for this slot, plus 1. The last transaction for this
+                             slot will be written to gui->txs[ (start_offset-1)%FD_GUI_TXN_HISTORY_SZ ]. */
+  } txs;
 
   fd_gui_txn_waterfall_t waterfall_begin[ 1 ];
   fd_gui_txn_waterfall_t waterfall_end[ 1 ];
 
-  fd_gui_tile_prime_metric_t tile_prime_metric_begin[ 1 ];
-  fd_gui_tile_prime_metric_t tile_prime_metric_end[ 1 ];
+  fd_gui_tile_stats_t tile_stats_begin[ 1 ];
+  fd_gui_tile_stats_t tile_stats_end[ 1 ];
 
   ulong tile_timers_history_idx;
 };
 
 typedef struct fd_gui_slot fd_gui_slot_t;
+
+struct __attribute__((packed)) fd_gui_txn {
+  uchar signature[ FD_SHA512_HASH_SZ ];
+  ulong transaction_fee;
+  ulong priority_fee;
+  ulong tips;
+  long timestamp_arrival_nanos;
+
+  /* compute_units_requested has both execution and non-execution cus */
+  uint compute_units_requested : 21; /* <= 1.4M */
+  uint compute_units_consumed  : 21; /* <= 1.4M */
+  uint bank_idx                :  6; /* in [0, 64) */
+  uint error_code              :  6; /* in [0, 64) */
+  int timestamp_delta_start_nanos;
+  int timestamp_delta_end_nanos;
+
+  /* txn_{}_pct is used as a fraction of the total microblock
+     duration. For example, txn_load_end_pct can be used to find the
+     time when this transaction started executing:
+
+     timestamp_delta_start_exec_nanos = (
+       (timestamp_delta_end_nanos-timestamp_delta_start_nanos) *
+       ((double)txn_{}_pct/USHORT_MAX)
+     ) */
+  uchar txn_start_pct;
+  uchar txn_load_end_pct;
+  uchar txn_end_pct;
+  uchar txn_preload_end_pct;
+  uchar flags; /* assigned with the FD_GUI_TXN_FLAGS_* macros */
+  uint microblock_idx;
+};
+
+
+typedef struct fd_gui_txn fd_gui_txn_t;
 
 struct fd_gui {
   fd_http_server_t * http;
@@ -191,9 +281,9 @@ struct fd_gui {
 
   struct {
     fd_pubkey_t identity_key[ 1 ];
-    char identity_key_base58[ FD_BASE58_ENCODED_32_SZ+1 ];
+    char identity_key_base58[ FD_BASE58_ENCODED_32_SZ ];
 
-    char const * version;        
+    char const * version;
     char const * cluster;
 
     ulong vote_distance;
@@ -228,12 +318,17 @@ struct fd_gui {
     ulong startup_waiting_for_supermajority_slot;
     ulong startup_waiting_for_supermajority_stake_pct;
 
-    ulong balance;
+    int schedule_strategy;
+
+    ulong identity_account_balance;
+    ulong vote_account_balance;
     ulong estimated_slot_duration_nanos;
 
+    ulong sock_tile_cnt;
     ulong net_tile_cnt;
     ulong quic_tile_cnt;
     ulong verify_tile_cnt;
+    ulong resolv_tile_cnt;
     ulong bank_tile_cnt;
     ulong shred_tile_cnt;
 
@@ -248,8 +343,8 @@ struct fd_gui {
     fd_gui_txn_waterfall_t txn_waterfall_reference[ 1 ];
     fd_gui_txn_waterfall_t txn_waterfall_current[ 1 ];
 
-    fd_gui_tile_prime_metric_t tile_prime_metric_ref[ 1 ];
-    fd_gui_tile_prime_metric_t tile_prime_metric_cur[ 1 ];
+    fd_gui_tile_stats_t tile_stats_reference[ 1 ];
+    fd_gui_tile_stats_t tile_stats_current[ 1 ];
 
     ulong                tile_timers_snap_idx;
     ulong                tile_timers_snap_idx_slot_start;
@@ -262,6 +357,16 @@ struct fd_gui {
   } summary;
 
   fd_gui_slot_t slots[ FD_GUI_SLOTS_CNT ][ 1 ];
+
+  ulong pack_txn_idx; /* The pack index of the most recently received transaction */
+  fd_gui_txn_t txs[ FD_GUI_TXN_HISTORY_SZ ][ 1 ];
+  struct {
+    int has_block_engine;
+    char name[ 16 ];
+    char url[ 256 ];
+    char ip_cstr[ 40 ]; /* IPv4 or IPv6 cstr */
+    int status;
+  } block_engine;
 
   struct {
     int has_epoch[ 2 ];
@@ -316,10 +421,15 @@ fd_gui_new( void *             shmem,
             char const *       cluster,
             uchar const *      identity_key,
             int                is_voting,
+            int                schedule_strategy,
             fd_topo_t *        topo );
 
 fd_gui_t *
 fd_gui_join( void * shmem );
+
+void
+fd_gui_set_identity( fd_gui_t *    gui,
+                     uchar const * identity_pubkey );
 
 void
 fd_gui_ws_open( fd_gui_t *  gui,
@@ -335,6 +445,44 @@ void
 fd_gui_plugin_message( fd_gui_t *    gui,
                        ulong         plugin_msg,
                        uchar const * msg );
+
+void
+fd_gui_became_leader( fd_gui_t * gui,
+                      long       tickcount,
+                      ulong      slot,
+                      long       start_time_nanos,
+                      long       end_time_nanos,
+                      ulong      max_compute_units,
+                      ulong      max_microblocks );
+
+void
+fd_gui_unbecame_leader( fd_gui_t * gui,
+                        long       tickcount,
+                        ulong      slot,
+                        ulong      microblocks_in_slot );
+
+void
+fd_gui_microblock_execution_begin( fd_gui_t *   gui,
+                                   long         tickcount,
+                                   ulong        _slot,
+                                   fd_txn_p_t * txns,
+                                   ulong        txn_cnt,
+                                   uint         microblock_idx,
+                                   ulong        pack_txn_idx );
+
+void
+fd_gui_microblock_execution_end( fd_gui_t *   gui,
+                                 long         tickcount,
+                                 ulong        bank_idx,
+                                 ulong        _slot,
+                                 ulong        txn_cnt,
+                                 fd_txn_p_t * txns,
+                                 ulong        pack_txn_idx,
+                                 uchar        txn_start_pct,
+                                 uchar        txn_load_end_pct,
+                                 uchar        txn_end_pct,
+                                 uchar        txn_preload_end_pct,
+                                 ulong        tips );
 
 int
 fd_gui_poll( fd_gui_t * gui );

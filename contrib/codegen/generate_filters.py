@@ -203,43 +203,26 @@ def eval_(expr, filt, label_t, label_f):
 
             filt.append(CommentedLiteral("BPF_STMT( BPF_LD | BPF_W | BPF_ABS, offsetof(struct seccomp_data, args[%s]))" % argno, pre_comment="load syscall argument %s in accumulator" % argno))
 
-        elif expr0_str == 'bit-and':
-            eval_bit_and(filt, expr[1], expr[2], label_t, label_f)
-
         elif expr0_str == 'eq':
             eval_equal(filt, expr[1], expr[2], label_t, label_f)
+
+        elif expr0_str == '<':
+            eval_less(filt, expr[1], expr[2], label_t, label_f)
+
+        elif expr0_str == '<=':
+            eval_less_or_equal(filt, expr[1], expr[2], label_t, label_f)
+
+        elif expr0_str == '>':
+            eval_greater(filt, expr[1], expr[2], label_t, label_f)
+
+        elif expr0_str == '>=':
+            eval_greater_or_equal(filt, expr[1], expr[2], label_t, label_f)
+
         else:
             print(expr0_str)
             raise("unknown fn")
 
-def eval_bit_and(filt, op1, op2, label_t, label_f):
-    op1_type, op2_type = type(op1), type(op2)
-
-    if op1_type is not tuple and op2_type is not tuple:
-        # handle the case where both values are immediate
-        raise("unsupported")
-
-    elif op1_type is tuple and op2_type is not tuple:
-        # eval op1 and do operation with op2 imm
-        eval_(op1, filt, 0, 0)
-        # accu now contains the eval res of op1
-        filt.append("{ BPF_ALU | BPF_AND | BPF_K, 0, 0, %s }" % str(op2))
-
-    elif op2_type is tuple and op1_type is not tuple:
-        # eval op2 and do operation with op1 imm
-        eval_(op2, 0, 0)
-        # accu now contains the eval res of op2
-        filt.append("{ BPF_ALU | BPF_AND | BPF_K, 0, 0, %s }" % str(op1))
-    else:
-    # Note: In the case where both are expressions: the res of the first eval must be sent to scratch
-        raise("unsupported")
-
-    # if labels were pushed down, it's expected that an action will be taken on the truthiness of the value
-    # otherwise, accu will still contain the computed result.
-    if label_t and label_f:
-        filt.append(ReloCondJump("BPF_JMP | BPF_JEQ | BPF_K, 0", label_f, label_t))
-
-def eval_equal(filt, op1, op2, label_t, label_f):
+def gen_cmp(filt, op1, op2, label_t, label_f, cmp_instr):
     op1_type, op2_type = type(op1), type(op2)
 
     if op1_type is edn_format.Symbol and op2_type is edn_format.Symbol:
@@ -253,18 +236,32 @@ def eval_equal(filt, op1, op2, label_t, label_f):
         # eval op1 and do operation with op2 imm
         eval_(op1, filt, None, None)
         # accu now contains the eval res of op1
-        filt.append(ReloCondJump("BPF_JMP | BPF_JEQ | BPF_K, %s" % str(op2), label_t, label_f))
+        filt.append(ReloCondJump(f"BPF_JMP | {cmp_instr} | BPF_K, %s" % str(op2), label_t, label_f))
 
     elif op2_type is tuple and op1_type is not tuple:
         # eval op2 and do operation with op1 imm
         eval_(op2, None, None)
         # accu now contains the eval res of op2
-        filt.append(ReloCondJump("BPF_JMP | BPF_JEQ | BPF_K, %s" % str(op1), label_t, label_f))
+        filt.append(ReloCondJump(f"BPF_JMP | {cmp_instr} | BPF_K, %s" % str(op1), label_t, label_f))
     else:
         # This is unsupported because I didn't pick a calling convention and this means that accu and x should be saved to scratch.
         # It's very easy to achieve but there's no need for it yet. It's basically register allocation over BPF scratch.
         raise("unsupported")
 
+def eval_equal(filt, op1, op2, label_t, label_f):
+    gen_cmp(filt, op1, op2, label_t, label_f, "BPF_JEQ")
+
+def eval_less(filt, op1, op2, label_t, label_f):
+    gen_cmp(filt, op1, op2, label_f, label_t, "BPF_JGE")
+
+def eval_less_or_equal(filt, op1, op2, label_t, label_f):
+    gen_cmp(filt, op1, op2, label_f, label_t, "BPF_JGT")
+
+def eval_greater(filt, op1, op2, label_t, label_f):
+    gen_cmp(filt, op1, op2, label_t, label_f, "BPF_JGT")
+
+def eval_greater_or_equal(filt, op1, op2, label_t, label_f):
+    gen_cmp(filt, op1, op2, label_t, label_f, "BPF_JGE")
 
 def resplit_lines(lines):
     i = 0

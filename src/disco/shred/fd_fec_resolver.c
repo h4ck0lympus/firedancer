@@ -1,13 +1,10 @@
 #include "../../ballet/shred/fd_shred.h"
 #include "../../ballet/shred/fd_fec_set.h"
-#include "../../ballet/bmtree/fd_bmtree.h"
 #include "../../ballet/sha512/fd_sha512.h"
-#include "../../ballet/ed25519/fd_ed25519.h"
 #include "../../ballet/reedsol/fd_reedsol.h"
 #include "../metrics/fd_metrics.h"
 #include "fd_fec_resolver.h"
 
-#define SHRED_CNT_NOT_SET      (UINT_MAX/2U)
 
 typedef union {
   fd_ed25519_sig_t u;
@@ -156,7 +153,7 @@ struct __attribute__((aligned(FD_FEC_RESOLVER_ALIGN))) fd_fec_resolver {
 
 typedef struct fd_fec_resolver fd_fec_resolver_t;
 
-ulong
+FD_FN_PURE ulong
 fd_fec_resolver_footprint( ulong depth,
                            ulong partial_depth,
                            ulong complete_depth,
@@ -181,7 +178,7 @@ fd_fec_resolver_footprint( ulong depth,
   return FD_LAYOUT_FINI( layout, FD_FEC_RESOLVER_ALIGN );
 }
 
-ulong fd_fec_resolver_align( void ) { return FD_FEC_RESOLVER_ALIGN; }
+FD_FN_CONST ulong fd_fec_resolver_align( void ) { return FD_FEC_RESOLVER_ALIGN; }
 
 
 void *
@@ -308,13 +305,13 @@ ctx_ll_insert( set_ctx_t * p, set_ctx_t * c ) {
   return c;
 }
 
-
 int fd_fec_resolver_add_shred( fd_fec_resolver_t    * resolver,
-                               fd_shred_t   const   * shred,
+                               fd_shred_t const     * shred,
                                ulong                  shred_sz,
-                               uchar        const   * leader_pubkey,
+                               uchar const          * leader_pubkey,
                                fd_fec_set_t const * * out_fec_set,
-                               fd_shred_t   const * * out_shred ) {
+                               fd_shred_t const   * * out_shred,
+                               fd_bmtree_node_t     * out_merkle_root ) {
   /* Unpack variables */
   ulong partial_depth = resolver->partial_depth;
   ulong done_depth    = resolver->done_depth;
@@ -458,6 +455,9 @@ int fd_fec_resolver_add_shred( fd_fec_resolver_t    * resolver,
       return FD_FEC_RESOLVER_SHRED_REJECTED;
     }
 
+    /* Copy the merkle root into the output arg. */
+    if( FD_LIKELY( out_merkle_root ) ) memcpy( out_merkle_root, _root, sizeof(fd_bmtree_node_t) );
+
     /* This seems like a legitimate FEC set, so we can reserve some
        resources for it. */
     ctx = ctx_ll_insert( curr_ll_sentinel, ctx_map_insert( curr_map, *w_sig ) );
@@ -569,15 +569,15 @@ int fd_fec_resolver_add_shred( fd_fec_resolver_t    * resolver,
     return FD_FEC_RESOLVER_SHRED_REJECTED;
   }
 
-  uchar const * chained_root = fd_ptr_if( fd_shred_is_chained( shred_type ), (uchar *)shred+fd_shred_chain_offset( variant ), NULL );
+  uchar const * chained_root = fd_ptr_if( fd_shred_is_chained( shred_type ), (uchar *)shred+fd_shred_chain_off( variant ), NULL );
 
   /* Iterate over recovered shreds, add them to the Merkle tree,
      populate headers and signatures. */
   for( ulong i=0UL; i<set->data_shred_cnt; i++ ) {
     if( !d_rcvd_test( set->data_shred_rcvd, i ) ) {
       fd_memcpy( set->data_shreds[i], shred, sizeof(fd_ed25519_sig_t) );
-      if( FD_UNLIKELY( fd_shred_is_chained( shred_type ) ) ) {
-        fd_memcpy( set->data_shreds[i]+fd_shred_chain_offset( data_variant ), chained_root, FD_SHRED_MERKLE_ROOT_SZ );
+      if( FD_LIKELY( fd_shred_is_chained( shred_type ) ) ) {
+        fd_memcpy( set->data_shreds[i]+fd_shred_chain_off( data_variant ), chained_root, FD_SHRED_MERKLE_ROOT_SZ );
       }
       fd_bmtree_hash_leaf( leaf, set->data_shreds[i]+sizeof(fd_ed25519_sig_t), data_merkle_protected_sz, FD_BMTREE_LONG_PREFIX_SZ );
       if( FD_UNLIKELY( !fd_bmtree_commitp_insert_with_proof( tree, i, leaf, NULL, 0, NULL ) ) ) {
@@ -603,8 +603,8 @@ int fd_fec_resolver_add_shred( fd_fec_resolver_t    * resolver,
       p_shred->code.code_cnt = (ushort)set->parity_shred_cnt;
       p_shred->code.idx      = (ushort)i;
 
-      if( FD_UNLIKELY( fd_shred_is_chained( shred_type ) ) ) {
-        fd_memcpy( set->parity_shreds[i]+fd_shred_chain_offset( parity_variant ), chained_root, FD_SHRED_MERKLE_ROOT_SZ );
+      if( FD_LIKELY( fd_shred_is_chained( shred_type ) ) ) {
+        fd_memcpy( set->parity_shreds[i]+fd_shred_chain_off( parity_variant ), chained_root, FD_SHRED_MERKLE_ROOT_SZ );
       }
 
       fd_bmtree_hash_leaf( leaf, set->parity_shreds[i]+ sizeof(fd_ed25519_sig_t), parity_merkle_protected_sz, FD_BMTREE_LONG_PREFIX_SZ );
@@ -644,9 +644,10 @@ int fd_fec_resolver_add_shred( fd_fec_resolver_t    * resolver,
     reject |= parsed->data.parent_off != base_data_shred->data.parent_off;
 
     reject |= fd_shred_is_chained( fd_shred_type( parsed->variant ) ) &&
-                !fd_memeq( (uchar *)parsed         +fd_shred_chain_offset( parsed->variant          ),
-                           (uchar *)base_data_shred+fd_shred_chain_offset( base_data_shred->variant ), FD_SHRED_MERKLE_ROOT_SZ );
+                !fd_memeq( (uchar *)parsed         +fd_shred_chain_off( parsed->variant          ),
+                           (uchar *)base_data_shred+fd_shred_chain_off( base_data_shred->variant ), FD_SHRED_MERKLE_ROOT_SZ );
   }
+
   for( ulong i=0UL; (!reject) & (i<set->parity_shred_cnt); i++ ) {
     fd_shred_t const * parsed = fd_shred_parse( set->parity_shreds[ i ], FD_SHRED_MAX_SZ );
     if( FD_UNLIKELY( !parsed ) ) { reject = 1; break; }
@@ -660,8 +661,8 @@ int fd_fec_resolver_add_shred( fd_fec_resolver_t    * resolver,
     reject |= parsed->code.idx                       != (ushort)i;
 
     reject |= fd_shred_is_chained( fd_shred_type( parsed->variant ) ) &&
-                !fd_memeq( (uchar *)parsed         +fd_shred_chain_offset( parsed->variant          ),
-                           (uchar *)base_data_shred+fd_shred_chain_offset( base_data_shred->variant ), FD_SHRED_MERKLE_ROOT_SZ );
+                !fd_memeq( (uchar *)parsed         +fd_shred_chain_off( parsed->variant          ),
+                           (uchar *)base_data_shred+fd_shred_chain_off( base_data_shred->variant ), FD_SHRED_MERKLE_ROOT_SZ );
   }
   if( FD_UNLIKELY( reject ) ) {
     freelist_push_tail( free_list,        set  );
@@ -690,6 +691,145 @@ int fd_fec_resolver_add_shred( fd_fec_resolver_t    * resolver,
   bmtrlist_push_tail( bmtree_free_list, tree );
   freelist_push_tail( complete_list, set );
   freelist_push_tail( free_list, freelist_pop_head( complete_list ) );
+
+  *out_fec_set = set;
+
+  return FD_FEC_RESOLVER_SHRED_COMPLETES;
+}
+
+int
+fd_fec_resolver_done_contains( fd_fec_resolver_t      * resolver,
+                               fd_ed25519_sig_t const * signature ) {
+  wrapped_sig_t * w_sig = (wrapped_sig_t *)signature;
+  if( FD_UNLIKELY( ctx_map_key_inval( *w_sig ) ) ) return 0;
+  return !!ctx_map_query( resolver->done_map, *w_sig, NULL );
+}
+
+int
+fd_fec_resolver_shred_query( fd_fec_resolver_t      * resolver,
+                             fd_ed25519_sig_t const * signature,
+                             uint                     shred_idx,
+                             uchar                  * out_shred ) {
+  wrapped_sig_t * w_sig = (wrapped_sig_t *)signature;
+  if( FD_UNLIKELY( ctx_map_key_inval( *w_sig ) ) ) return FD_FEC_RESOLVER_SHRED_REJECTED;
+
+  set_ctx_t * ctx = ctx_map_query( resolver->curr_map, *w_sig, NULL );
+  if( FD_UNLIKELY( !ctx ) ) return FD_FEC_RESOLVER_SHRED_REJECTED;
+
+  fd_fec_set_t     * set        = ctx->set;
+  fd_shred_t const * data_shred = (fd_shred_t const *)fd_type_pun_const( set->data_shreds[ shred_idx ] );
+
+  ulong sz = fd_ulong_min( fd_shred_sz( data_shred ), FD_SHRED_MIN_SZ );
+  fd_memcpy( out_shred, data_shred, sz );
+  return FD_FEC_RESOLVER_SHRED_OKAY;
+}
+
+/* TODO code is copy-pasted because this function is intended to be
+   removed as soon as an upgrade to the repair protocol to support
+   requesting coding shreds is made available. */
+
+int
+fd_fec_resolver_force_complete( fd_fec_resolver_t *   resolver,
+                                fd_shred_t const *    last_shred,
+                                fd_fec_set_t const ** out_fec_set ) {
+
+  /* Error if last_shred is obviously invalid... don't even
+     try to process the associated FEC set. */
+
+  ulong idx_in_set = last_shred->idx - last_shred->fec_set_idx;
+
+  if( FD_UNLIKELY( idx_in_set >= FD_REEDSOL_DATA_SHREDS_MAX ) ) return FD_FEC_RESOLVER_SHRED_REJECTED;
+
+  /* Error if can't find the last_shred's FEC set. */
+
+  wrapped_sig_t * w_sig = (wrapped_sig_t *)last_shred->signature;
+  if( FD_UNLIKELY( ctx_map_key_inval( *w_sig ) ) ) return FD_FEC_RESOLVER_SHRED_REJECTED;
+
+  /* Error if already done. */
+
+  int found = !!ctx_map_query( resolver->done_map, *w_sig, NULL );
+  if( found )  return FD_FEC_RESOLVER_SHRED_IGNORED;
+
+  /* Error if FEC associated with last_shred not found. */
+
+  set_ctx_t * ctx = ctx_map_query( resolver->curr_map, *w_sig, NULL );
+  if( FD_UNLIKELY( !ctx ) ) return FD_FEC_RESOLVER_SHRED_REJECTED;
+
+  /* Error if already received parity shred (cnts are only knowable from
+     receiving a coding shred). */
+
+  if( FD_UNLIKELY( ctx->set->data_shred_cnt   != SHRED_CNT_NOT_SET ) ) return FD_FEC_RESOLVER_SHRED_REJECTED;
+  if( FD_UNLIKELY( ctx->set->parity_shred_cnt != SHRED_CNT_NOT_SET ) ) return FD_FEC_RESOLVER_SHRED_REJECTED;
+
+  /* Error if gaps in receives to last data shred. Implies that the FEC
+     set is still incomplete. */
+
+  for( ulong i=0UL; i<=idx_in_set; i++ ) if( !d_rcvd_test( ctx->set->data_shred_rcvd, i ) ) {
+    return FD_FEC_RESOLVER_SHRED_REJECTED;
+  }
+
+  /* Error if last shred is not in fact last shred and FEC resolver has
+     seen a shred with a higher idx. */
+
+  for( ulong i=idx_in_set + 1; i<FD_REEDSOL_DATA_SHREDS_MAX; i++ ) if( d_rcvd_test( ctx->set->data_shred_rcvd, i ) ) {
+    return FD_FEC_RESOLVER_SHRED_REJECTED;
+  }
+
+  /* Now we know the caller has provided a FEC set that is not obviously
+     incomplete or invalid, we validate the FEC set itself. */
+
+  fd_shred_t const * base_data_shred = fd_shred_parse( ctx->set->data_shreds[0], FD_SHRED_MIN_SZ );
+  int reject = (!base_data_shred);
+
+  for( ulong i=1UL; (!reject) & (i<=idx_in_set); i++ ) {
+
+    /* casting is safe because these data shreds must have been all rcvd
+       from the network and not recovered. */
+
+    fd_shred_t const * parsed = (fd_shred_t const *)fd_type_pun_const( ctx->set->data_shreds[ i ] );
+    if( FD_UNLIKELY( !parsed ) ) { reject = 1; break; }
+    reject |= parsed->variant         != base_data_shred->variant;
+    reject |= parsed->slot            != base_data_shred->slot;
+    reject |= parsed->version         != base_data_shred->version;
+    reject |= parsed->fec_set_idx     != base_data_shred->fec_set_idx;
+    reject |= parsed->data.parent_off != base_data_shred->data.parent_off;
+
+    reject |= fd_shred_is_chained( fd_shred_type( parsed->variant ) ) &&
+                !fd_memeq( (uchar *)parsed         +fd_shred_chain_off( parsed->variant          ),
+                           (uchar *)base_data_shred+fd_shred_chain_off( base_data_shred->variant ), FD_SHRED_MERKLE_ROOT_SZ );
+  }
+
+  if( FD_UNLIKELY( reject ) ) {
+    freelist_push_tail( resolver->free_list,        ctx->set  );
+    bmtrlist_push_tail( resolver->bmtree_free_list, ctx->tree );
+    FD_MCNT_INC( SHRED, FEC_REJECTED_FATAL, 1UL );
+    return FD_FEC_RESOLVER_SHRED_REJECTED;
+  }
+
+  /* Populate correct shred cnts for post-completion processing, like
+     forwarding to blockstore. */
+
+  ctx->set->data_shred_cnt   = idx_in_set + 1UL;
+  ctx->set->parity_shred_cnt = 0UL;
+
+  /* Don't need to populate merkle proofs or retransmitter signatures
+     because it is by definition the full set of rcvd data shreds. */
+
+  set_ctx_t * done_ll_sentinel = resolver->done_ll_sentinel;
+  set_ctx_t * curr_map         = resolver->curr_map;
+  set_ctx_t * done_map         = resolver->done_map;
+  ulong       done_depth       = resolver->done_depth;
+
+  fd_fec_set_t        * set  = ctx->set;
+  fd_bmtree_commit_t  * tree = ctx->tree;
+
+  ctx_ll_insert( done_ll_sentinel, ctx_map_insert( done_map, ctx->sig ) );
+  if( FD_UNLIKELY( ctx_map_key_cnt( done_map ) > done_depth ) ) ctx_map_remove( done_map, ctx_ll_remove( done_ll_sentinel->prev ) );
+  ctx_map_remove( curr_map, ctx_ll_remove( ctx ) );
+
+  bmtrlist_push_tail( resolver->bmtree_free_list, tree );
+  freelist_push_tail( resolver->complete_list, set );
+  freelist_push_tail( resolver->free_list, freelist_pop_head( resolver->complete_list ) );
 
   *out_fec_set = set;
 

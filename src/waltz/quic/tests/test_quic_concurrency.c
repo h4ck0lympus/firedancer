@@ -7,15 +7,9 @@
    encrypted packets. */
 
 #include "fd_quic_sandbox.h"
-#include "../fd_quic_proto.h"
+#include "../fd_quic_proto.c"
 #include "../fd_quic_private.h"
-#include "../../../tango/fd_tango.h"
-
-static ulong
-quic_now( void * ctx ) {
-  (void)ctx;
-  return (ulong)fd_log_wallclock();
-}
+#include "../../../tango/tempo/fd_tempo.h"
 
 int
 main( int     argc,
@@ -50,14 +44,13 @@ main( int     argc,
      traffic instead of running real QUIC clients. */
 
   fd_quic_limits_t quic_limits = {
-    .conn_cnt         = conn_cnt,
-    .handshake_cnt    =        1,
-    .conn_id_cnt      =        4,
-    .rx_stream_cnt    =        2,
-    .inflight_pkt_cnt =        4,
-    .tx_buf_sz        =        0
+    .conn_cnt           =     conn_cnt,
+    .handshake_cnt      =            1,
+    .conn_id_cnt        =            4,
+    .inflight_frame_cnt = 4 * conn_cnt,
+    .tx_buf_sz          =            0
   };
-  quic_limits.stream_pool_cnt = quic_limits.conn_cnt * quic_limits.rx_stream_cnt;
+  quic_limits.stream_pool_cnt = quic_limits.conn_cnt;
   FD_LOG_INFO(( "fd_quic limits: conn_cnt=%lu conn_id_cnt=%lu stream_pool_cnt=%lu",
                 quic_limits.conn_cnt, quic_limits.conn_id_cnt, quic_limits.stream_pool_cnt ));
   FD_LOG_INFO(( "fd_quic footprint is %.1f MB", (double)fd_quic_footprint( &quic_limits ) / 1e6 ));
@@ -70,11 +63,10 @@ main( int     argc,
       fd_quic_sandbox_footprint( &quic_limits, pkt_max, mtu ),
       wksp_tag
   );
-  fd_quic_sandbox_t * const sandbox = fd_quic_sandbox_join( fd_quic_sandbox_new( sandbox_mem, &quic_limits, pkt_max, mtu ) );
+  fd_quic_sandbox_t * const sandbox = fd_quic_sandbox_new( sandbox_mem, &quic_limits, pkt_max, mtu );
   FD_TEST( sandbox );
   FD_TEST( fd_quic_sandbox_init( sandbox, FD_QUIC_ROLE_SERVER ) );
   fd_quic_t * const quic = sandbox->quic;
-  quic->cb.now = quic_now;
   quic->config.idle_timeout = (ulong)100000e9;
   fd_quic_state_t * state = fd_quic_get_state( quic );
   state->now = fd_quic_now( quic );
@@ -86,9 +78,9 @@ main( int     argc,
 
   for( ulong j=0UL; j<conn_cnt; j++ ) {
     fd_quic_conn_t * conn = fd_quic_sandbox_new_conn_established( sandbox, rng );
-    conn->rx_sup_stream_id = (1UL<<62)-1;
-    conn->last_activity    = state->now;
-    conn->idle_timeout     = (ulong)100000e9;
+    conn->srx->rx_sup_stream_id = (1UL<<62)-1;
+    conn->last_activity         = state->now;
+    conn->idle_timeout_ticks    = (ulong)100000e9;
     conn_list[ j ] = conn;
   }
 
@@ -136,10 +128,10 @@ main( int     argc,
     burst_idx--;
     fd_quic_conn_t * conn = conn_list[ conn_idx ];
 
-    fd_quic_stream_frame_t stream_frame =
-      { .stream_id  = conn->rx_hi_stream_id,
-        .fin_opt    = 1 };
-    ulong sz = fd_quic_encode_stream_frame( frame_buf, sizeof(frame_buf), &stream_frame );
+    ulong sz = fd_quic_encode_stream_frame(
+        frame_buf, frame_buf+sizeof(frame_buf),
+        /* stream_id */ conn->srx->rx_hi_stream_id,
+        /* off */ 0, /* len */ 0, /* fin */ 1 );
     FD_TEST( sz!=FD_QUIC_ENCODE_FAIL );
     sz += 64;
 
@@ -161,8 +153,10 @@ main( int     argc,
     FD_TEST( quic->metrics.net_tx_pkt_cnt <= frame_cnt );
   }
 
+  fd_quic_svc_validate( quic );
+
   fd_wksp_free_laddr( conn_list );
-  fd_wksp_free_laddr( fd_quic_sandbox_delete( fd_quic_sandbox_leave( sandbox ) ) );
+  fd_wksp_free_laddr( fd_quic_sandbox_delete( sandbox ) );
   fd_rng_delete( fd_rng_leave( rng ) );
   FD_LOG_NOTICE(( "pass" ));
   fd_halt();

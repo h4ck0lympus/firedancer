@@ -18,6 +18,12 @@
 #define FD_SBPF_ERR_INVALID_ELF (1)
 #define FD_SBPF_PROG_RODATA_ALIGN 8UL
 
+#define FD_SBPF_VERSION_COUNT (4UL)
+#define FD_SBPF_V0            (0UL)
+#define FD_SBPF_V1            (1UL)
+#define FD_SBPF_V2            (2UL)
+#define FD_SBPF_V3            (3UL)
+
 /* Program struct *****************************************************/
 
 /* fd_sbpf_calldests is a bit vector of valid call destinations.
@@ -52,8 +58,13 @@ typedef int
 #define FD_SBPF_SYSCALLS_LG_SLOT_CNT (7)
 #define FD_SBPF_SYSCALLS_SLOT_CNT    (1UL<<FD_SBPF_SYSCALLS_LG_SLOT_CNT)
 
+/* The syscalls map keys should technically be of type uint since they are
+   just murmur32 hashes. However, Agave's BTree allows the full range to be
+   used as a key [0, UINT_MAX]. So we need to define a wider key type to
+   allow for a NULL value that is outside this range. We use ulong here. */
+
 struct fd_sbpf_syscalls {
-  uint                   key;  /* Murmur3-32 hash of function name */
+  ulong                  key;  /* Murmur3-32 hash of function name */
   fd_sbpf_syscall_func_t func; /* Function pointer */
   char const *           name; /* Infinite lifetime pointer to function name */
 };
@@ -62,15 +73,18 @@ typedef struct fd_sbpf_syscalls fd_sbpf_syscalls_t;
 
 #define MAP_NAME              fd_sbpf_syscalls
 #define MAP_T                 fd_sbpf_syscalls_t
-#define MAP_KEY_T             uint
-#define MAP_KEY_NULL          0U
-#define MAP_KEY_INVAL(k)      !(k)
+#define MAP_HASH_T            ulong
+#define MAP_KEY_NULL          ULONG_MAX         /* Any number greater than UINT_MAX works */
+#define MAP_KEY_INVAL(k)      ( k > UINT_MAX )  /* Force keys to uint size */
 #define MAP_KEY_EQUAL(k0,k1)  (k0)==(k1)
 #define MAP_KEY_EQUAL_IS_SLOW 0
 #define MAP_KEY_HASH(k)       (k)
 #define MAP_MEMOIZE           0
 #define MAP_LG_SLOT_CNT       FD_SBPF_SYSCALLS_LG_SLOT_CNT
 #include "../../util/tmpl/fd_map.c"
+
+#define FD_SBPF_SYSCALLS_FOOTPRINT (sizeof(fd_sbpf_syscalls_t) * (1UL<<FD_SBPF_SYSCALLS_LG_SLOT_CNT))
+#define FD_SBPF_SYSCALLS_ALIGN     alignof(fd_sbpf_syscalls_t)
 
 /* fd_sbpf_elf_info_t contains basic information extracted from an ELF
    binary. Indicates how much scratch memory and buffer size is required
@@ -103,6 +117,9 @@ struct fd_sbpf_elf_info {
 
   /* Bitmap of sections to be loaded (LSB => MSB) */
   ulong loaded_sections[ 1024UL ];
+
+  /* SBPF version, SIMD-0161 */
+  uint sbpf_version;
 };
 typedef struct fd_sbpf_elf_info fd_sbpf_elf_info_t;
 
@@ -148,13 +165,18 @@ FD_PROTOTYPES_BEGIN
    elf_deploy_checks: The Agave ELF loader introduced additional checks
    that would fail on (certain) existing mainnet programs. Since it is
    impossible to retroactively enforce these checks on already deployed programs,
-   a guard flag is used to enable these checks only when deploying programs. */
+   a guard flag is used to enable these checks only when deploying programs.
+
+   sbpf_min_version, sbpf_max_version: determine the min, max SBPF version
+   allowed, version is retrieved from the ELF header. See SIMD-0161. */
 
 fd_sbpf_elf_info_t *
 fd_sbpf_elf_peek( fd_sbpf_elf_info_t * info,
                   void const *         bin,
                   ulong                bin_sz,
-                  int                  elf_deploy_checks );
+                  int                  elf_deploy_checks,
+                  uint                 sbpf_min_version,
+                  uint                 sbpf_max_version );
 
 /* fd_sbpf_program_{align,footprint} return the alignment and size
    requirements of the memory region backing the fd_sbpf_program_t

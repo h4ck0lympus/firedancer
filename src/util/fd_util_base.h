@@ -19,15 +19,6 @@
 
 #endif //__cplusplus
 
-/* Versioning macros **************************************************/
-
-/* FD_VERSION_{MAJOR,MINOR,PATCH} programmatically specify the
-   firedancer version. */
-
-#define FD_VERSION_MAJOR (0)
-#define FD_VERSION_MINOR (0)
-#define FD_VERSION_PATCH (0)
-
 /* Build target capabilities ******************************************/
 
 /* Different build targets often have different levels of support for
@@ -415,7 +406,7 @@ __extension__ typedef unsigned __int128 uint128;
 
 #if defined(__aarch64__)
 #define FD_ASM_LG_ALIGN(lg_n) ".align " #lg_n "\n"
-#elif defined(__x86_64__) || defined(__powerpc64__)
+#elif defined(__x86_64__) || defined(__powerpc64__) || defined(__riscv)
 #define FD_ASM_LG_ALIGN(lg_n) ".p2align " #lg_n "\n"
 #endif
 
@@ -477,7 +468,7 @@ __extension__ typedef unsigned __int128 uint128;
    hacks to accept this (this is doable).  After that workaround, this
    still doesn't work because, due to tooling limitations, the pragma
    path is relative to the source file directory and the FD_IMPORT path
-   is relative to the the make directory (working around this would
+   is relative to the make directory (working around this would
    require a __FILE__-like directive for the source code directory base
    path).  Even if that did exist, it might still not work because
    out-of-tree builds often require some substitutions to the gcc -M
@@ -626,14 +617,28 @@ fd_type_pun_const( void const * p ) {
    TL;DR To be safe against the above vagaries, recommend using
    FD_FN_PURE to annotate functions that do no memory writes (including
    trivial memory writes) and try to design HPC APIs to avoid returning
-   multiple values as much as possible. */
+   multiple values as much as possible.
 
-#define FD_FN_PURE __attribute__((pure))
+   Followup: FD_FN_PURE expands to nothing by default given additional
+   confusion between how current languages, compilers, CI, fuzzing, and
+   developers interpret this function attribute.  We keep it around
+   given it documents the intent of various APIs and so it can be
+   manually enabled to find implementation surprises during bullet
+   proofing (e.g. under compiler options like "extra-brutality").
+   Hopefully someday, pure function attributes will someday be handled
+   more consistently across the board. */
+
+#ifndef FD_FN_PURE
+#define FD_FN_PURE
+#endif
 
 /* FD_FN_CONST is like pure but also, even stronger, indicates that the
-   function does not depend on the state of memory. */
+   function does not depend on the state of memory.  See note above
+   about why this expands to nothing by default. */
 
-#define FD_FN_CONST __attribute__((const))
+#ifndef FD_FN_CONST
+#define FD_FN_CONST
+#endif
 
 /* FD_FN_UNUSED indicates that it is okay if the function with static
    linkage is not used.  Allows working around -Winline in header only
@@ -727,11 +732,11 @@ fd_type_pun_const( void const * p ) {
    compile-time-const-based optimizations like hoisting operations with
    useful CPU side effects out of a critical loop. */
 
-#define FD_COMPILER_UNPREDICTABLE(var) __asm__ __volatile__( "# FD_COMPILER_UNPREDICTABLE(" #var ")@" FD_SRC_LOCATION : "+r" (var) )
+#define FD_COMPILER_UNPREDICTABLE(var) __asm__ __volatile__( "# FD_COMPILER_UNPREDICTABLE(" #var ")@" FD_SRC_LOCATION : "+m,r" (var) )
 
 /* Atomic tricks ******************************************************/
 
-/* FD_COMPILER_MFENCE():  Tells the compiler that that it can't move any
+/* FD_COMPILER_MFENCE():  Tells the compiler that it can't move any
    memory operations (load or store) from before the MFENCE to after the
    MFENCE (and vice versa).  The processor itself might still reorder
    around the fence though (that requires platform specific fences). */
@@ -742,7 +747,11 @@ fd_type_pun_const( void const * p ) {
    the other logical cores sharing the same underlying physical core for
    a few clocks without yielding it to the operating system scheduler.
    Typically useful for shared memory spin polling loops, especially if
-   hyperthreading is in use. */
+   hyperthreading is in use.  IMPORTANT SAFETY TIP!  This might act as a
+   FD_COMPILER_MFENCE on some combinations of toolchains and targets
+   (e.g. gcc documents that __builtin_ia32_pause also does a compiler
+   memory) but this should not be relied upon for portable code
+   (consider making this a compiler memory fence on all platforms?) */
 
 #if FD_HAS_X86
 #define FD_SPIN_PAUSE() __builtin_ia32_pause()
@@ -832,7 +841,7 @@ fd_type_pun_const( void const * p ) {
    __sync_lock_test_and_set.  And some implementations (and C++)
    debatably then implemented this API according to what the misleading
    name implied as opposed to what it actually did.  But those
-   implementations didn't bother to provide an replacement for atomic
+   implementations didn't bother to provide a replacement for atomic
    exchange functionality (forcing us to emulate atomic exchange more
    slowly via CAS there).  Sigh ... we do what we can to fix this up. */
 
@@ -908,7 +917,59 @@ fd_type_pun_const( void const * p ) {
    invoking thread and it does not provide any fencing.  If a thread
    once begin is nested inside a once begin, that thread once begin will
    only be executed on the thread that executes the thread once begin.
-   It is similarly okay to nest ONCE block inside a THREAD_ONCE block. */
+   It is similarly okay to nest ONCE block inside a THREAD_ONCE block.
+
+   FD_TURNSTILE_{BEGIN,BLOCKED,END} implement a turnstile for all
+   threads in a process.  Only one thread can be in the turnstile at a
+   time.  Usage:
+
+     FD_TURNSTILE_BEGIN(blocking) {
+
+       ... At this point, we are the only thread executing this block of
+       ... code.
+       ...
+       ... Do operations that must be done by threads one-at-a-time
+       ... here.
+       ...
+       ... Because compiler memory fences are done just before entering
+       ... and after exiting this block, there is typically no need to
+       ... use any atomics / volatile / fencing here.  That is, we can
+       ... just write "normal" code on platforms where writes to memory
+       ... become visible to other threads in the order in which they
+       ... were issued in the machine code (e.g. x86) as others will not
+       ... proceed with this block until they exit it.  YMMV for non-x86
+       ... platforms (probably need additional hardware store fences in
+       ... these macros).
+       ...
+       ... It is safe to use "break" and/or "continue" within this
+       ... block.  The block will exit with the appropriate compiler
+       ... fencing and unlocking.  Execution will resume immediately
+       ... after FD_TURNSTILE_END.
+
+       ... IMPORTANT SAFETY TIP!  DO NOT RETURN FROM THIS BLOCK.
+
+     } FD_TURNSTILE_BLOCKED {
+
+       ... At this point, there was another thread in the turnstile when
+       ... we tried to enter the turnstile.
+       ...
+       ... Handle blocked here.
+       ...
+       ... On exiting this block, if blocking was zero, we will resume
+       ... execution immediately after FD_TURNSTILE_END.  If blocking
+       ... was non-zero, we will resume execution immediately before
+       ... FD_TURNSTILE_BEGIN (e.g. we will retry again after a short
+       ... spin pause).
+       ...
+       ... It is safe to use "break" and/or "continue" within this
+       ... block.  Both will exit this block and resume execution
+       ... at the location indicated as per what blocking specified
+       ... then the turnstile was entered.
+       ...
+       ... It is technically safe to return from this block but
+       ... also extremely gross.
+
+     } FD_TURNSTILE_END; */
 
 #if FD_HAS_THREADS /* Potentially more than one thread in the process */
 
@@ -947,6 +1008,34 @@ fd_type_pun_const( void const * p ) {
     }                                  \
   } while(0)
 
+#define FD_TURNSTILE_BEGIN(blocking) do {                               \
+    static volatile int _fd_turnstile_state    = 0;                     \
+    int                 _fd_turnstile_blocking = (blocking);            \
+    for(;;) {                                                           \
+      int _fd_turnstile_tmp = _fd_turnstile_state;                      \
+      if( FD_LIKELY( !_fd_turnstile_tmp ) &&                            \
+          FD_LIKELY( !FD_ATOMIC_CAS( &_fd_turnstile_state, 0, 1 ) ) ) { \
+        FD_COMPILER_MFENCE();                                           \
+        do
+
+#define FD_TURNSTILE_BLOCKED     \
+        while(0);                \
+        FD_COMPILER_MFENCE();    \
+        _fd_turnstile_state = 0; \
+        FD_COMPILER_MFENCE();    \
+        break;                   \
+      }                          \
+      FD_COMPILER_MFENCE();      \
+      do
+
+#define FD_TURNSTILE_END                                             \
+      while(0);                                                      \
+      FD_COMPILER_MFENCE();                                          \
+      if( !_fd_turnstile_blocking ) break; /* likely compile time */ \
+      FD_SPIN_PAUSE();                                               \
+    }                                                                \
+  } while(0)
+
 #else /* Only one thread in the process */
 
 #ifndef FD_TL
@@ -966,6 +1055,23 @@ fd_type_pun_const( void const * p ) {
 
 #define FD_THREAD_ONCE_BEGIN FD_ONCE_BEGIN
 #define FD_THREAD_ONCE_END   FD_ONCE_END
+
+#define FD_TURNSTILE_BEGIN(blocking) do { \
+    (void)(blocking);                     \
+    FD_COMPILER_MFENCE();                 \
+    if( 1 ) {                             \
+      do
+
+#define FD_TURNSTILE_BLOCKED \
+      while(0);              \
+    } else {                 \
+      do
+
+#define FD_TURNSTILE_END  \
+      while(0);           \
+    }                     \
+    FD_COMPILER_MFENCE(); \
+  } while(0)
 
 #endif
 

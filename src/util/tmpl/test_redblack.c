@@ -13,11 +13,12 @@ struct my_rb_node {
 typedef struct my_rb_node my_rb_node_t;
 #define REDBLK_T my_rb_node_t
 #define REDBLK_NAME my_rb
-#include "fd_redblack.c"
 
-long my_rb_compare(my_rb_node_t* left, my_rb_node_t* right) {
+static long my_rb_compare(my_rb_node_t* left, my_rb_node_t* right) {
   return (long)(left->key - right->key);
 }
+
+#include "fd_redblack.c"
 
 #define SCRATCH_ALIGN     (128UL)
 #define SCRATCH_FOOTPRINT (1UL<<16)
@@ -78,7 +79,7 @@ main( int     argc,
 
     my_rb_release_tree(pool, root);
   }
-  
+
   ulong* list = (ulong*)malloc(max * sizeof(ulong));
 
   for (ulong iter = 0; iter < 1000; ++iter) {
@@ -92,21 +93,39 @@ main( int     argc,
 
     my_rb_node_t* root = NULL;
     my_rb_node_t* node;
+    my_rb_node_t* node2;
     for (ulong i = 0; i < max; ++i) {
       node = my_rb_acquire(pool);
       if (node == NULL)
         FD_LOG_ERR(("allocation failure"));
       node->key = list[i];
       node->val = list[i]*17UL;
-      my_rb_insert(pool, &root, node);
+      my_rb_node_t* out = NULL;
+      my_rb_insert_or_replace(pool, &root, node, &out);
       if (my_rb_find(pool, root, node) != node)
         FD_LOG_ERR(("search result wrong"));
+      if( out != NULL )
+        FD_LOG_ERR(("we should not be seeing a previous instance of this key"));
+
+      node2 = my_rb_acquire(pool);
+      if (node2 == NULL)
+        continue; // we might be at max, we don't need to test that..
+      node2->key = node->key;
+      node2->val = node->val;
+      my_rb_node_t* ret = my_rb_insert_or_replace(pool, &root, node2, &out);
+      if( ret != node2 )
+        FD_LOG_ERR(("insert_or_replace returned the wrong results"));
+      if( my_rb_find(pool, root, node2) != node2 )
+        FD_LOG_ERR(("search result wrong"));
+      if( out != node )
+        FD_LOG_ERR(("we should have replaced the previous copy"));
+      my_rb_release(pool, node);
     }
     if (my_rb_acquire(pool) != NULL)
       FD_LOG_ERR(("did not get NULL as expected"));
 
     assert(!my_rb_verify(pool, root));
-    
+
     node = my_rb_minimum(pool, root);
     if (node->key != 1 || node->val != node->key*17UL)
       FD_LOG_ERR(("did not get right value"));
@@ -115,7 +134,7 @@ main( int     argc,
       if (node->key != ++j || node->val != node->key*17UL)
         FD_LOG_ERR(("did not get right value"));
     }
-      
+
     node = my_rb_maximum(pool, root);
     if (node->key != max || node->val != node->key*17UL)
       FD_LOG_ERR(("did not get right value"));
@@ -124,7 +143,7 @@ main( int     argc,
       if (node->key != --j || node->val != node->key*17UL)
         FD_LOG_ERR(("did not get right value"));
     }
-      
+
     for (ulong i = 0; i <= max+1; ++i) {
       my_rb_node_t key;
       key.key = i;
@@ -161,12 +180,12 @@ main( int     argc,
     }
     if (root != NULL)
       FD_LOG_ERR(("final root wrong"));
-    
+
     assert(!my_rb_verify(pool, root));
   }
 
   free(list);
-  
+
   // Try 3 interesting cases
   for (ulong c = 0; c < 3; ++c) {
     my_rb_node_t* root = NULL;
@@ -218,13 +237,12 @@ main( int     argc,
 
     my_rb_release_tree(pool, root);
   }
-  
+
   (void) my_rb_delete( my_rb_leave( pool ));
-  
+
   fd_rng_delete( fd_rng_leave( rng ) );
 
   FD_LOG_NOTICE(( "pass" ));
   fd_halt();
   return 0;
 }
-

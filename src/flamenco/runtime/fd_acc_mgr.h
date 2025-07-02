@@ -5,10 +5,13 @@
 
 #include "../fd_flamenco_base.h"
 #include "../../ballet/txn/fd_txn.h"
-#include "../../funk/fd_funk.h"
-#include "fd_borrowed_account.h"
+#include "fd_txn_account.h"
 
-/* FD_ACC_MGR_{SUCCESS,ERR{...}} are fd_acc_mgr_t specific error codes.
+#if FD_HAS_AVX
+#include "../../util/simd/fd_avx.h"
+#endif
+
+/* FD_ACC_MGR_{SUCCESS,ERR{...}} are account management specific error codes.
    To be stored in an int. */
 
 #define FD_ACC_MGR_SUCCESS             (0)
@@ -19,101 +22,24 @@
 
 /* FD_ACC_SZ_MAX is the hardcoded size limit of a Solana account. */
 
-#define FD_ACC_SZ_MAX (10UL<<20) /* 10MiB */
+#define FD_ACC_SZ_MAX       (10UL<<20) /* 10MiB */
+
+#define FD_ACC_NONCE_SZ_MAX (80UL)     /* 80 bytes */
 
 /* FD_ACC_TOT_SZ_MAX is the size limit of a Solana account in the firedancer
    client. This means that it includes the max size of the account (10MiB)
    and the associated metadata. */
 
-#define FD_ACC_TOT_SZ_MAX (FD_ACC_SZ_MAX + sizeof(fd_account_meta_t))
+#define FD_ACC_TOT_SZ_MAX       (FD_ACC_SZ_MAX + sizeof(fd_account_meta_t))
 
-/* fd_acc_mgr_t translates between the runtime account DB abstraction
-   and the actual funk database.  Also manages rent collection.
-   fd_acc_mgr_t cannot be relocated to another address space.
-
-   ### Translation
-
-   Each runtime account is backed by a funk record.  However, not all
-   funk records contain an account.  Funk records may temporarily hold
-   "deleted accounts".
-
-   The memory layout of the acc_mgr funk record data is
-   (fd_account_meta_t, padding, account data). */
-
-struct __attribute__((aligned(16UL))) fd_acc_mgr {
-  fd_funk_t * funk;
-
-  ulong slots_per_epoch;  /* see epoch schedule.  do not update directly */
-
-  /* part_width is the width of rent partition.  Each partition is a
-     contiguous sub-range of [0,2^256) where each element is an
-     account address. */
-
-  ulong part_width;
-
-  /* skip_rent_rewrites is a feature flag controlling rent collection
-     behavior during eager rent collection passes. */
-
-  uchar skip_rent_rewrites : 1;
-
-  uint is_locked;
-};
-
-/* FD_ACC_MGR_{ALIGN,FOOTPRINT} specify the parameters for the memory
-   region backing an fd_acc_mgr_t. */
-
-#define FD_ACC_MGR_ALIGN     (alignof(fd_acc_mgr_t))
-#define FD_ACC_MGR_FOOTPRINT ( sizeof(fd_acc_mgr_t))
+#define FD_ACC_NONCE_TOT_SZ_MAX (FD_ACC_NONCE_SZ_MAX + sizeof(fd_account_meta_t))
 
 FD_PROTOTYPES_BEGIN
 
-/* Management API *****************************************************/
+/* Account Management APIs **************************************************/
 
-/* fd_acc_mgr_new formats a memory region suitable to hold an
-   fd_acc_mgr_t.  Binds newly created object to global and returns
-   cast. */
-
-fd_acc_mgr_t *
-fd_acc_mgr_new( void *      mem,
-                fd_funk_t * funk );
-
-/* fd_acc_mgr_delete releases the memory region used by an fd_acc_mgr_t
-   and returns it to the caller. */
-
-void *
-fd_acc_mgr_delete( fd_acc_mgr_t * acc_mgr );
-
-/* Funk key handling **************************************************/
-
-/* fd_acc_funk_key returns a fd_funk database key given an account
-   address. */
-
-FD_FN_PURE static inline fd_funk_rec_key_t
-fd_acc_funk_key( fd_pubkey_t const * pubkey ) {
-  fd_funk_rec_key_t key = {0};
-  fd_memcpy( key.c, pubkey, sizeof(fd_pubkey_t) );
-  key.c[ FD_FUNK_REC_KEY_FOOTPRINT - 1 ] = FD_FUNK_KEY_TYPE_ACC;
-  return key;
-}
-
-/* fd_funk_key_is_acc returns 1 if given fd_funk key is an account
-   managed by fd_acc_mgr_t, and 0 otherwise. */
-
-FD_FN_PURE static inline int
-fd_funk_key_is_acc( fd_funk_rec_key_t const * id ) {
-  return id->c[ FD_FUNK_REC_KEY_FOOTPRINT - 1 ] == FD_FUNK_KEY_TYPE_ACC;
-}
-
-/* fd_funk_key_to_acc reinterprets a funk rec key as an account address.
-   Safe assuming fd_funk_key_is_acc( id )==1. */
-
-FD_FN_CONST static inline fd_pubkey_t const *
-fd_funk_key_to_acc( fd_funk_rec_key_t const * id ) {
-  return (fd_pubkey_t const *)fd_type_pun_const( id->c );
-}
-
-
-/* Account Access API *************************************************/
+/* The following account management APIs are helpers for fd_account_meta_t creation,
+   existence, and retrieval from funk */
 
 static inline void
 fd_account_meta_init( fd_account_meta_t * m ) {
@@ -122,13 +48,13 @@ fd_account_meta_init( fd_account_meta_t * m ) {
   m->hlen  = sizeof(fd_account_meta_t);
 }
 
-/* fd_acc_exists checks if the account in a funk record exists or was
+/* fd_account_meta_exists checks if the account in a funk record exists or was
    deleted.  Handles NULL input safely.  Returns 0 if the account was
    deleted (zero lamports, empty data, zero owner).  Otherwise, returns
    1. */
 
 static inline int
-fd_acc_exists( fd_account_meta_t const * m ) {
+fd_account_meta_exists( fd_account_meta_t const * m ) {
 
   if( !m ) return 0;
 
@@ -148,15 +74,50 @@ fd_acc_exists( fd_account_meta_t const * m ) {
 
 }
 
-/* fd_acc_mgr_view_raw requests a read-only handle to account data.
-   acc_mgr is the global account manager object.  txn is the database
+/* Funk key handling **************************************************/
+
+/* fd_acc_funk_key returns a fd_funk database key given an account
+   address. */
+
+FD_FN_PURE static inline fd_funk_rec_key_t
+fd_funk_acc_key( fd_pubkey_t const * pubkey ) {
+  fd_funk_rec_key_t key = {0};
+  memcpy( key.uc, pubkey, sizeof(fd_pubkey_t) );
+  key.uc[ FD_FUNK_REC_KEY_FOOTPRINT - 1 ] = FD_FUNK_KEY_TYPE_ACC;
+  return key;
+}
+
+/* fd_funk_key_is_acc returns 1 if given fd_funk key is an account
+   and 0 otherwise. */
+
+FD_FN_PURE static inline int
+fd_funk_key_is_acc( fd_funk_rec_key_t const * id ) {
+  return id->uc[ FD_FUNK_REC_KEY_FOOTPRINT - 1 ] == FD_FUNK_KEY_TYPE_ACC;
+}
+
+/* Account Access from Funk APIs *************************************************/
+
+/* The following fd_funk_acc_mgr APIs translate between the runtime account DB abstraction
+   and the actual funk database.
+
+   ### Translation
+
+   Each runtime account is backed by a funk record.  However, not all
+   funk records contain an account.  Funk records may temporarily hold
+   "deleted accounts".
+
+   The memory layout of the account funk record data is
+   (fd_account_meta_t, padding, account data). */
+
+/* fd_funk_get_acc_meta_readonly requests a read-only handle to account data.
+   funk is the database handle.  txn is the database
    transaction to query.  pubkey is the account key to query.
 
    On success:
    - loads the account data into in-memory cache
    - returns a pointer to it in the caller's local address space
    - if out_rec!=NULL, sets *out_rec to a pointer to the funk rec.
-     This handle is suitable as opt_con_rec for fd_acc_mgr_modify_raw.
+     This handle is suitable as opt_con_rec for fd_funk_get_acc_meta_readonly.
    - notably, leaves *opt_err untouched, even if opt_err!=NULL
 
    First byte of returned pointer is first byte of fd_account_meta_t.
@@ -172,28 +133,25 @@ fd_acc_exists( fd_account_meta_t const * m ) {
      record which has an active modify_data handle, etc.)
 
    It is always wrong to cast return value to a non-const pointer.
-   Instead, use fd_acc_mgr_modify_raw to acquire a mutable handle.
+   Instead, use fd_funk_get_acc_meta_mutable to acquire a mutable handle.
 
    if txn_out is supplied (non-null), the txn the key was found in
    is returned. If *txn_out == NULL, the key was found in the root
-   context */
+   context.
+
+   IMPORTANT: fd_funk_get_acc_meta_readonly is only safe if it
+   is guaranteed there are no other modifying accesses to the account. */
 
 fd_account_meta_t const *
-fd_acc_mgr_view_raw( fd_acc_mgr_t *         acc_mgr,
-                     fd_funk_txn_t const *  txn,
-                     fd_pubkey_t const *    pubkey,
-                     fd_funk_rec_t const ** opt_out_rec,
-                     int *                  opt_err,
-                     fd_funk_txn_t const ** txn_out   );
+fd_funk_get_acc_meta_readonly( fd_funk_t const *      funk,
+                               fd_funk_txn_t const *  txn,
+                               fd_pubkey_t const *    pubkey,
+                               fd_funk_rec_t const ** opt_out_rec,
+                               int *                  opt_err,
+                               fd_funk_txn_t const ** txn_out );
 
-int
-fd_acc_mgr_view( fd_acc_mgr_t *          acc_mgr,
-                 fd_funk_txn_t const *   txn,
-                 fd_pubkey_t const *     pubkey,
-                 fd_borrowed_account_t * account );
-
-/* fd_acc_mgr_modify_raw requests a writable handle to an account.
-   Follows interface of fd_acc_mgr_modify_raw with the following
+/* fd_funk_get_acc_meta_mutable requests a writable handle to an account.
+   Follows interface of fd_funk_get_account_meta_readonly with the following
    changes:
 
    - do_create controls behavior if account does not exist.  If set to
@@ -212,68 +170,31 @@ fd_acc_mgr_view( fd_acc_mgr_t *          acc_mgr,
 
    On success:
    - If opt_out_rec!=NULL, sets *opt_out_rec to a pointer to writable
-     funk rec.  Suitable as rec parameter to fd_acc_mgr_commit_raw.
+     funk rec.
+   - If a record was cloned from an ancestor funk txn or created,
+     out_prepare is populated with the prepared record object.
    - Returns pointer to mutable account metadata and data analogous to
-     fd_acc_mgr_view_raw.
+     fd_funk_get_acc_meta_readonly.
    - IMPORTANT:  Return value may point to the same memory region as a
-     previous calls to fd_acc_mgr_view_raw or fd_acc_mgr_modify_raw do,
-     for the same funk rec (account/txn pair).  fd_acc_mgr only promises
+     previous calls to fd_funk_get_acc_meta_readonly or fd_funk_get_acc_meta_mutable do,
+     for the same funk rec (account/txn pair).  fd_funk_acc_mgr APIs only promises
      that account handles requested for different funk txns will not
      alias. Generally, for each funk txn, the user should only ever
      access the latest handle returned by view/modify.
 
-   Caller must eventually commit funk record.  During replay, this is
-   done automatically by slot freeze. */
+   IMPORTANT: fd_funk_get_acc_meta_mutable can only be called if
+   it is guaranteed that there are no other modifying accesses to
+   that account. */
 
 fd_account_meta_t *
-fd_acc_mgr_modify_raw( fd_acc_mgr_t *        acc_mgr,
-                       fd_funk_txn_t *       txn,
-                       fd_pubkey_t const *   pubkey,
-                       int                   do_create,
-                       ulong                 min_data_sz,
-                       fd_funk_rec_t const * opt_con_rec,
-                       fd_funk_rec_t **      opt_out_rec,
-                       int *                 opt_err );
-
-int
-fd_acc_mgr_modify( fd_acc_mgr_t *          acc_mgr,
-                   fd_funk_txn_t *         txn,
-                   fd_pubkey_t const *     pubkey,
-                   int                     do_create,
-                   ulong                   min_data_sz,
-                   fd_borrowed_account_t * account );
-
-int
-fd_acc_mgr_save( fd_acc_mgr_t *          acc_mgr,
-                 fd_borrowed_account_t * account );
-
-/* This version of save is for old code written before tpool integration */
-
-int
-fd_acc_mgr_save_non_tpool( fd_acc_mgr_t *          acc_mgr,
-                           fd_funk_txn_t *         txn,
-                           fd_borrowed_account_t * account );
-
-int
-fd_acc_mgr_save_many_tpool( fd_acc_mgr_t *           acc_mgr,
-                            fd_funk_txn_t *          txn,
-                            fd_borrowed_account_t ** accounts,
-                            ulong                    accounts_cnt,
-                            fd_tpool_t *             tpool );
-
-void
-fd_acc_mgr_lock( fd_acc_mgr_t * acc_mgr );
-
-void
-fd_acc_mgr_unlock( fd_acc_mgr_t * acc_mgr );
-
-/* fd_acc_mgr_set_slots_per_epoch updates the slots_per_epoch setting
-   and rebalances rent partitions.  No-op unless 'skip_rent_rewrites'
-   feature is activated or 'slots_per_epoch' changes. */
-
-void
-fd_acc_mgr_set_slots_per_epoch( fd_exec_slot_ctx_t * slot_ctx,
-                                ulong                slots_per_epoch );
+fd_funk_get_acc_meta_mutable( fd_funk_t *             funk,
+                              fd_funk_txn_t *         txn,
+                              fd_pubkey_t const *     pubkey,
+                              int                     do_create,
+                              ulong                   min_data_sz,
+                              fd_funk_rec_t **        opt_out_rec,
+                              fd_funk_rec_prepare_t * out_prepare,
+                              int *                   opt_err );
 
 /* fd_acc_mgr_strerror converts an fd_acc_mgr error code into a human
    readable cstr.  The lifetime of the returned pointer is infinite and

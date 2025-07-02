@@ -1,17 +1,11 @@
 #ifndef HEADER_fd_src_app_fdshredcap_fdshredcap_h
 #define HEADER_fd_src_app_fdshredcap_fdshredcap_h
 
-#include <stdio.h>
-#include <stdlib.h>
 #include <unistd.h>
-#include <string.h>
 #include <sys/types.h>
 #include <sys/stat.h>
 #include <fcntl.h>
-#include <errno.h>
-#include "../../flamenco/fd_flamenco.h"
 #include "../../flamenco/runtime/fd_blockstore.h"
-#include "../../util/fd_util.h"
 
 /* fd_shredcap is a capture format for solana ledgers. It stores all shreds for
    a given block together. It outputs configurably sized files that can be used
@@ -96,7 +90,7 @@
 #define FD_SHREDCAP_CAPTURE_PATH_NAME_LENGTH (256UL)
 
 /****************************** Manifest **************************************/
-#define FD_SHREDCAP_MANIFEST_MAGIC   (0x4370437043704370)
+#define FD_SHREDCAP_MANIFEST_MAGIC   (0x4370437043704370UL)
 #define FD_SHREDCAP_MANIFEST_VERSION (1UL)
 
 #define FD_SHREDCAP_MANIFEST_CAP_FOOTPRINT_V1 (32UL)

@@ -7,8 +7,24 @@ concurrency:
   group: on-pull-request_${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 jobs:
-  codeql:
+  tests:
     if: github.event.pull_request.draft == false
-    uses: ./.github/workflows/codeql.yml
-    
+    uses: ./.github/workflows/tests.yml
+    secrets: inherit
+  ledgers:
+    if: github.event.pull_request.draft == false
+    uses: ./.github/workflows/ledgers.yml
+    secrets: inherit
+  backtest:
+    if: github.event.pull_request.draft == false
+    uses: ./.github/workflows/backtest.yml
+    secrets: inherit
 
+  # firedancer:
+  #   if: github.event.pull_request.draft == false
+  #   uses: ./.github/workflows/test_firedancer_localnet.yml
+  #   secrets: inherit
+  # firedancer-shredcap:
+  #   if: github.event.pull_request.draft == false
+  #   uses: ./.github/workflows/test_firedancer_testnet_shredcap.yml
+  #   secrets: inherit

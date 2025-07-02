@@ -1,102 +1,74 @@
 #include "fd_native_cpi.h"
-#include "../fd_account.h"
+#include "../fd_borrowed_account.h"
 #include "../fd_executor.h"
 #include "../../vm/syscall/fd_vm_syscall.h"
 #include "../../../util/bits/fd_uwide.h"
 
-int 
-fd_native_cpi_execute_system_program_instruction( fd_exec_instr_ctx_t * ctx,
-                                                  fd_system_program_instruction_t const * instr,
-                                                  fd_vm_rust_account_meta_t const * acct_metas,
-                                                  ulong acct_metas_len,
-                                                  fd_pubkey_t const * signers,
-                                                  ulong signers_cnt ) {
-  fd_instr_info_t * instr_info = &ctx->txn_ctx->instr_infos[ ctx->txn_ctx->instr_info_cnt ];
-  ctx->txn_ctx->instr_info_cnt++;
-  if( FD_UNLIKELY( ctx->txn_ctx->instr_info_cnt>FD_MAX_INSTRUCTION_TRACE_LENGTH ) ) {
-    return FD_EXECUTOR_INSTR_ERR_MAX_INSN_TRACE_LENS_EXCEEDED;
-  }
-
-  fd_instruction_account_t instruction_accounts[256];
+int
+fd_native_cpi_native_invoke( fd_exec_instr_ctx_t *             ctx,
+                             fd_pubkey_t const *               native_program_id,
+                             uchar *                           instr_data,
+                             ulong                             instr_data_len,
+                             fd_vm_rust_account_meta_t const * acct_metas,
+                             ulong                             acct_metas_len,
+                             fd_pubkey_t const *               signers,
+                             ulong                             signers_cnt ) {
+  /* Set up the instr info */
+  fd_instr_info_t instr_info[ 1 ];
+  fd_instruction_account_t instruction_accounts[ FD_INSTR_ACCT_MAX ];
   ulong instruction_accounts_cnt;
 
   /* fd_vm_prepare_instruction will handle missing/invalid account case */
-  instr_info->program_id_pubkey = fd_solana_system_program_id;
   instr_info->program_id = UCHAR_MAX;
-
-  for( ulong i = 0UL; i < ctx->txn_ctx->accounts_cnt; i++ ) {
-    if( !memcmp( fd_solana_system_program_id.key, ctx->txn_ctx->accounts[i].key, sizeof(fd_pubkey_t) ) ) {
-      instr_info->program_id = (uchar)i;
-      break;
-    }
+  int program_id = fd_exec_txn_ctx_find_index_of_account( ctx->txn_ctx, native_program_id );
+  if( FD_LIKELY( program_id!=-1 ) ) {
+    instr_info->program_id = (uchar)program_id;
   }
 
-  /* TODO: Lamport check may be redundant */
-  ulong starting_lamports_h = 0;
-  ulong starting_lamports_l = 0;
-  uchar acc_idx_seen[256];
-  memset( acc_idx_seen, 0, 256 );
+  fd_pubkey_t instr_acct_keys[ FD_INSTR_ACCT_MAX ];
+  uchar       acc_idx_seen[ FD_INSTR_ACCT_MAX ];
+  memset( acc_idx_seen, 0, FD_INSTR_ACCT_MAX );
 
   instr_info->acct_cnt = (ushort)acct_metas_len;
-  for ( ulong j = 0; j < acct_metas_len; j++ ) {
-    fd_vm_rust_account_meta_t const * acct_meta = &acct_metas[j];
+  for( ushort j=0U; j<acct_metas_len; j++ ) {
+    fd_vm_rust_account_meta_t const * acct_meta     = &acct_metas[j];
+    fd_pubkey_t const *               acct_key      = fd_type_pun_const( acct_meta->pubkey );
+    instr_acct_keys[j] = *acct_key;
 
-    for ( ulong k = 0; k < ctx->instr->acct_cnt; k++ ) {
-      if ( memcmp( acct_meta->pubkey, ctx->instr->acct_pubkeys[k].uc, sizeof(fd_pubkey_t) ) == 0 ) {
-        instr_info->acct_pubkeys[j] = ctx->instr->acct_pubkeys[k];
-        instr_info->acct_txn_idxs[j] = ctx->instr->acct_txn_idxs[k];
-        instr_info->acct_flags[j] = 0;
-        instr_info->borrowed_accounts[j] = ctx->instr->borrowed_accounts[k];
+    int idx_in_txn    = fd_exec_txn_ctx_find_index_of_account( ctx->txn_ctx, acct_key );
+    int idx_in_caller = fd_exec_instr_ctx_find_idx_of_instr_account( ctx, acct_key );
 
-        instr_info->is_duplicate[j] = acc_idx_seen[k];
-        if( FD_LIKELY( !acc_idx_seen[k] ) ) {
-          /* This is the first time seeing this account */
-          acc_idx_seen[k] = 1;
-          if( instr_info->borrowed_accounts[j]->const_meta != NULL ) {
-            fd_uwide_inc( &starting_lamports_h, &starting_lamports_l, 
-                          starting_lamports_h, starting_lamports_l,
-                          instr_info->borrowed_accounts[j]->const_meta->info.lamports );
-          }
-        }
-
-        if( acct_meta->is_writable ) {
-          instr_info->acct_flags[j] |= FD_INSTR_ACCT_FLAGS_IS_WRITABLE;
-        }
-        if( acct_meta->is_signer ) {
-          instr_info->acct_flags[j] |= FD_INSTR_ACCT_FLAGS_IS_SIGNER;
-        }
-        break;
-      }
-    }
-
-    instr_info->starting_lamports_h = starting_lamports_h;
-    instr_info->starting_lamports_l = starting_lamports_l;
+    fd_instr_info_setup_instr_account( instr_info,
+                                       acc_idx_seen,
+                                       idx_in_txn!=-1 ? (ushort)idx_in_txn : USHORT_MAX,
+                                       idx_in_caller!=-1 ? (ushort)idx_in_caller : USHORT_MAX,
+                                       j,
+                                       acct_meta->is_writable,
+                                       acct_meta->is_signer );
   }
 
-  fd_bincode_encode_ctx_t ctx2;
-  uchar buf[4096UL]; // Size that is large enough for the instruction
-  ctx2.data = buf;
-  ctx2.dataend = (uchar*)ctx2.data + sizeof(buf);
-  int err = fd_system_program_instruction_encode( instr, &ctx2 );
-  if( err ) {
-    FD_LOG_WARNING(( "Encode failed" ));
-    return FD_EXECUTOR_INSTR_ERR_FATAL;
-  }
+  instr_info->data    = instr_data;
+  instr_info->data_sz = (ushort)instr_data_len;
 
-  instr_info->data = buf;
-  instr_info->data_sz = sizeof(buf);
-  int exec_err = fd_vm_prepare_instruction( ctx->instr, instr_info, ctx, instruction_accounts,
-                                            &instruction_accounts_cnt, signers, signers_cnt );
-  if( exec_err != FD_EXECUTOR_INSTR_SUCCESS ) {
-    FD_LOG_WARNING(("Preparing instruction failed"));
+  /* https://github.com/anza-xyz/agave/blob/v2.2.6/program-runtime/src/invoke_context.rs#L312-L313 */
+  int exec_err = fd_vm_prepare_instruction( instr_info,
+                                            ctx,
+                                            native_program_id,
+                                            instr_acct_keys,
+                                            instruction_accounts,
+                                            &instruction_accounts_cnt,
+                                            signers,
+                                            signers_cnt );
+  if( FD_UNLIKELY( exec_err!=FD_EXECUTOR_INSTR_SUCCESS ) ) {
     return exec_err;
   }
 
+  /* https://github.com/anza-xyz/agave/blob/v2.2.6/program-runtime/src/invoke_context.rs#L315-L321 */
   return fd_execute_instr( ctx->txn_ctx, instr_info );
 }
 
-void 
-fd_native_cpi_create_account_meta( fd_pubkey_t const * key, uchar is_signer, 
+void
+fd_native_cpi_create_account_meta( fd_pubkey_t const * key, uchar is_signer,
                                    uchar is_writable, fd_vm_rust_account_meta_t * meta ) {
   meta->is_signer = is_signer;
   meta->is_writable = is_writable;

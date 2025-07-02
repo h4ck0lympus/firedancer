@@ -1,7 +1,7 @@
 #include "fd_topob.h"
 
-#include "fd_pod_format.h"
-#include "../../util/shmem/fd_shmem_private.h"
+#include "../../util/pod/fd_pod_format.h"
+#include "fd_cpu_topo.h"
 
 fd_topo_t *
 fd_topob_new( void * mem,
@@ -24,6 +24,9 @@ fd_topob_new( void * mem,
 
   if( FD_UNLIKELY( strlen( app_name )>=sizeof(topo->app_name) ) ) FD_LOG_ERR(( "app_name too long: %s", app_name ));
   strncpy( topo->app_name, app_name, sizeof(topo->app_name) );
+
+  topo->max_page_size           = FD_SHMEM_GIGANTIC_PAGE_SZ;
+  topo->gigantic_page_threshold = 4 * FD_SHMEM_HUGE_PAGE_SZ;
 
   return topo;
 }
@@ -61,11 +64,10 @@ fd_topob_obj( fd_topo_t *  topo,
   return obj;
 }
 
-void
+fd_topo_link_t *
 fd_topob_link( fd_topo_t *  topo,
                char const * link_name,
                char const * wksp_name,
-               int          is_reasm,
                ulong        depth,
                ulong        mtu,
                ulong        burst ) {
@@ -82,7 +84,6 @@ fd_topob_link( fd_topo_t *  topo,
   strncpy( link->name, link_name, sizeof(link->name) );
   link->id       = topo->link_cnt;
   link->kind_id  = kind_id;
-  link->is_reasm = is_reasm;
   link->depth    = depth;
   link->mtu      = mtu;
   link->burst    = burst;
@@ -91,19 +92,16 @@ fd_topob_link( fd_topo_t *  topo,
   link->mcache_obj_id = obj->id;
   FD_TEST( fd_pod_insertf_ulong( topo->props, depth, "obj.%lu.depth", obj->id ) );
 
-  if( FD_UNLIKELY( is_reasm ) ) {
-    obj = fd_topob_obj( topo, "reasm", wksp_name );
-    link->reasm_obj_id = obj->id;
-    FD_TEST( fd_pod_insertf_ulong( topo->props, depth, "obj.%lu.depth", obj->id ) );
-    FD_TEST( fd_pod_insertf_ulong( topo->props, burst, "obj.%lu.burst", obj->id ) );
-  } else if( FD_UNLIKELY( mtu ) ) {
+  if( mtu ) {
     obj = fd_topob_obj( topo, "dcache", wksp_name );
     link->dcache_obj_id = obj->id;
     FD_TEST( fd_pod_insertf_ulong( topo->props, depth, "obj.%lu.depth", obj->id ) );
     FD_TEST( fd_pod_insertf_ulong( topo->props, burst, "obj.%lu.burst", obj->id ) );
-    FD_TEST( fd_pod_insertf_ulong( topo->props, mtu, "obj.%lu.mtu", obj->id ) );
+    FD_TEST( fd_pod_insertf_ulong( topo->props, mtu,   "obj.%lu.mtu",   obj->id ) );
   }
   topo->link_cnt++;
+
+  return link;
 }
 
 void
@@ -126,10 +124,11 @@ fd_topob_tile( fd_topo_t *    topo,
                char const *   tile_wksp,
                char const *   metrics_wksp,
                ulong          cpu_idx,
-               int            is_agave ) {
+               int            is_agave,
+               int            uses_keyswitch ) {
   if( FD_UNLIKELY( !topo || !tile_name || !tile_wksp || !metrics_wksp ) ) FD_LOG_ERR(( "NULL args" ));
   if( FD_UNLIKELY( strlen( tile_name )>=sizeof(topo->tiles[ topo->tile_cnt ].name ) ) ) FD_LOG_ERR(( "tile name too long: %s", tile_name ));
-  if( FD_UNLIKELY( topo->tile_cnt>=FD_TOPO_MAX_TILES ) ) FD_LOG_ERR(( "too many tiles" ));
+  if( FD_UNLIKELY( topo->tile_cnt>=FD_TOPO_MAX_TILES ) ) FD_LOG_ERR(( "too many tiles %lu", topo->tile_cnt ));
 
   ulong kind_id = 0UL;
   for( ulong i=0UL; i<topo->tile_cnt; i++ ) {
@@ -153,6 +152,14 @@ fd_topob_tile( fd_topo_t *    topo,
   fd_topo_obj_t * obj = fd_topob_obj( topo, "metrics", metrics_wksp );
   tile->metrics_obj_id = obj->id;
   fd_topob_tile_uses( topo, tile, obj, FD_SHMEM_JOIN_MODE_READ_WRITE );
+
+  if( FD_LIKELY( uses_keyswitch ) ) {
+    obj = fd_topob_obj( topo, "keyswitch", tile_wksp );
+    tile->keyswitch_obj_id = obj->id;
+    fd_topob_tile_uses( topo, tile, obj, FD_SHMEM_JOIN_MODE_READ_WRITE );
+  } else {
+    tile->keyswitch_obj_id = ULONG_MAX;
+  }
 
   topo->tile_cnt++;
   return tile;
@@ -187,9 +194,7 @@ fd_topob_tile_in( fd_topo_t *  topo,
   tile->in_cnt++;
 
   fd_topob_tile_uses( topo, tile, &topo->objs[ link->mcache_obj_id ], FD_SHMEM_JOIN_MODE_READ_ONLY );
-  if( FD_UNLIKELY( link->is_reasm ) ) {
-    fd_topob_tile_uses( topo, tile, &topo->objs[ link->reasm_obj_id ], FD_SHMEM_JOIN_MODE_READ_ONLY );
-  } else if( FD_LIKELY( link->mtu ) ) {
+  if( FD_LIKELY( link->mtu ) ) {
     fd_topob_tile_uses( topo, tile, &topo->objs[ link->dcache_obj_id ], FD_SHMEM_JOIN_MODE_READ_ONLY );
   }
 }
@@ -213,9 +218,7 @@ fd_topob_tile_out( fd_topo_t *  topo,
   tile->out_cnt++;
 
   fd_topob_tile_uses( topo, tile, &topo->objs[ link->mcache_obj_id ], FD_SHMEM_JOIN_MODE_READ_WRITE );
-  if( FD_UNLIKELY( link->is_reasm ) ) {
-    fd_topob_tile_uses( topo, tile, &topo->objs[ link->reasm_obj_id ], FD_SHMEM_JOIN_MODE_READ_WRITE );
-  } else if( FD_LIKELY( link->mtu ) ) {
+  if( FD_LIKELY( link->mtu ) ) {
     fd_topob_tile_uses( topo, tile, &topo->objs[ link->dcache_obj_id ], FD_SHMEM_JOIN_MODE_READ_WRITE );
   }
 }
@@ -242,7 +245,7 @@ validate( fd_topo_t const * topo ) {
       for( ulong k=0UL; k<topo->tiles[ i ].in_cnt; k++ ) {
         if( FD_UNLIKELY( j==k ) ) continue;
         if( FD_UNLIKELY( topo->tiles[ i ].in_link_id[ j ] == topo->tiles[ i ].in_link_id[ k ] ) )
-          FD_LOG_ERR(( "tile %lu (%s) has duplicated in link %lu (%s)", i, topo->tiles[ i ].name, 
+          FD_LOG_ERR(( "tile %lu (%s) has duplicated in link %lu (%s)", i, topo->tiles[ i ].name,
               topo->tiles[ i ].in_link_id[ j ], topo->links[ topo->tiles[ i ].in_link_id[ j ] ].name ));
       }
     }
@@ -254,7 +257,7 @@ validate( fd_topo_t const * topo ) {
       for( ulong k=0UL; k<topo->tiles[ i ].out_cnt; k++ ) {
         if( FD_UNLIKELY( j==k ) ) continue;
         if( FD_UNLIKELY( topo->tiles[ i ].out_link_id[ j ] == topo->tiles[ i ].out_link_id[ k ] ) )
-          FD_LOG_ERR(( "tile %lu (%s) has duplicated out link %lu (%s)", i, topo->tiles[ i ].name, 
+          FD_LOG_ERR(( "tile %lu (%s) has duplicated out link %lu (%s)", i, topo->tiles[ i ].name,
               topo->tiles[ i ].out_link_id[ j ], topo->links[ topo->tiles[ i ].out_link_id[ j ] ].name ));
       }
     }
@@ -315,60 +318,67 @@ validate( fd_topo_t const * topo ) {
         if( topo->tiles[ j ].out_link_id[ k ]==i ) producer_cnt++;
       }
     }
-    if( FD_UNLIKELY( producer_cnt!=1UL ) )
+    if( FD_UNLIKELY( producer_cnt>1UL || ( producer_cnt==0UL && !topo->links[ i ].permit_no_producers ) ) )
       FD_LOG_ERR(( "link %lu (%s:%lu) has %lu producers", i, topo->links[ i ].name, topo->links[ i ].kind_id, producer_cnt ));
   }
 
   /* Each link has at least one consumer */
   for( ulong i=0UL; i<topo->link_cnt; i++ ) {
     ulong cnt = fd_topo_link_consumer_cnt( topo, &topo->links[ i ] );
-    if( FD_UNLIKELY( cnt < 1 ) )
-      FD_LOG_ERR(( "link %lu (%s:%lu) has %lu consumers", i, topo->links[ i ].name, topo->links[ i ].kind_id, cnt ));
+    if( FD_UNLIKELY( cnt < 1UL && !topo->links[ i ].permit_no_consumers ) ) {
+      FD_LOG_ERR(( "link %lu (%s:%lu) has 0 consumers", i, topo->links[ i ].name, topo->links[ i ].kind_id ));
+    }
   }
 }
 
 void
-fd_topob_auto_layout( fd_topo_t * topo ) {
+fd_topob_auto_layout( fd_topo_t * topo,
+                      int         reserve_agave_cores ) {
   /* Incredibly simple automatic layout system for now ... just assign
      tiles to CPU cores in NUMA sequential order, except for a few tiles
      which should be floating. */
 
   char const * FLOATING[] = {
+    "netlnk",
     "metric",
     "cswtch",
     "bencho",
-    "bhole",  /* FIREDANCER only */
   };
 
   char const * ORDERED[] = {
     "benchg",
     "benchs",
     "net",
+    "sock",
     "quic",
+    "bundle",
     "verify",
     "dedup",
+    "resolv", /* FRANK only */
     "pack",
-    "bank",
-    "poh",
-#ifdef FD_HAS_NO_AGAVE
-    "pohi",   /* FIREDANCER only */
-#endif
+    "bank",   /* FRANK only */
+    "poh",    /* FRANK only */
+    "poh",   /* FIREDANCER only */
     "shred",
-    "store",
-#ifdef FD_HAS_NO_AGAVE
+    "store",  /* FRANK only */
     "storei", /* FIREDANCER only */
-#endif
     "sign",
     "plugin",
     "gui",
-#ifdef FD_HAS_NO_AGAVE
     "gossip", /* FIREDANCER only */
     "repair", /* FIREDANCER only */
     "replay", /* FIREDANCER only */
-    "thread", /* FIREDANCER only */
-    "sender", /* FIREDANCER only */
-    "eqvoc",  /* FIREDANCER only */
-#endif
+    "exec",   /* FIREDANCER only */
+    "writer", /* FIREDANCER only */
+    "send",   /* FIREDANCER only */
+    "tower",  /* FIREDANCER only */
+    "rpcsrv", /* FIREDANCER only */
+    "pktgen"
+  };
+
+  char const * CRITICAL_TILES[] = {
+    "pack",
+    "poh",
   };
 
   for( ulong i=0UL; i<topo->tile_cnt; i++ ) {
@@ -376,31 +386,77 @@ fd_topob_auto_layout( fd_topo_t * topo ) {
     tile->cpu_idx = ULONG_MAX;
   }
 
-  ulong cpu_ordering[ FD_TILE_MAX ] = { 0UL };
-  ulong num_cpus = fd_numa_cpu_cnt();
+  fd_topo_cpus_t cpus[1];
+  fd_topo_cpus_init( cpus );
 
-  ulong next_cpu_idx = 0UL;
-  ulong num_numa_nodes = fd_numa_node_cnt();
-  for( ulong i=0UL; i<num_numa_nodes; i++ ) {
-    for( ulong j=0UL; j<num_cpus; j++ ) {
-      ulong numa_node = fd_numa_node_idx( j );
-      if( FD_UNLIKELY( numa_node!=i ) ) continue;
+  ulong cpu_ordering[ FD_TILE_MAX ] = { 0UL };
+  int   pairs_assigned[ FD_TILE_MAX ] = { 0 };
+
+  ulong next_cpu_idx   = 0UL;
+  for( ulong i=0UL; i<cpus->numa_node_cnt; i++ ) {
+    for( ulong j=0UL; j<cpus->cpu_cnt; j++ ) {
+      fd_topo_cpu_t * cpu = &cpus->cpu[ j ];
+
+      if( FD_UNLIKELY( pairs_assigned[ j ] || cpu->numa_node!=i ) ) continue;
+
       FD_TEST( next_cpu_idx<FD_TILE_MAX );
       cpu_ordering[ next_cpu_idx++ ] = j;
+
+      if( FD_UNLIKELY( cpu->sibling!=ULONG_MAX ) ) {
+        /* If the CPU has a HT pair, place it immediately after so they
+           are sequentially assigned. */
+        FD_TEST( next_cpu_idx<FD_TILE_MAX );
+        cpu_ordering[ next_cpu_idx++ ] = cpu->sibling;
+        pairs_assigned[ cpu->sibling ] = 1;
+      }
     }
   }
 
-  FD_TEST( next_cpu_idx==num_cpus );
+  FD_TEST( next_cpu_idx==cpus->cpu_cnt );
+
+  int cpu_assigned[ FD_TILE_MAX ] = {0};
 
   ulong cpu_idx = 0UL;
   for( ulong i=0UL; i<sizeof(ORDERED)/sizeof(ORDERED[0]); i++ ) {
     for( ulong j=0UL; j<topo->tile_cnt; j++ ) {
       fd_topo_tile_t * tile = &topo->tiles[ j ];
       if( !strcmp( tile->name, ORDERED[ i ] ) ) {
-        if( FD_UNLIKELY( cpu_idx>=num_cpus ) ) {
+        if( FD_UNLIKELY( cpu_idx>=cpus->cpu_cnt ) ) {
           FD_LOG_ERR(( "auto layout cannot set affinity for tile `%s:%lu` because all the CPUs are already assigned", tile->name, tile->kind_id ));
         } else {
-          tile->cpu_idx = cpu_ordering[ cpu_idx++ ];
+          /* Certain tiles are latency and throughput critical and
+             should not get a HT pair assigned. */
+          fd_topo_cpu_t const * cpu = &cpus->cpu[ cpu_ordering[ cpu_idx ] ];
+
+          int is_ht_critical = 0;
+          if( FD_UNLIKELY( cpu->sibling!=ULONG_MAX ) ) {
+            for( ulong k=0UL; k<sizeof(CRITICAL_TILES)/sizeof(CRITICAL_TILES[0]); k++ ) {
+              if( !strcmp( tile->name, CRITICAL_TILES[ k ] ) ) {
+                is_ht_critical = 1;
+                break;
+              }
+            }
+          }
+
+          if( FD_UNLIKELY( is_ht_critical ) ) {
+            ulong try_assign = cpu_idx;
+            while( cpu_assigned[ cpu_ordering[ try_assign ] ] || (cpus->cpu[ cpu_ordering[ try_assign ] ].sibling!=ULONG_MAX && cpu_assigned[ cpus->cpu[ cpu_ordering[ try_assign ] ].sibling ]) ) {
+              try_assign++;
+              if( FD_UNLIKELY( try_assign>=cpus->cpu_cnt ) ) FD_LOG_ERR(( "auto layout cannot set affinity for tile `%s:%lu` because all the CPUs are already assigned or have a HT pair assigned", tile->name, tile->kind_id ));
+            }
+
+            ulong sibling = cpus->cpu[ cpu_ordering[ try_assign ] ].sibling;
+            cpu_assigned[ cpu_ordering[ try_assign ] ] = 1;
+            if( sibling!=ULONG_MAX ) {
+              cpu_assigned[ sibling ] = 1;
+            }
+            tile->cpu_idx = cpu_ordering[ try_assign ];
+            while( cpu_assigned[ cpu_ordering[ cpu_idx ] ] ) cpu_idx++;
+          } else {
+            cpu_assigned[ cpu_ordering[ cpu_idx ] ] = 1;
+            tile->cpu_idx = cpu_ordering[ cpu_idx ];
+            while( cpu_assigned[ cpu_ordering[ cpu_idx ] ] ) cpu_idx++;
+          }
         }
       }
     }
@@ -422,18 +478,88 @@ fd_topob_auto_layout( fd_topo_t * topo ) {
     if( FD_UNLIKELY( !found ) ) FD_LOG_WARNING(( "auto layout cannot affine tile `%s:%lu` because it is unknown. Leaving it floating", tile->name, tile->kind_id ));
   }
 
-  for( ulong i=cpu_idx; i<num_cpus; i++ ) {
-    if( FD_LIKELY( topo->agave_affinity_cnt<sizeof(topo->agave_affinity_cpu_idx)/sizeof(topo->agave_affinity_cpu_idx[0]) ) ) {
-      topo->agave_affinity_cpu_idx[ topo->agave_affinity_cnt++ ] = cpu_ordering[ i ];
+  if( FD_UNLIKELY( reserve_agave_cores ) ) {
+    for( ulong i=cpu_idx; i<cpus->cpu_cnt; i++ ) {
+      if( FD_UNLIKELY( !cpus->cpu[ cpu_ordering[ i ] ].online ) ) continue;
+
+      if( FD_LIKELY( topo->agave_affinity_cnt<sizeof(topo->agave_affinity_cpu_idx)/sizeof(topo->agave_affinity_cpu_idx[0]) ) ) {
+        topo->agave_affinity_cpu_idx[ topo->agave_affinity_cnt++ ] = cpu_ordering[ i ];
+      }
     }
   }
 }
 
+ulong
+fd_numa_node_idx( ulong cpu_idx );
+
+static void
+initialize_numa_assignments( fd_topo_t * topo ) {
+  /* Assign workspaces to NUMA nodes.  The heuristic here is pretty
+     simple for now: workspaces go on the NUMA node of the first
+     tile which maps the largest object in the workspace. */
+
+  for( ulong i=0UL; i<topo->wksp_cnt; i++ ) {
+    ulong max_footprint = 0UL;
+    ulong max_obj = ULONG_MAX;
+
+    for( ulong j=0UL; j<topo->obj_cnt; j++ ) {
+      fd_topo_obj_t * obj = &topo->objs[ j ];
+      if( obj->wksp_id!=i ) continue;
+
+      if( FD_UNLIKELY( !max_footprint || obj->footprint>max_footprint ) ) {
+        max_footprint = obj->footprint;
+        max_obj = j;
+      }
+    }
+
+    if( FD_UNLIKELY( max_obj==ULONG_MAX ) ) FD_LOG_ERR(( "no object found for workspace %s", topo->workspaces[ i ].name ));
+
+    int found_strict = 0;
+    int found_lazy   = 0;
+    for( ulong j=0UL; j<topo->tile_cnt; j++ ) {
+      fd_topo_tile_t * tile = &topo->tiles[ j ];
+      if( FD_UNLIKELY( tile->tile_obj_id==max_obj && tile->cpu_idx<FD_TILE_MAX ) ) {
+        topo->workspaces[ i ].numa_idx = fd_numa_node_idx( tile->cpu_idx );
+        FD_TEST( topo->workspaces[ i ].numa_idx!=ULONG_MAX );
+        found_strict = 1;
+        found_lazy = 1;
+        break;
+      } else if( FD_UNLIKELY( tile->tile_obj_id==max_obj && tile->cpu_idx>=FD_TILE_MAX ) ) {
+        topo->workspaces[ i ].numa_idx = 0;
+        found_lazy = 1;
+        break;
+      }
+    }
+
+    if( FD_LIKELY( !found_strict ) ) {
+      for( ulong j=0UL; j<topo->tile_cnt; j++ ) {
+        fd_topo_tile_t * tile = &topo->tiles[ j ];
+        for( ulong k=0UL; k<tile->uses_obj_cnt; k++ ) {
+          if( FD_LIKELY( tile->uses_obj_id[ k ]==max_obj && tile->cpu_idx<FD_TILE_MAX ) ) {
+            topo->workspaces[ i ].numa_idx = fd_numa_node_idx( tile->cpu_idx );
+            FD_TEST( topo->workspaces[ i ].numa_idx!=ULONG_MAX );
+            found_lazy = 1;
+            break;
+          } else if( FD_UNLIKELY( tile->uses_obj_id[ k ]==max_obj ) && tile->cpu_idx>=FD_TILE_MAX ) {
+            topo->workspaces[ i ].numa_idx = 0;
+            found_lazy = 1;
+            /* Don't break, keep looking -- a tile with a CPU assignment
+               might also use object in which case we want to use that
+               NUMA node. */
+          }
+        }
+
+        if( FD_UNLIKELY( found_lazy ) ) break;
+      }
+    }
+
+    if( FD_UNLIKELY( !found_lazy ) ) FD_LOG_ERR(( "no tile uses object %s for workspace %s", topo->objs[ max_obj ].name, topo->workspaces[ i ].name ));
+  }
+}
+
 void
-fd_topob_finish( fd_topo_t * topo,
-                 ulong (* align    )( fd_topo_t const * topo, fd_topo_obj_t const * obj ),
-                 ulong (* footprint)( fd_topo_t const * topo, fd_topo_obj_t const * obj ),
-                 ulong (* loose    )( fd_topo_t const * topo, fd_topo_obj_t const * obj) ) {
+fd_topob_finish( fd_topo_t *                topo,
+                 fd_topo_obj_callbacks_t ** callbacks ) {
   for( ulong z=0UL; z<topo->tile_cnt; z++ ) {
     fd_topo_tile_t * tile = &topo->tiles[ z ];
 
@@ -466,19 +592,45 @@ fd_topob_finish( fd_topo_t * topo,
     for( ulong j=0UL; j<topo->obj_cnt; j++ ) {
       fd_topo_obj_t * obj = &topo->objs[ j ];
       if( FD_UNLIKELY( obj->wksp_id!=wksp->id ) ) continue;
-      loose_sz += loose( topo, obj );
+
+      fd_topo_obj_callbacks_t * cb = NULL;
+      for( ulong i=0UL; callbacks[ i ]; i++ ) {
+        if( FD_UNLIKELY( !strcmp( callbacks[ i ]->name, obj->name ) ) ) {
+          cb = callbacks[ i ];
+          break;
+        }
+      }
+      if( FD_UNLIKELY( !cb ) ) FD_LOG_ERR(( "no callbacks for object %s", obj->name ));
+
+      if( FD_UNLIKELY( cb->loose ) ) loose_sz += cb->loose( topo, obj );
     }
 
-    ulong part_max = 1UL + (loose_sz / (64UL << 10));
+    ulong part_max = wksp->part_max;
+    if( !part_max ) part_max = (loose_sz / (64UL << 10)); /* alloc + residual padding */
+    part_max += 3; /* for initial alignment */
     ulong offset = fd_ulong_align_up( fd_wksp_private_data_off( part_max ), fd_topo_workspace_align() );
 
     for( ulong j=0UL; j<topo->obj_cnt; j++ ) {
       fd_topo_obj_t * obj = &topo->objs[ j ];
       if( FD_UNLIKELY( obj->wksp_id!=wksp->id ) ) continue;
 
-      offset = fd_ulong_align_up( offset, align( topo, obj ) );
+      fd_topo_obj_callbacks_t * cb = NULL;
+      for( ulong i=0UL; callbacks[ i ]; i++ ) {
+        if( FD_UNLIKELY( !strcmp( callbacks[ i ]->name, obj->name ) ) ) {
+          cb = callbacks[ i ];
+          break;
+        }
+      }
+      if( FD_UNLIKELY( !cb ) ) FD_LOG_ERR(( "no callbacks for object %s", obj->name ));
+
+      ulong align_ = cb->align( topo, obj );
+      if( FD_UNLIKELY( !fd_ulong_is_pow2( align_ ) ) ) FD_LOG_ERR(( "Return value of fdctl_obj_align(%s,%lu) is not a power of 2", obj->name, obj->id ));
+      offset = fd_ulong_align_up( offset, align_ );
       obj->offset = offset;
-      obj->footprint = footprint( topo, obj );
+      obj->footprint = cb->footprint( topo, obj );
+      if( FD_UNLIKELY( 0!=strcmp( obj->name, "tile" ) && (!obj->footprint || obj->footprint>LONG_MAX) ) ) {
+        FD_LOG_ERR(( "fdctl_obj_footprint(%s,%lu) failed", obj->name, obj->id ));
+      }
       offset += obj->footprint;
     }
 
@@ -488,8 +640,9 @@ fd_topob_finish( fd_topo_t * topo,
        with an extra align of padding incase gaddr_lo is not aligned. */
     ulong total_wksp_footprint = fd_wksp_footprint( part_max, footprint + fd_topo_workspace_align() + loose_sz );
 
-    ulong page_sz = FD_SHMEM_GIGANTIC_PAGE_SZ;
-    if( FD_UNLIKELY( total_wksp_footprint < 4 * FD_SHMEM_HUGE_PAGE_SZ ) ) page_sz = FD_SHMEM_HUGE_PAGE_SZ;
+    ulong page_sz = topo->max_page_size;
+    if( total_wksp_footprint < topo->gigantic_page_threshold ) page_sz = FD_SHMEM_HUGE_PAGE_SZ;
+    if( FD_UNLIKELY( page_sz!=FD_SHMEM_HUGE_PAGE_SZ && page_sz!=FD_SHMEM_GIGANTIC_PAGE_SZ ) ) FD_LOG_ERR(( "invalid page_sz" ));
 
     ulong wksp_aligned_footprint = fd_ulong_align_up( total_wksp_footprint, page_sz );
 
@@ -501,6 +654,8 @@ fd_topob_finish( fd_topo_t * topo,
     wksp->page_sz = page_sz;
     wksp->page_cnt = wksp_aligned_footprint / page_sz;
   }
-  
+
+  initialize_numa_assignments( topo );
+
   validate( topo );
 }

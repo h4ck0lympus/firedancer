@@ -2,14 +2,14 @@
 
 ## Overview
 The Firedancer validator is composed of a handful of threads, each
-performing one of eleven distinct jobs. Some jobs only need one thread
+performing one of fifteen distinct jobs. Some jobs only need one thread
 to do them, but certain jobs require many threads performing the same
 work in parallel.
 
 Each thread is given a CPU core to run on, and threads take ownership of
 the core: never sleeping or letting the operating system use it for
 another purpose. The combination of a job, and the thread it runs on,
-and the CPU core it is assigned to is called a tile. The eleven kinds of
+and the CPU core it is assigned to is called a tile. The fifteen kinds of
 tile are,
 
 | Tile   | Description |
@@ -23,13 +23,17 @@ tile are,
 | `poh`  | Continuously hashes in the background, and mixes the hash in with executed transactions to prove passage of time |
 | `shred` | Distributes block data to the network when leader, and receives and retransmits block data when not leader |
 | `store` | Receives block data when we are leader, or from other nodes when they are leader, and stores it locally in a database on disk |
-| `metric` | Collects monitoring information about other tiles and serves it on a HTTP endpoint |
+| `metric` | Collects monitoring information about other tiles and serves it on an HTTP endpoint |
 | `sign` | Holds the validator private key, and receives and responds to signing requests from other tiles |
+| `resolv` | Resolves address lookup tables before transactions are scheduled |
+| `cswtch` | Counts context switches of other tiles |
+| `plugin` | Provides data to the `gui` tile  |
+| `gui` | Receives data from the validator and serves an HTTP endpoint to clients to view it |
 
 These tiles communicate with each other via shared memory queues. The
 work each tile performs and how they communicate with each other is
 fixed, but the count of each tile kind and which CPU cores they are
-assigned to is set by your configuration, and this the primary way to
+assigned to is set by your configuration, and this is the primary way to
 tune the performance of Firedancer.
 
 ## Configuration
@@ -52,8 +56,9 @@ file:
 
 :::
 
-Note that not all tiles have a configurable count. The `dedup`, `pack`,
-`poh`, `store`, `metric`, and `sign` tiles are fixed at one thread each.
+Only `net`, `quic`, `verify`, `bank`, and `shred` tile counts are
+configurable. There may be 0 or 1 `plugin` and `gui` tiles if
+the GUI is disabled or enabled. The rest are fixed at one thread each.
 
 The assignment of tiles to CPU cores is determined by the `affinity`
 string, which is documented fully in the
@@ -220,7 +225,7 @@ it down to the relevant information,
 
 Here we see what is happening. The blockstore is completely busy
 spending 99.973% of its time storing data, while the PoH and shred tiles
-are in back-pressure waiting for the the blockstore to catch up. The
+are in back-pressure waiting for the blockstore to catch up. The
 blockstore is an Agave component built on RocksDB that is not rewritten
 as part of Frankendancer.
 

@@ -73,6 +73,7 @@
    limit of 64 is currently in place, but this is being changed to 128 in the
    near future (https://github.com/solana-labs/solana/issues/27241), so we'll
    use 128. */
+/* https://github.com/anza-xyz/agave/blob/838c1952595809a31520ff1603a13f2c9123aa51/sdk/program/src/message/versions/v0/mod.rs#L139 */
 #define FD_TXN_ACCT_ADDR_MAX         (128UL)
 
 /* FD_TXN_ADDR_TABLE_LOOKUP_MAX: The (inclusive) maximum number of address
@@ -105,6 +106,22 @@
 /* FD_TXN_MIN_SERIALIZED_SZ: The minimum size (in bytes) of a serialized
    transaction, using fd_txn_parse() verification rules. */
 #define FD_TXN_MIN_SERIALIZED_SZ     (134UL)
+
+/* BEGIN Agave limits */
+
+/* "Maximum number of accounts that a transaction may lock.
+    128 was chosen because it is the minimum number of accounts
+    needed for the Neon EVM implementation."
+   https://github.com/anza-xyz/agave/blob/838c1952595809a31520ff1603a13f2c9123aa51/sdk/src/transaction/sanitized.rs#L30 */
+#define MAX_TX_ACCOUNT_LOCKS         (128UL)
+/* In the FD runtime, we've sized things assuming up to
+   MAX_TX_ACCOUNT_LOCKS accounts per transaction. We rely on the txn
+   parser to enforce this limit, up till the point of
+   validate_account_locks(). If the txn parser bumps the account limit,
+   then we might overflow in the runtime. */
+FD_STATIC_ASSERT( MAX_TX_ACCOUNT_LOCKS==FD_TXN_ACCT_ADDR_MAX, num_accounts_per_txn );
+
+/* END Agave limits */
 
 
 /* A Solana transaction instruction, i.e. one command or step to execute in a
@@ -393,34 +410,64 @@ typedef union fd_acct_addr fd_acct_addr_t;
    alignment.  U.B. If `payload` and `txn` were not arguments to a valid
    `fd_txn_parse` call or if either was modified after the parse call.
    */
-static inline fd_ed25519_sig_t const *
+FD_FN_PURE static inline fd_ed25519_sig_t const *
 fd_txn_get_signatures( fd_txn_t const * txn,
                        void     const * payload ) {
    return (fd_ed25519_sig_t const *)((ulong)payload + (ulong)txn->signature_off);
 }
 
-static inline fd_acct_addr_t const *
+FD_FN_PURE static inline fd_acct_addr_t const *
 fd_txn_get_acct_addrs( fd_txn_t const * txn,
                        void     const * payload ) {
   return (fd_acct_addr_t const *)((ulong)payload + (ulong)txn->acct_addr_off);
 }
 
-static inline uchar const *
+FD_FN_PURE static inline uchar const *
 fd_txn_get_recent_blockhash( fd_txn_t const * txn,
                              void     const * payload ) {
   return (uchar const *)((ulong)payload + (ulong)txn->recent_blockhash_off);
 }
 
-static inline uchar const *
+FD_FN_PURE static inline uchar const *
 fd_txn_get_instr_accts( fd_txn_instr_t const * instr,
                         void           const * payload ) {
   return (uchar const *)((ulong)payload + (ulong)instr->acct_off);
 }
 
-static inline uchar const *
+FD_FN_PURE static inline uchar const *
 fd_txn_get_instr_data( fd_txn_instr_t const * instr,
                        void           const * payload ) {
   return (uchar const *)((ulong)payload + (ulong)instr->data_off);
+}
+
+/* fd_txn_is_simple_vote_transaction: Returns 1 if `txn` is a simple
+   vote and 0 otherwise.  `txn` is a non-null pointer to a Solana
+   transaction parsed by fd_txn_parse_core.  `payload` is a non-null
+   pointer to serialization of `txn`, which is coupled with `txn` as
+   both `txn` and `payload` are different representations of the same
+   data.
+
+   A simple vote is a transaction that meets the following criteria:
+   1. has 1 or 2 signatures
+   2. is legacy transaction
+   3. has exactly one instruction
+   4. ...which must be a Vote instruction
+ */
+static inline int
+fd_txn_is_simple_vote_transaction( fd_txn_t const * txn,
+                                   void     const * payload ) {
+   /* base58 decode of Vote111111111111111111111111111111111111111 */
+   static const uchar vote_program_id[FD_TXN_ACCT_ADDR_SZ] = {
+      0x07U,0x61U,0x48U,0x1dU,0x35U,0x74U,0x74U,0xbbU,0x7cU,0x4dU,0x76U,0x24U,0xebU,0xd3U,0xbdU,0xb3U,
+      0xd8U,0x35U,0x5eU,0x73U,0xd1U,0x10U,0x43U,0xfcU,0x0dU,0xa3U,0x53U,0x80U,0x00U,0x00U,0x00U,0x00U };
+
+  fd_acct_addr_t const * addr_base = fd_txn_get_acct_addrs( txn, payload );
+  if( FD_UNLIKELY( txn->instr_cnt!=1UL ) )                      return 0;
+  if( FD_UNLIKELY( txn->transaction_version!=FD_TXN_VLEGACY ) ) return 0;
+  if( FD_UNLIKELY( txn->signature_cnt>2UL ) )                   return 0;
+  ulong prog_id_idx = (ulong)txn->instr[0].program_id;
+  fd_acct_addr_t const * prog_id = addr_base + prog_id_idx;
+  return fd_memeq( prog_id->b, vote_program_id, FD_TXN_ACCT_ADDR_SZ );
 }
 
 /* fd_txn_align returns the alignment in bytes required of a region of
@@ -677,7 +724,7 @@ fd_txn_parse( uchar const * payload, ulong payload_sz, void * out_buf, fd_txn_pa
 */
 
 static inline int
-fd_txn_is_writable( fd_txn_t const * txn, int idx ) {
+fd_txn_is_writable( fd_txn_t const * txn, ushort idx ) {
   if (txn->transaction_version == FD_TXN_V0 && idx >= txn->acct_addr_cnt) {
     if (idx < (txn->acct_addr_cnt + txn->addr_table_adtl_writable_cnt)) {
       return 1;

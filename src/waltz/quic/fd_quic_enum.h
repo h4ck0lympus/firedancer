@@ -67,23 +67,30 @@
 /* FD_QUIC_DEFAULT_SPARSITY: default fd_quic_limits_t->conn_id_sparsity */
 #define FD_QUIC_DEFAULT_SPARSITY (2.5)
 
-/* FD_QUIC_NOTIFY_* indicate stream notification types.
-   ...END:   Stream lifetime has ended, no more callbacks will be
-             generated for it.  Stream will be freed after event
-             delivery.
-   ...RESET: Peer has reset the stream (will not send)
-   ...ABORT: Peer has aborted the stream (will not receive)
-   ...DROP:  Local side dropped the stream */
-#define FD_QUIC_NOTIFY_END   (100)
-#define FD_QUIC_NOTIFY_RESET (101)
-#define FD_QUIC_NOTIFY_ABORT (102)
-#define FD_QUIC_NOTIFY_DROP  (103)
+/* FD_QUIC_STREAM_NOTIFY_* indicate stream notification types.
+   All events indicate that stream lifetime has ended and no more
+   callbacks will be generated for it.  The stream object will be freed
+   after event delivery.
 
-/* defines the packet types */
-#define FD_QUIC_PKT_TYPE_INITIAL   0
-#define FD_QUIC_PKT_TYPE_HANDSHAKE 1
-#define FD_QUIC_PKT_TYPE_ZERO_RTT  2
-#define FD_QUIC_PKT_TYPE_ONE_RTT   3
+   ...END:        All stream data was transmitted successfully
+   ...PEER_RESET: Peer has ceased sending non-gracefully
+   ...PEER_STOP:  Peer has requested us to stop sending
+   ...DROP:       Local side dropped the stream
+   ...CONN:       Stream aborted due to conn close */
+#define FD_QUIC_STREAM_NOTIFY_END        (0)
+#define FD_QUIC_STREAM_NOTIFY_PEER_RESET (1)
+#define FD_QUIC_STREAM_NOTIFY_PEER_STOP  (2)
+#define FD_QUIC_STREAM_NOTIFY_DROP       (3)
+#define FD_QUIC_STREAM_NOTIFY_CONN       (4)
+
+/* FD_QUIC_PKT_TYPE_{...}: QUIC v1 packet types.
+   INITIAL, ZERO_RTT, HANDSHAKE, and RETRY match the long_packet_type
+   field. */
+#define FD_QUIC_PKT_TYPE_INITIAL   (0)
+#define FD_QUIC_PKT_TYPE_ZERO_RTT  (1)
+#define FD_QUIC_PKT_TYPE_HANDSHAKE (2)
+#define FD_QUIC_PKT_TYPE_RETRY     (3)
+#define FD_QUIC_PKT_TYPE_ONE_RTT   (4)
 
 /* FD_QUIC_PKT_COALESCE_LIMIT controls how many QUIC long packets are
    handled in the same datagram. */
@@ -103,8 +110,22 @@
 #define FD_QUIC_RETRY_SECRET_SZ 16
 /* RETRY iv size in bytes */
 #define FD_QUIC_RETRY_IV_SZ 12
-/* Retry token lifetime in seconds */
-#define FD_QUIC_RETRY_TOKEN_LIFETIME (3)
+
+#define FD_QUIC_STREAM_ID_UNUSED (ULONG_MAX)
+
+#define FD_QUIC_PKT_NUM_UNUSED  (~0ul)
+#define FD_QUIC_PKT_NUM_PENDING (~1ul)
+
+/* scheduling granularity */
+/* does not need to be remotely accurate */
+/* used for calculating an upper bound on the expected response of an ack */
+#define FD_QUIC_SCHED_GRANULARITY_US 10.0f
+
+/* RTT probe period */
+/* used to bound the time between RTT measurements */
+#define FD_QUIC_RTT_PERIOD_US 60e6f
+
+/* initial RTT, used before it's measured */
+#define FD_QUIC_INITIAL_RTT_US 200e3f
 
 #endif
-

@@ -2,6 +2,7 @@
 #include "../fd_quic_conn_id.h"
 #include "../fd_quic_enum.h"
 #include "../fd_quic_proto.h"
+#include "../fd_quic_proto.c"
 #include "fd_quic_transport_params.h"
 
 static int
@@ -102,8 +103,8 @@ test_max_size( void ) {
     .original_destination_connection_id_len     = FD_QUIC_MAX_CONN_ID_SZ,
 
     /* 0x01 */
-    .max_idle_timeout_present = 1,
-    .max_idle_timeout         = (1UL<<62)-1,
+    .max_idle_timeout_ms_present = 1,
+    .max_idle_timeout_ms         = (1UL<<62)-1,
 
     /* 0x02 */
     .stateless_reset_token_present = 1,
@@ -160,7 +161,9 @@ test_max_size( void ) {
     .retry_source_connection_id_len     = FD_QUIC_MAX_CONN_ID_SZ
   };
 
-  ulong sz = fd_quic_transport_params_footprint( &params );
+  uchar buf[4096];
+  ulong sz = fd_quic_encode_transport_params( buf, sizeof(buf), &params );
+  FD_TEST( sz!=FD_QUIC_ENCODE_FAIL );
   FD_LOG_NOTICE(( "Largest RFC 9000 transport parameter blob: %lu bytes", sz ));
 
 }

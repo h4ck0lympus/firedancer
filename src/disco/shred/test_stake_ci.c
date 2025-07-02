@@ -1,5 +1,4 @@
 #include "fd_stake_ci.h"
-
 #define SLOTS_PER_EPOCH 1000 /* Just for testing */
 
 fd_stake_ci_t _info[1];
@@ -8,20 +7,11 @@ uchar stake_msg[ FD_STAKE_CI_STAKE_MSG_SZ ];
 
 fd_pubkey_t identity_key[1];
 
-typedef struct {
-    ulong epoch;
-    ulong staked_cnt;
-    ulong start_slot;
-    ulong slot_cnt;
-    ulong excluded_stake;
-    fd_stake_weight_t weights[];
-  } stake_msg_hdr_t;
-
-static uchar *
+static fd_stake_weight_msg_t *
 generate_stake_msg( uchar *      _buf,
                     ulong        epoch,
                     char const * stakers ) {
-  stake_msg_hdr_t *buf = (stake_msg_hdr_t *)_buf;
+  fd_stake_weight_msg_t *buf = fd_type_pun( _buf );
 
   buf->epoch          = epoch;
   buf->start_slot     = epoch * SLOTS_PER_EPOCH;
@@ -34,7 +24,7 @@ generate_stake_msg( uchar *      _buf,
     memset( buf->weights[i].key.uc, *stakers, sizeof(fd_pubkey_t) );
     buf->weights[i].stake = 1000UL/(i+1UL);
   }
-  return _buf;
+  return fd_type_pun( _buf );
 }
 
 static ulong
@@ -323,18 +313,14 @@ test_changing_contact_info( void ) {
   destinations[ 0 ].port = 0x2222;
   destinations[ 1 ].ip4  = 0x33333333U;
   destinations[ 1 ].port = 0x5555;
-  memset( destinations[ 0 ].mac_addr, 0x66, 6UL );
-  memset( destinations[ 1 ].mac_addr, 0x77, 6UL );
 
   fd_stake_ci_dest_add_fini( info, 2UL );
 
   fd_shred_dest_t * sdest = fd_stake_ci_get_sdest_for_slot( info, 0UL );
-  FD_TEST( fd_shred_dest_idx_to_dest( sdest, 0 )->ip4         == 0x11111111U );
-  FD_TEST( fd_shred_dest_idx_to_dest( sdest, 0 )->port        == 0x2222      );
-  FD_TEST( fd_shred_dest_idx_to_dest( sdest, 0 )->mac_addr[0] == 0x66        );
-  FD_TEST( fd_shred_dest_idx_to_dest( sdest, 1 )->ip4         == 0x33333333U );
-  FD_TEST( fd_shred_dest_idx_to_dest( sdest, 1 )->port        == 0x5555      );
-  FD_TEST( fd_shred_dest_idx_to_dest( sdest, 1 )->mac_addr[0] == 0x77        );
+  FD_TEST( fd_shred_dest_idx_to_dest( sdest, 0 )->ip4  == 0x11111111U );
+  FD_TEST( fd_shred_dest_idx_to_dest( sdest, 0 )->port == 0x2222      );
+  FD_TEST( fd_shred_dest_idx_to_dest( sdest, 1 )->ip4  == 0x33333333U );
+  FD_TEST( fd_shred_dest_idx_to_dest( sdest, 1 )->port == 0x5555      );
 
   fd_stake_ci_delete( fd_stake_ci_leave( info ) );
 }
@@ -350,12 +336,12 @@ test_limits( void ) {
   fd_stake_ci_t * info = fd_stake_ci_join( fd_stake_ci_new( _info, identity_key ) );
 
   for( ulong stake_weight_cnt=40198UL; stake_weight_cnt<=40201UL; stake_weight_cnt++ ) {
-    stake_msg_hdr_t * buf = (stake_msg_hdr_t *)stake_msg;
-    buf->epoch          = stake_weight_cnt;
-    buf->start_slot     = stake_weight_cnt * SLOTS_PER_EPOCH;
-    buf->slot_cnt       = SLOTS_PER_EPOCH;
-    buf->staked_cnt     = 0UL;
-    buf->excluded_stake = 0UL;
+    fd_stake_weight_msg_t * buf = fd_type_pun( stake_msg );
+    buf->epoch                  = stake_weight_cnt;
+    buf->start_slot             = stake_weight_cnt * SLOTS_PER_EPOCH;
+    buf->slot_cnt               = SLOTS_PER_EPOCH;
+    buf->staked_cnt             = 0UL;
+    buf->excluded_stake         = 0UL;
 
     for( ulong i=0UL; i<stake_weight_cnt; i++ ) {
       ulong stake = 2000000000UL/(i+1UL);
@@ -368,7 +354,7 @@ test_limits( void ) {
         buf->excluded_stake += stake;
       }
     }
-    fd_stake_ci_stake_msg_init( info, stake_msg );
+    fd_stake_ci_stake_msg_init( info, buf );
     fd_stake_ci_stake_msg_fini( info );
 
     for( ulong cluster_info_cnt=40198UL; cluster_info_cnt<=40201UL; cluster_info_cnt++ ) {
@@ -387,6 +373,39 @@ test_limits( void ) {
   }
 
   fd_stake_ci_delete( fd_stake_ci_leave( info ) );
+}
+
+static void
+test_set_identity( void ) {
+  fd_stake_ci_t * info = fd_stake_ci_join( fd_stake_ci_new( _info, identity_key ) );
+
+  fd_stake_ci_stake_msg_init( info, generate_stake_msg( stake_msg, 0UL, "ABCDEF" ) );  fd_stake_ci_stake_msg_fini( info );
+  fd_stake_ci_dest_add_fini( info, generate_dest_add( fd_stake_ci_dest_add_init( info ), "ABCHJZ" ) );
+  /* ABCDEF staked, HIJZ unstaked */
+
+  fd_pubkey_t new[1];
+  fd_memset( new, 'N', sizeof(fd_pubkey_t) );
+  /* Test unstaked -> unstaked migration */
+  fd_stake_ci_set_identity( info, new );
+  check_destinations( info, 0UL, "ABCDEF",  "HIJNZ" );
+
+  /* Make N staked */
+  fd_stake_ci_stake_msg_init( info, generate_stake_msg( stake_msg, 1UL, "ABCDN" ) );  fd_stake_ci_stake_msg_fini( info );
+  check_destinations( info, 1UL, "ABCDN",  "HIJZ" );
+
+  /* staked->unstaked */
+  fd_memset( new, 'H', sizeof(fd_pubkey_t) );
+  fd_stake_ci_set_identity( info, new );
+  check_destinations( info, 1UL, "ABCDN",  "HIJZ" );
+
+  /* unstaked->staked */
+  fd_memset( new, 'A', sizeof(fd_pubkey_t) );
+  fd_stake_ci_set_identity( info, new );
+  check_destinations( info, 1UL, "ABCDN",  "HIJZ" );
+
+  /* staked->staked */
+  fd_memset( new, 'B', sizeof(fd_pubkey_t) );
+  fd_stake_ci_set_identity( info, new );
 }
 
 int
@@ -414,6 +433,7 @@ main( int     argc,
   test_destaking();
   test_changing_contact_info();
   test_limits();
+  test_set_identity();
 
   FD_LOG_NOTICE(( "pass" ));
   fd_halt();

@@ -2,8 +2,8 @@
 #include "fd_topo.h"
 
 #include "../metrics/fd_metrics.h"
+#include "../../waltz/xdp/fd_xdp1.h"
 #include "../../util/tile/fd_tile_private.h"
-#include "../../util/shmem/fd_shmem_private.h"
 
 #include <unistd.h>
 #include <signal.h>
@@ -15,6 +15,7 @@
 #include <sys/prctl.h>
 #include <sys/stat.h>
 #include <sys/mman.h>
+#include <net/if.h>
 
 static void
 initialize_logging( char const * tile_name,
@@ -52,6 +53,7 @@ fd_topo_run_tile( fd_topo_t *          topo,
                   fd_topo_tile_t *     tile,
                   int                  sandbox,
                   int                  keep_controlling_terminal,
+                  int                  dumpable,
                   uint                 uid,
                   uint                 gid,
                   int                  allow_fd,
@@ -98,12 +100,21 @@ fd_topo_run_tile( fd_topo_t *          topo,
                                                              seccomp_filter );
   }
 
+  ulong rlimit_file_cnt = tile_run->rlimit_file_cnt;
+  if( tile_run->rlimit_file_cnt_fn ) {
+    rlimit_file_cnt = tile_run->rlimit_file_cnt_fn( topo, tile );
+  }
+
   if( FD_LIKELY( sandbox ) ) {
     fd_sandbox_enter( uid,
                       gid,
                       tile_run->keep_host_networking,
+                      tile_run->allow_connect,
                       keep_controlling_terminal,
-                      tile_run->rlimit_file_cnt,
+                      dumpable,
+                      rlimit_file_cnt,
+                      tile_run->rlimit_address_space,
+                      tile_run->rlimit_data,
                       allow_fds_cnt+allow_fds_offset,
                       allow_fds,
                       seccomp_filter_cnt,
@@ -136,6 +147,8 @@ typedef struct {
   uint               gid;
   int *              done_futex;
   volatile int       copied;
+  void *             stack_lo;
+  void *             stack_hi;
 } fd_topo_run_thread_args_t;
 
 static void *
@@ -144,7 +157,12 @@ run_tile_thread_main( void * _args ) {
   FD_COMPILER_MFENCE();
   ((fd_topo_run_thread_args_t *)_args)->copied = 1;
 
-  fd_topo_run_tile( args.topo, args.tile, 0, 1, args.uid, args.gid, -1, NULL, NULL, &args.tile_run );
+  /* Prevent fork() from smashing the stack */
+  if( FD_UNLIKELY( madvise( args.stack_lo, (ulong)args.stack_hi - (ulong)args.stack_lo, MADV_DONTFORK ) ) ) {
+    FD_LOG_ERR(( "madvise(stack,MADV_DONTFORK) failed (%i-%s)", errno, fd_io_strerror( errno ) ));
+  }
+
+  fd_topo_run_tile( args.topo, args.tile, 0, 1, 1, args.uid, args.gid, -1, NULL, NULL, &args.tile_run );
   if( FD_UNLIKELY( args.done_futex ) ) {
     for(;;) {
       if( FD_LIKELY( INT_MAX==FD_ATOMIC_CAS( args.done_futex, INT_MAX, (int)args.tile->id ) ) ) break;
@@ -158,10 +176,55 @@ run_tile_thread_main( void * _args ) {
   return NULL;
 }
 
+/* fd_topo_tile_stack_join_anon is a variant of fd_topo_tile_stack_join
+   that acquires private anonymous memory instead of shared pages.
+
+   This is required for fork() to work, as the parent and child process
+   would otherwise share a stack and corrupt each other.  While fork()
+   is banned in tile user code, some dynamic analysis tools (like MSan)
+   unfortunately rely on it. */
+
+FD_FN_UNUSED static void *
+fd_topo_tile_stack_join_anon( void ) {
+
+  ulong sz    = 2*FD_TILE_PRIVATE_STACK_SZ;
+  int   prot  = PROT_READ|PROT_WRITE;
+  int   flags = MAP_PRIVATE|MAP_ANONYMOUS|MAP_STACK;
+
+  uchar * stack = MAP_FAILED;
+#if !FD_HAS_ASAN && !FD_HAS_MSAN
+  stack = mmap( NULL, sz, prot, flags|MAP_HUGETLB, -1, 0 );
+#endif
+
+  if( stack==MAP_FAILED ) {
+    stack = mmap( NULL, sz, prot, flags, -1, 0 );
+    if( FD_UNLIKELY( stack==MAP_FAILED ) ) {
+      FD_LOG_ERR(( "mmap() for stack failed (%i-%s)", errno, fd_io_strerror( errno ) ));
+    }
+  }
+
+  /* Create the guard regions in the extra space */
+  void * guard_lo = (void *)( stack - FD_SHMEM_NORMAL_PAGE_SZ );
+  if( FD_UNLIKELY( mmap( guard_lo, FD_SHMEM_NORMAL_PAGE_SZ, PROT_NONE,
+                         MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED, -1, (off_t)0 )!=guard_lo ) )
+    FD_LOG_ERR(( "mmap(%p) failed (%i-%s)", guard_lo, errno, fd_io_strerror( errno ) ));
+
+  void * guard_hi = (void *)( stack + FD_TILE_PRIVATE_STACK_SZ );
+  if( FD_UNLIKELY( mmap( guard_hi, FD_SHMEM_NORMAL_PAGE_SZ, PROT_NONE,
+                         MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED, -1, (off_t)0 )!=guard_hi ) )
+    FD_LOG_ERR(( "mmap(%p) failed (%i-%s)", guard_hi, errno, fd_io_strerror( errno ) ));
+
+  return stack;
+}
+
 void *
 fd_topo_tile_stack_join( char const * app_name,
                          char const * tile_name,
                          ulong        tile_kind_id ) {
+#if FD_HAS_MSAN
+  return fd_topo_tile_stack_join_anon();
+#endif
+
   char name[ PATH_MAX ];
   FD_TEST( fd_cstr_printf_check( name, PATH_MAX, NULL, "%s_stack_%s%lu", app_name, tile_name, tile_kind_id ) );
 
@@ -187,6 +250,42 @@ fd_topo_tile_stack_join( char const * app_name,
     FD_LOG_ERR(( "mmap failed (%i-%s)", errno, fd_io_strerror( errno ) ));
 
   return stack;
+}
+
+fd_xdp_fds_t
+fd_topo_install_xdp( fd_topo_t const * topo,
+                     uint              bind_addr ) {
+  ulong net0_tile_idx = fd_topo_find_tile( topo, "net", 0UL );
+  FD_TEST( net0_tile_idx!=ULONG_MAX );
+  fd_topo_tile_t const * net0_tile = &topo->tiles[ net0_tile_idx ];
+
+  ushort udp_port_candidates[] = {
+    (ushort)net0_tile->xdp.net.legacy_transaction_listen_port,
+    (ushort)net0_tile->xdp.net.quic_transaction_listen_port,
+    (ushort)net0_tile->xdp.net.shred_listen_port,
+    (ushort)net0_tile->xdp.net.gossip_listen_port,
+    (ushort)net0_tile->xdp.net.repair_intake_listen_port,
+    (ushort)net0_tile->xdp.net.repair_serve_listen_port,
+    (ushort)net0_tile->xdp.net.send_src_port,
+  };
+
+  uint if_idx = if_nametoindex( net0_tile->xdp.interface );
+  if( FD_UNLIKELY( !if_idx ) ) FD_LOG_ERR(( "if_nametoindex(%s) failed", net0_tile->xdp.interface ));
+
+  fd_xdp_fds_t xdp_fds = fd_xdp_install( if_idx,
+                                         bind_addr,
+                                         sizeof(udp_port_candidates)/sizeof(udp_port_candidates[0]),
+                                         udp_port_candidates,
+                                         net0_tile->xdp.xdp_mode );
+  if( FD_UNLIKELY( -1==dup2( xdp_fds.xsk_map_fd, 123462 ) ) ) FD_LOG_ERR(( "dup2() failed (%i-%s)", errno, fd_io_strerror( errno ) ));
+  if( FD_UNLIKELY( -1==close( xdp_fds.xsk_map_fd ) ) ) FD_LOG_ERR(( "close() failed (%i-%s)", errno, fd_io_strerror( errno ) ));
+  if( FD_UNLIKELY( -1==dup2( xdp_fds.prog_link_fd, 123463 ) ) ) FD_LOG_ERR(( "dup2() failed (%i-%s)", errno, fd_io_strerror( errno ) ));
+  if( FD_UNLIKELY( -1==close( xdp_fds.prog_link_fd ) ) ) FD_LOG_ERR(( "close() failed (%i-%s)", errno, fd_io_strerror( errno ) ));
+
+  xdp_fds.xsk_map_fd = 123462;
+  xdp_fds.prog_link_fd = 123463;
+
+  return xdp_fds;
 }
 
 static inline void
@@ -236,6 +335,8 @@ run_tile_thread( fd_topo_t *         topo,
     .gid        = gid,
     .done_futex = done_futex,
     .copied     = 0,
+    .stack_lo   = stack,
+    .stack_hi   = (uchar *)stack + FD_TILE_PRIVATE_STACK_SZ
   };
 
   pthread_t pthread;
@@ -245,12 +346,12 @@ run_tile_thread( fd_topo_t *         topo,
 }
 
 void
-fd_topo_run_single_process( fd_topo_t * topo,
-                            int         agave,
-                            uint        uid,
-                            uint        gid,
-                            fd_topo_run_tile_t (* tile_run )( fd_topo_tile_t * tile ),
-                            int *       done_futex ) {
+fd_topo_run_single_process( fd_topo_t *       topo,
+                            int               agave,
+                            uint              uid,
+                            uint              gid,
+                            fd_topo_run_tile_t (* tile_run )( fd_topo_tile_t const * tile ),
+                            int *             done_futex ) {
   /* Save the current affinity, it will be restored after creating any child tiles */
   FD_CPUSET_DECL( floating_cpu_set );
   if( FD_UNLIKELY( fd_cpuset_getaffinity( 0, floating_cpu_set ) ) )

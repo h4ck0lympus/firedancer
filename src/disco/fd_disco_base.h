@@ -2,6 +2,7 @@
 #define HEADER_fd_src_disco_fd_disco_base_h
 
 #include "../tango/fd_tango.h"
+#include "../ballet/shred/fd_shred.h"
 #include "../ballet/txn/fd_txn.h"
 
 #include "../util/wksp/fd_wksp_private.h"
@@ -12,11 +13,12 @@
 #define DST_PROTO_SHRED    (3UL)
 #define DST_PROTO_REPAIR   (4UL)
 #define DST_PROTO_GOSSIP   (5UL)
+#define DST_PROTO_SEND     (6UL)
 
 #define POH_PKT_TYPE_MICROBLOCK    (0UL)
 #define POH_PKT_TYPE_BECAME_LEADER (1UL)
 #define POH_PKT_TYPE_DONE_PACKING  (2UL)
-#define POH_PKT_REACHED_LEADER     (3UL)
+#define POH_PKT_TYPE_FEAT_ACT_SLOT (3UL)
 
 #define REPLAY_FLAG_FINISHED_BLOCK      (0x01UL)
 #define REPLAY_FLAG_PACKED_MICROBLOCK   (0x02UL)
@@ -24,25 +26,43 @@
 #define REPLAY_FLAG_CATCHING_UP         (0x08UL)
 #define REPLAY_FLAG_INIT                (0x10UL)
 
+#define EXEC_FLAG_READY_NEW             (0x20UL)
+#define EXEC_FLAG_EXECUTING_SLICE       (0x40UL)
+#define EXEC_FLAG_FINISHED_SLOT         (0x80UL)
 
 /* FD_NET_MTU is the max full packet size, with ethernet, IP, and UDP
    headers that can go in or out of the net tile.  2048 is the maximum
    XSK entry size, so this value follows naturally. */
+
 #define FD_NET_MTU (2048UL)
 
-/* FD_TPU_MTU is the max serialized byte size of a txn sent over TPU. */
+/* FD_TPU_MTU is the max serialized byte size of a txn sent over TPU.
+
+   This is minimum MTU of IPv6 packet - IPv6 header - UDP header
+                                 1280 -          40 -          8 */
+
 #define FD_TPU_MTU (1232UL)
+
+/* FD_GOSSIP_MTU is the max sz of a gossip packet which is the same as
+   above. */
+
+#define FD_GOSSIP_MTU (FD_TPU_MTU)
 
 /* FD_SHRED_STORE_MTU is the size of an fd_shred34_t (statically
    asserted in fd_shred_tile.c). */
+
 #define FD_SHRED_STORE_MTU (41792UL)
 
-/* FD_TPU_DCACHE_MTU is the max size of a dcache entry */
-#define FD_TPU_DCACHE_MTU (FD_TPU_MTU + FD_TXN_MAX_SZ + 2UL)
-/* The literal value of FD_TPU_DCACHE_MTU is used in some of the Rust
-   shims, so if the value changes, this acts as a reminder to change it
-   in the Rust code. */
-FD_STATIC_ASSERT( FD_TPU_DCACHE_MTU==2086UL, tpu_dcache_mtu_check );
+/* FD_SHRED_REPAIR_MTU is the maximum size of a frag on the shred_repair
+   link.  This is the size of a data shred header + merkle root. */
+
+#define FD_SHRED_REPAIR_MTU (FD_SHRED_DATA_HEADER_SZ + FD_SHRED_MERKLE_ROOT_SZ)
+FD_STATIC_ASSERT( FD_SHRED_REPAIR_MTU == 120 , update FD_SHRED_REPAIR_MTU );
+
+/* Maximum size of frags going into the writer tile. */
+#define FD_REPLAY_WRITER_MTU (128UL)
+#define FD_EXEC_WRITER_MTU   (128UL)
+
 
 #define FD_NETMUX_SIG_MIN_HDR_SZ    ( 42UL) /* The default header size, which means no vlan tags and no IP options. */
 #define FD_NETMUX_SIG_IGNORE_HDR_SZ (102UL) /* Outside the allowable range, but still fits in 4 bits when compressed */
@@ -50,10 +70,12 @@ FD_STATIC_ASSERT( FD_TPU_DCACHE_MTU==2086UL, tpu_dcache_mtu_check );
 FD_PROTOTYPES_BEGIN
 
  /* hdr_sz is the total size of network headers, including eth, ip, udp.
-    Ignored for outgoing packets. */
+    Ignored for outgoing packets.
+    For incoming packets, hash_{ip_addr,port} are the source IP and port,
+    for outgoing packets, they are the destination IP and port. */
 FD_FN_CONST static inline ulong
-fd_disco_netmux_sig( uint   src_ip_addr,
-                     ushort src_port,
+fd_disco_netmux_sig( uint   hash_ip_addr,
+                     ushort hash_port,
                      uint   dst_ip_addr,
                      ulong  proto,
                      ulong  hdr_sz ) {
@@ -64,21 +86,19 @@ fd_disco_netmux_sig( uint   src_ip_addr,
      0<=i<=13.  Since bits are at a premium here, we compress the header
      size by just storing i. */
   ulong hdr_sz_i = ((hdr_sz - 42UL)>>2)&0xFUL;
-  ulong hash = fd_uint_hash( src_ip_addr ) + src_port;
-
-  /* Currently only using 52 bits of the provided 64. */
-  return (hash<<56UL) | ((proto&0xFFUL)<<48UL) | ((hdr_sz_i&0xFUL)<<44UL) | (((ulong)dst_ip_addr)<<12UL);
+  ulong hash     = 0xfffffUL & fd_ulong_hash( (ulong)hash_ip_addr | ((ulong)hash_port<<32) );
+  return (hash<<44) | ((hdr_sz_i&0xFUL)<<40UL) | ((proto&0xFFUL)<<32UL) | ((ulong)dst_ip_addr);
 }
 
-FD_FN_CONST static inline ulong fd_disco_netmux_sig_hash  ( ulong sig ) { return (sig>>56UL) & 0xFFUL; }
-FD_FN_CONST static inline ulong fd_disco_netmux_sig_proto ( ulong sig ) { return (sig>>48UL) & 0xFFUL; }
-FD_FN_CONST static inline uint  fd_disco_netmux_sig_dst_ip( ulong sig ) { return (uint)((sig>>12UL) & 0xFFFFFFFFUL); }
+FD_FN_CONST static inline ulong fd_disco_netmux_sig_hash  ( ulong sig ) { return (sig>>44UL); }
+FD_FN_CONST static inline ulong fd_disco_netmux_sig_proto ( ulong sig ) { return (sig>>32UL) & 0xFFUL; }
+FD_FN_CONST static inline uint  fd_disco_netmux_sig_dst_ip( ulong sig ) { return (uint)(sig & 0xFFFFFFFFUL); }
 
 /* fd_disco_netmux_sig_hdr_sz extracts the total size of the Ethernet,
    IP, and UDP headers from the netmux signature field.  The UDP payload
    of the packet stored in the corresponding frag begins at the returned
    offset. */
-FD_FN_CONST static inline ulong  fd_disco_netmux_sig_hdr_sz( ulong sig ) { return 4UL*((sig>>44UL) & 0xFUL) + 42UL; }
+FD_FN_CONST static inline ulong  fd_disco_netmux_sig_hdr_sz( ulong sig ) { return 4UL*((sig>>40UL) & 0xFUL) + 42UL; }
 
 FD_FN_CONST static inline ulong
 fd_disco_poh_sig( ulong slot,
@@ -98,7 +118,18 @@ FD_FN_CONST static inline ulong fd_disco_poh_sig_slot( ulong sig ) { return (sig
 FD_FN_CONST static inline ulong fd_disco_poh_sig_bank_tile( ulong sig ) { return (sig >> 2) & 0x3FUL; }
 
 FD_FN_CONST static inline ulong
-fd_disco_replay_sig( ulong slot,
+fd_disco_bank_sig( ulong slot,
+                   ulong microblock_idx ) {
+  return (slot << 32) | microblock_idx;
+}
+
+FD_FN_CONST static inline ulong fd_disco_bank_sig_slot( ulong sig ) { return (sig >> 32); }
+FD_FN_CONST static inline ulong fd_disco_bank_sig_microblock_idx( ulong sig ) { return sig & 0xFFFFFFFFUL; }
+
+/* TODO remove with store_int */
+
+FD_FN_CONST static inline ulong
+fd_disco_replay_old_sig( ulong slot,
                      ulong flags ) {
    /* The low byte of the signature field is the flags for replay message.
       The higher 7 bytes are the slot number.  These flags indicate the status
@@ -109,8 +140,126 @@ fd_disco_replay_sig( ulong slot,
   return (slot << 8) | (flags & 0xFFUL);
 }
 
-FD_FN_CONST static inline ulong fd_disco_replay_sig_flags( ulong sig ) { return (sig & 0xFFUL); }
-FD_FN_CONST static inline ulong fd_disco_replay_sig_slot( ulong sig ) { return (sig >> 8); }
+FD_FN_CONST static inline ulong fd_disco_replay_old_sig_flags( ulong sig ) { return (sig & 0xFFUL); }
+FD_FN_CONST static inline ulong fd_disco_replay_old_sig_slot( ulong sig ) { return (sig >> 8); }
+
+/* fd_disco_shred_repair_shred_sig constructs a sig for the shred_repair link.
+   The encoded fields vary depending on the type of the sig.  The
+   diagram below describes the encoding.
+
+   completes (1) | slot (32) | fec_set_idx (15) | is_code (1) | shred_idx or data_cnt (15)
+   [63]          | [31, 62]  | [16, 30]         | [15]        | [0, 14]
+
+   There are two types of messages on the shred_repair link.  The first
+   type is a generic shred message. The second is a FEC set completion
+   message. Since we have run out of bits, the reciever must look at the
+   sz of the dcache entry to determine which type of message it is.
+
+   For the first message type (SHRED):
+
+   The first bit [63] describes whether this shred marks the end of a
+   batch and/or a slot, i.e. shred.flags & (DATA_COMPLETE | SLOT_COMPLETE)
+
+   The next 32 bits [31, 62] describe the slot number. Note: if the slot
+   number is >= UINT_MAX, the sender will store the value UINT_MAX in
+   this field. If the receiver sees a value of UINT_MAX in the field, it
+   must read the actual slot number from the dcache entry.
+
+   The following 15 bits [16, 30] describe the fec_set_idx.  This is a
+   15-bit value because shreds are bounded to 2^15 per slot, so in the
+   worst case there is an independent FEC set for every shred, which
+   results in at most 2^15 FEC sets per slot.
+
+   The next bit [15] describes whether it is a coding shred (is_code).
+   If is_code = 0, the sig describes a data shred, and the last 15 bits
+   [0, 14] encode the shred_idx.  If is_code = 1, the sig describes a
+   coding shred, and the last 15 bits encode the data_cnt.
+
+   For the second message type (FEC):
+
+   Only the slot and fec_set_idx bits are populated. The data in the
+   frag is the full shred header of the last data shred in the FEC set,
+   the merkle root of the FEC set, and the chained merkle root of the
+   FEC. Each field immediately follows the other field. */
+
+/* TODO this shred_repair_sig can be greatly simplified when FEC sets
+   are uniformly coding shreds and fixed size. */
+
+FD_FN_CONST static inline ulong
+fd_disco_shred_repair_shred_sig( int   completes,
+                                 ulong slot,
+                                 uint  fec_set_idx,
+                                 int   is_code,
+                                 uint  shred_idx_or_data_cnt ) {
+   ulong slot_ul                  = fd_ulong_min( slot, (ulong)UINT_MAX );
+   ulong shred_idx_or_data_cnt_ul = fd_ulong_min( (ulong)shred_idx_or_data_cnt, (ulong)FD_SHRED_BLK_MAX );
+   ulong fec_set_idx_ul           = fd_ulong_min( (ulong)fec_set_idx, (ulong)FD_SHRED_BLK_MAX );
+   ulong completes_ul             = !!completes;
+   ulong is_code_ul               = !!is_code;
+
+  return completes_ul << 63 | slot_ul << 31 | fec_set_idx_ul << 16 | is_code_ul << 15 | shred_idx_or_data_cnt_ul;
+}
+
+/* fd_disco_shred_repair_shred_sig_{...} are accessors for the fields encoded
+   in the sig described above. */
+
+FD_FN_CONST static inline int   fd_disco_shred_repair_shred_sig_completes  ( ulong sig ) { return       fd_ulong_extract_bit( sig, 63     ); }
+FD_FN_CONST static inline ulong fd_disco_shred_repair_shred_sig_slot       ( ulong sig ) { return       fd_ulong_extract    ( sig, 31, 62 ); }
+FD_FN_CONST static inline uint  fd_disco_shred_repair_shred_sig_fec_set_idx( ulong sig ) { return (uint)fd_ulong_extract    ( sig, 16, 30 ); }
+FD_FN_CONST static inline int   fd_disco_shred_repair_shred_sig_is_code    ( ulong sig ) { return       fd_ulong_extract_bit( sig, 15     ); }
+FD_FN_CONST static inline uint  fd_disco_shred_repair_shred_sig_shred_idx  ( ulong sig ) { return (uint)fd_ulong_extract_lsb( sig, 15     ); } /* only when is_code = 0 */
+FD_FN_CONST static inline uint  fd_disco_shred_repair_shred_sig_data_cnt   ( ulong sig ) { return (uint)fd_ulong_extract_lsb( sig, 15     ); } /* only when is_code = 1 */
+
+/*
+   | slot (32) | fec_set_idx (15) | data_cnt (15) | is_data_complete (1) | is_batch_complete (1) |
+   | [32, 63]  | [17, 31]         | [2, 16]       | [1]                  | [0]                   |
+
+*/
+FD_FN_CONST static inline ulong
+fd_disco_shred_repair_fec_sig( ulong slot, uint fec_set_idx, uint data_cnt, int is_slot_complete, int is_batch_complete ) {
+  ulong slot_ul          = fd_ulong_min( slot, (ulong)UINT_MAX );
+  ulong fec_set_idx_ul   = fd_ulong_min( (ulong)fec_set_idx, (ulong)FD_SHRED_BLK_MAX );
+  ulong data_cnt_ul      = fd_ulong_min( (ulong)data_cnt, (ulong)FD_SHRED_BLK_MAX );
+  ulong is_slot_complete_ul = !!is_slot_complete;
+  ulong is_batch_complete_ul = !!is_batch_complete;
+  return slot_ul << 32 | fec_set_idx_ul << 17 | data_cnt_ul << 2 | is_slot_complete_ul << 1 | is_batch_complete_ul;
+}
+
+FD_FN_CONST static inline ulong fd_disco_shred_repair_fec_sig_slot             ( ulong sig ) { return         fd_ulong_extract    ( sig, 32, 63 ); }
+FD_FN_CONST static inline uint  fd_disco_shred_repair_fec_sig_fec_set_idx      ( ulong sig ) { return (uint)  fd_ulong_extract    ( sig, 17, 31 ); }
+FD_FN_CONST static inline uint  fd_disco_shred_repair_fec_sig_data_cnt         ( ulong sig ) { return (uint)  fd_ulong_extract    ( sig, 2, 16  ); }
+FD_FN_CONST static inline int   fd_disco_shred_repair_fec_sig_is_slot_complete ( ulong sig ) { return         fd_ulong_extract_bit( sig, 1     ); }
+FD_FN_CONST static inline int   fd_disco_shred_repair_fec_sig_is_batch_complete( ulong sig ) { return         fd_ulong_extract_bit( sig, 0     ); }
+
+/* Exclusively used for force completion messages */
+
+FD_FN_CONST static inline ulong
+fd_disco_repair_shred_sig( uint last_shred_idx ){
+   return (ulong) last_shred_idx;
+}
+
+FD_FN_CONST static inline uint fd_disco_repair_shred_sig_last_shred_idx( ulong sig ) { return (uint) sig; }
+
+
+FD_FN_CONST static inline ulong
+fd_disco_repair_replay_sig( ulong slot, ushort parent_off, uint data_cnt, int slot_complete ) {
+  /*
+   | slot (32) | parent_off (16) | data_cnt (15) | slot_complete(1)
+   | [32, 63]  | [16, 31]        | [1, 15]       | [0]
+  */
+  ulong slot_ul          = fd_ulong_min( slot, (ulong)UINT_MAX );
+  ulong parent_off_ul    = (ulong)parent_off;
+  ulong data_cnt_ul      = fd_ulong_min( (ulong)data_cnt, (ulong)FD_SHRED_BLK_MAX );
+  ulong slot_complete_ul = !!slot_complete;
+  return slot_ul << 32 | parent_off_ul << 16 | data_cnt_ul << 1 | slot_complete_ul;
+}
+
+FD_FN_CONST static inline ulong  fd_disco_repair_replay_sig_slot         ( ulong sig ) { return         fd_ulong_extract    ( sig, 32, 63 ); }
+FD_FN_CONST static inline ushort fd_disco_repair_replay_sig_parent_off   ( ulong sig ) { return (ushort)fd_ulong_extract    ( sig, 16, 31 ); }
+FD_FN_CONST static inline uint   fd_disco_repair_replay_sig_data_cnt     ( ulong sig ) { return (uint)  fd_ulong_extract    ( sig, 1,  15 ); }
+FD_FN_CONST static inline int    fd_disco_repair_replay_sig_slot_complete( ulong sig ) { return         fd_ulong_extract_bit( sig, 0      ); }
+
+#define FD_DISCO_REPAIR_REPLAY_MTU (sizeof(ulong) + sizeof(ushort) + sizeof(uint) + sizeof(int))
 
 FD_FN_PURE static inline ulong
 fd_disco_compact_chunk0( void * wksp ) {
@@ -127,4 +276,3 @@ fd_disco_compact_wmark( void * wksp, ulong mtu ) {
 FD_PROTOTYPES_END
 
 #endif /* HEADER_fd_src_disco_fd_disco_base_h */
-

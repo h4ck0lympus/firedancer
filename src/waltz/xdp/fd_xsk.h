@@ -102,31 +102,56 @@
    kernel will not move frames between the pairs. */
 
 #include <linux/if_link.h>
+#include <linux/if_xdp.h>
 #include <net/if.h>
 
 #include "../../util/fd_util_base.h"
-
-/* FD_XSK_ALIGN: alignment of fd_xsk_t. */
-#define FD_XSK_ALIGN      (4096UL)
 
 /* FD_XSK_UMEM_ALIGN: byte alignment of UMEM area within fd_xsk_t.
    This requirement is set by the kernel as of Linux 4.18. */
 #define FD_XSK_UMEM_ALIGN (4096UL)
 
-/* Forward declarations */
-struct fd_xsk_private;
-typedef struct fd_xsk_private fd_xsk_t;
+/* fd_xdp_ring_t describes an XSK descriptor ring in the thread group's
+   local address space.  All pointers fall into kernel-managed XSK
+   descriptor buffer at [mem;mem+mem_sz) that are valid during the
+   lifetime of an fd_xsk_t join.  The ring producer and consumer are
+   synchronized via incrementing sequence numbers that wrap at 2^64. */
 
-/* fd_xsk_frame_meta_t: Frame metadata used to identify packet */
+struct __attribute__((aligned(64UL))) fd_xdp_ring {
+  /* This point is 64-byte aligned */
 
-#define FD_XDP_FRAME_META_ALIGN (16UL)
+  /* mmap() params, only used during join/leave for munmap() */
 
-struct __attribute__((aligned(FD_XDP_FRAME_META_ALIGN))) fd_xsk_frame_meta {
-  ulong off;   /* Byte offset from UMEM start to start of packet */
-  uint  sz;    /* Size of packet data starting at `off` */
-  uint  flags; /* Undefined for now */
+  void *  mem;    /* Points to start of shared descriptor ring mmap region */
+  ulong   map_sz; /* Size of shared descriptor ring mmap region */
+  ulong   _pad_0x10;
+  ulong   _pad_0x18;
+
+  /* This point is 64-byte aligned */
+
+  /* Pointers to fields opaque XSK ring structure.
+     This indirection is required because the memory layout of the
+     kernel-provided descriptor rings is unstable.  The field offsets
+     can be queried using getsockopt(SOL_XDP, XDP_MMAP_OFFSETS). */
+
+  union {
+    void *            ptr;         /* Opaque pointer */
+    struct xdp_desc * packet_ring; /* For RX, TX rings */
+    ulong *           frame_ring;  /* For FILL, COMPLETION rings */
+  };
+  uint *  flags;       /* Points to flags in shared descriptor ring */
+  uint *  prod;        /* Points to producer seq in shared descriptor ring */
+  uint *  cons;        /* Points to consumer seq in shared descriptor ring */
+
+  /* This point is 64-byte aligned */
+
+  /* Managed by fd_xsk_t */
+
+  uint    depth;       /* Capacity of ring in no of entries */
+  uint    cached_prod; /* Cached value of *prod */
+  uint    cached_cons; /* Cached value of *cons */
 };
-typedef struct fd_xsk_frame_meta fd_xsk_frame_meta_t;
+typedef struct fd_xdp_ring fd_xdp_ring_t;
 
 /* fd_xsk_params_t: Memory layout parameters of XSK.
    Can be retrieved using fd_xsk_get_params() */
@@ -139,66 +164,64 @@ struct fd_xsk_params {
   ulong tx_depth;
   ulong cr_depth;
 
+  /* umem_addr: Pointer to UMEM in local address space */
+  void * umem_addr;
+
   /* frame_sz: Controls the frame size used in the UMEM ring buffers. */
   ulong frame_sz;
 
   /* umem_sz: Total size of XSK ring shared memory area (contiguous).
      Aligned by FD_XSK_ALIGN. */
   ulong umem_sz;
+
+  /* Linux interface index */
+  uint if_idx;
+
+  /* Interface queue index */
+  uint if_queue_id;
+
+  /* sockaddr_xdp.sxdp_flags additional params, e.g. XDP_ZEROCOPY */
+  uint bind_flags;
 };
+
 typedef struct fd_xsk_params fd_xsk_params_t;
 
+struct fd_xsk {
+  /* Informational */
+  uint if_idx;       /* index of net device */
+  uint if_queue_id;  /* net device combined queue index */
+  long log_suppress_until_ns; /* suppress log messages until this time */
+
+  /* Kernel descriptor of XSK rings in local address space
+     returned by getsockopt(SOL_XDP, XDP_MMAP_OFFSETS) */
+  struct xdp_mmap_offsets offsets;
+
+  /* AF_XDP socket file descriptor */
+  int xsk_fd;
+
+  /* ring_{rx,tx,fr,cr}: XSK ring descriptors */
+
+  fd_xdp_ring_t ring_rx;
+  fd_xdp_ring_t ring_tx;
+  fd_xdp_ring_t ring_fr;
+  fd_xdp_ring_t ring_cr;
+};
+
+typedef struct fd_xsk fd_xsk_t;
+
 FD_PROTOTYPES_BEGIN
-
-/* Setup API **********************************************************/
-
-/* fd_xsk_{align,footprint} return the required alignment and
-   footprint of a memory region suitable for use as an fd_xsk_t.
-   See fd_xsk_new for explanations on parameters. */
-
-FD_FN_CONST ulong
-fd_xsk_align( void );
-
-FD_FN_CONST ulong
-fd_xsk_footprint( ulong frame_sz,
-                  ulong fr_depth,
-                  ulong rx_depth,
-                  ulong tx_depth,
-                  ulong cr_depth );
-
-/* fd_xsk_new formats an unused memory region for use as an fd_xsk_t.
-   shmem must point to a memory region that matches fd_xsk_align() and
-   fd_xsk_footprint().  frame_sz controls the frame size used in the
-   UMEM ring buffers and should be either 2048 or 4096.
-   {fr,rx,tx,cr}_depth control the number of frames allocated for the
-   Fill, RX, TX, Completion rings respectively.  If zero_copy is
-   non-zero, the xsk will be created in zero-copy mode.  Returns handle
-   suitable for fd_xsk_join() on success. */
-
-void *
-fd_xsk_new( void * shmem,
-            ulong  frame_sz,
-            ulong  fr_depth,
-            ulong  rx_depth,
-            ulong  tx_depth,
-            ulong  cr_depth );
-
-/* fd_xsk_join joins the caller to the fd_xsk_t */
-
-fd_xsk_t *
-fd_xsk_join( void * shxsk );
 
 /* fd_xsk_init creates an XSK, registers UMEM, maps rings, and binds the
    socket to the given interface queue.  This is a potentially
    destructive operation.  As of 2024-Jun, AF_XDP zero copy support is
-   still buggy in some device drivers.  
-   
+   still buggy in some device drivers.
+
    Assume that all traffic sent to this interface is compromised.  On
    some devices, the NIC is instructed to DMA all incoming packets into
    UMEM, even ones not belonging to Firedancer.  Those are then later
    on software-copied out to skbs again.  This further implies that
    enabling AF_XDP can slow down the regular kernel receive path.
-   
+
    Requires CAP_SYS_ADMIN. May issue the following syscalls:
 
    - socket( AF_XDP, SOCK_RAW, 0 ) = fd
@@ -210,172 +233,28 @@ fd_xsk_join( void * shxsk );
    - close   ; on fail */
 
 fd_xsk_t *
-fd_xsk_init( fd_xsk_t * xsk,
-             uint       if_idx,        /* see if_nametoindex(3) */
-             uint       if_queue,      /* queue index (type combined) */
-             uint       bind_flags );  /* e.g. XDP_ZEROCOPY */
-
-/* fd_xsk_fini unmaps XSK rings and closes the XSK file descriptor.
-   This effectively returns the interface to the state before
-   fd_xsk_init.
-
-   May issue the following syscalls:
-   
-   - munmap 
-   - close */
-
-fd_xsk_t *
-fd_xsk_fini( fd_xsk_t * xsk );
-
-/* fd_xsk_leave leaves a current local join and releases all kernel
-   resources.  Returns a pointer to the underlying shared memory region
-   on success and NULL on failure (logs details).  Reasons for failure
-   include xsk is NULL. */
-
-void *
-fd_xsk_leave( fd_xsk_t * xsk );
-
-/* fd_xsk_delete unformats a memory region used as an fd_xsk_t. Assumes
-   nobody is joined to the region.  Returns a pointer to the underlying
-   shared memory region or NULL if used obviously in error (e.g. shxsk
-   does not point to an fd_xsk_t ... logs details).  The ownership of
-   the memory region is transferred to the caller on success. */
+fd_xsk_init( fd_xsk_t *              xsk,
+             fd_xsk_params_t const * params );
 
 void *
 fd_xsk_delete( void * shxsk );
 
-/* I/O API ************************************************************/
+/* fd_xsk_rx_need_wakeup: returns whether a wakeup is required to
+   complete a rx operation */
 
-/* fd_xsk_rx_enqueue: Enqueues a batch of frames for RX.
+static inline int
+fd_xsk_rx_need_wakeup( fd_xsk_t * xsk ) {
+  return !!( *xsk->ring_fr.flags & XDP_RING_NEED_WAKEUP );
+}
 
-   An RX enqueue transfers ownership of frames to the kernel using the
-   fill ring, providing it space for incoming packet data.  Successful
-   enqueue does not imply that packets have actually been received, but
-   rather just indicates that the frame memory is registered with the
-   AF_XDP socket.
+/* fd_xsk_tx_need_wakeup: returns whether a wakeup is required to
+   complete a tx operation */
 
-   offsets points to an array containing offsets_cnt items.
-   Each offsets[k] for k in [0;offsets_cnt-1] is the frame's byte offset
-   relative to the start of the UMEM region.  Returns the number of
-   frames n enqueued where n<=offsets_cnt.  Each frame (identified by
-   its offset) may not be reused in another enqueue until it is returned
-   in fd_xsk_rx_complete.  The frames that failed to enqueue are in
-   [n;offsets_cnt-1] and may be retried in a later call. */
+static inline int
+fd_xsk_tx_need_wakeup( fd_xsk_t * xsk ) {
+  return !!( *xsk->ring_tx.flags & XDP_RING_NEED_WAKEUP );
+}
 
-ulong
-fd_xsk_rx_enqueue( fd_xsk_t * xsk,
-                   ulong *    offsets,
-                   ulong      offsets_cnt );
-
-/* fd_xsk_rx_enqueue2: See fd_xsk_rx_enqueue.
-
-   meta points to an array containing meta_cnt items.  For each k in
-   [0;meta_cnt-1], meta[k].off is the frame's byte offset relative to
-   the start of the UMEM region.  meta[k].{sz,flags} are ignored. */
-
-ulong
-fd_xsk_rx_enqueue2( fd_xsk_t *            xsk,
-                    fd_xsk_frame_meta_t * meta,
-                    ulong                 meta_cnt );
-
-/* fd_xsk_rx_complete: Receives RX completions for a batch of frames.
-
-   An RX completion means that a packet has been received and transfers
-   ownership of the frame holding the packet over to userspace.
-   meta_cnt is the number of packets that the caller is able to receive.
-   meta points to an array containing meta_cnt records where each k in
-   [0,count-1] may fill a packet meta at meta[k].  Returns the number of
-   packets actually received, which may be less than meta_cnt. */
-
-ulong
-fd_xsk_rx_complete( fd_xsk_t *            xsk,
-                    fd_xsk_frame_meta_t * meta,
-                    ulong                 meta_cnt );
-
-
-/* fd_xsk_tx_enqueue: Enqueues a batch of frames for TX.
-
-   meta_cnt is the number of packets to attempt to enqueue for transmit.
-   meta points to an array containing meta_cnt records where each k in
-   [0,count-1] enqueues frame at meta[k].  Returns the number of frames
-   actually enqueued, which may be less than meta_cnt.  Successful en-
-   queue does not imply that packets have actually been sent out to the
-   network, but rather just indicates that the frame memory is
-   registered with the AF_XDP sockets.  The frames that failed to
-   enqueue are referred to by meta[N+] and may be retried in a later
-   call. */
-
-ulong
-fd_xsk_tx_enqueue( fd_xsk_t *            xsk,
-                   fd_xsk_frame_meta_t * meta,
-                   ulong                 meta_cnt,
-                   int                   flush );
-
-
-/* fd_xsk_tx_complete: Check for TX completions and reclaim frames.
-
-   A TX completion occurs when a previously enqueued TX packet has been
-   fully handed off to the NIC or dropped.  This transfers the ownership
-   of the corresponding frame back to the XSK, where the caller can
-   retrieve it for future writes using this function.  Note that this
-   does not guarantee successful delivery to the network destination.
-
-   offsets points to an array containing offsets_cnt items.
-   Returns the number of frames n completed where n<=offsets_cnt.
-   Each k in [0;n-1] writes a completion at offsets[k] where offsets[k]
-   is the frame byte offset relative to the start of the UMEM region. */
-
-ulong
-fd_xsk_tx_complete( fd_xsk_t * xsk,
-                    ulong *    offsets,
-                    ulong      offsets_cnt );
-
-/* fd_xsk_tx_complete2: See fd_xsk_tx_complete.
-
-   fd_xsk_tx_complete2 behaves similar to fd_xsk_tx_complete, except
-   that it takes a pointer to an array of fd_xsk_frame_meta_t instead
-   of ulong.  meta points to an array containing meta_cnt.
-   Each k in [0;n-1] writes a frame meta at meta[k] where
-   meta[k].off is the frame offset relative to the UMEM region's start
-   and `meta[k].{sz,flags}` are undefined. */
-
-ulong
-fd_xsk_tx_complete2( fd_xsk_t *            xsk,
-                     fd_xsk_frame_meta_t * meta,
-                     ulong                 meta_cnt );
-
-/* fd_xsk_fd: Returns the XSK file descriptor. */
-
-FD_FN_PURE int
-fd_xsk_fd( fd_xsk_t * const xsk );
-
-/* fd_xsk_ifidx: Returns the network interface index of that the
-   XSK is currently bound to.  May return zero if the XSK is not bound. */
-
-FD_FN_PURE uint
-fd_xsk_ifidx( fd_xsk_t * const xsk );
-
-/* fd_xsk_ifqueue: Returns the queue index that the XSK is currently
-   bound to (a network interface can have multiple queues). U.B if
-   fd_xsk_ifname() returns NULL. */
-
-FD_FN_PURE uint
-fd_xsk_ifqueue( fd_xsk_t * const xsk );
-
-/* fd_xsk_umem_laddr returns a pointer to the XSK frame memory region in
-   the caller's local address space. */
-
-FD_FN_CONST void *
-fd_xsk_umem_laddr( fd_xsk_t * xsk );
-
-/* fd_xsk_get_params returns a pointer to the memory layout params from
-   xsk. The caller should zero-initialize the params buffer before use.
-   xsk must be a valid join to fd_xsk_t and params must point to a
-   memory region in the caller's local address space.  The returned
-   params struct is valid during the lifetime of the xsk. */
-
-FD_FN_CONST fd_xsk_params_t const *
-fd_xsk_get_params( fd_xsk_t const * xsk );
 
 FD_PROTOTYPES_END
 

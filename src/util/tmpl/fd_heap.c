@@ -319,7 +319,7 @@ HEAP_STATIC HEAP_(t) * HEAP_(idx_insert)( HEAP_(t) * heap, ulong n, HEAP_T * poo
 
 HEAP_STATIC HEAP_(t) * HEAP_(idx_remove_min)( HEAP_(t) * heap, HEAP_T * pool );
 
-HEAP_STATIC FD_FN_PURE int HEAP_(verify)( HEAP_(t) const * heap, HEAP_T const * pool );
+HEAP_STATIC int HEAP_(verify)( HEAP_(t) const * heap, HEAP_T const * pool );
 
 /* inlines */
 
@@ -474,6 +474,9 @@ HEAP_STATIC HEAP_(t) *
 HEAP_(idx_insert)( HEAP_(t) * heap,
                    ulong      n,
                    HEAP_T *   pool ) {
+# if FD_TMPL_USE_HANDHOLDING
+  if( FD_UNLIKELY( n>=heap->ele_max ) ) FD_LOG_CRIT(( "n out of range" ));
+# endif
 
   HEAP_IDX_T * _p_child = &heap->root;
 
@@ -545,6 +548,10 @@ HEAP_(idx_insert)( HEAP_(t) * heap,
 HEAP_STATIC HEAP_(t) *
 HEAP_(idx_remove_min)( HEAP_(t) * heap,
                        HEAP_T *   pool ) {
+# if FD_TMPL_USE_HANDHOLDING
+  if( FD_UNLIKELY( !heap->ele_cnt ) ) FD_LOG_CRIT(( "heap empty" ));
+# endif
+
   ulong d = (ulong)heap->root;
 
   HEAP_IDX_T * _p_child = &heap->root;
@@ -667,4 +674,3 @@ HEAP_(verify)( HEAP_(t) const * heap,
 #undef HEAP_LT
 #undef HEAP_T
 #undef HEAP_NAME
-

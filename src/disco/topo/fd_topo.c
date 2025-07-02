@@ -1,8 +1,7 @@
 #include "fd_topo.h"
 
-#include "../fd_disco_base.h"
 #include "../metrics/fd_metrics.h"
-#include "../quic/fd_tpu.h"
+#include "../../util/pod/fd_pod_format.h"
 #include "../../util/wksp/fd_wksp_private.h"
 #include "../../util/shmem/fd_shmem_private.h"
 
@@ -23,7 +22,7 @@ fd_topo_join_workspace( fd_topo_t *      topo,
 }
 
 FD_FN_PURE static int
-tile_needs_wksp( fd_topo_t const * topo, fd_topo_tile_t * tile, ulong wksp_id ) {
+tile_needs_wksp( fd_topo_t const * topo, fd_topo_tile_t const * tile, ulong wksp_id ) {
   int mode = -1;
   for( ulong i=0UL; i<tile->uses_obj_cnt; i++ ) {
     if( FD_UNLIKELY( topo->objs[ tile->uses_obj_id[ i ] ].wksp_id==wksp_id ) ) {
@@ -53,10 +52,8 @@ fd_topo_join_workspaces( fd_topo_t *  topo,
 }
 
 void
-fd_topo_leave_workspace( fd_topo_t *      topo,
+fd_topo_leave_workspace( fd_topo_t *      topo FD_PARAM_UNUSED,
                          fd_topo_wksp_t * wksp ) {
-  (void)topo;
-
   if( FD_LIKELY( wksp->wksp ) ) {
     if( FD_UNLIKELY( fd_wksp_detach( wksp->wksp ) ) ) FD_LOG_ERR(( "fd_wksp_detach failed" ));
     wksp->wksp            = NULL;
@@ -128,13 +125,18 @@ fd_topo_create_workspace( fd_topo_t *      topo,
 }
 
 void
-fd_topo_wksp_apply( fd_topo_t *      topo,
-                    fd_topo_wksp_t * wksp,
-                    void (* fn )( fd_topo_t const * topo, fd_topo_obj_t const * obj ) ) {
+fd_topo_wksp_new( fd_topo_t const *          topo,
+                  fd_topo_wksp_t const *     wksp,
+                  fd_topo_obj_callbacks_t ** callbacks ) {
   for( ulong i=0UL; i<topo->obj_cnt; i++ ) {
-    fd_topo_obj_t * obj = &topo->objs[ i ];
+    fd_topo_obj_t const * obj = &topo->objs[ i ];
     if( FD_LIKELY( obj->wksp_id!=wksp->id ) ) continue;
-    fn( topo, obj );
+
+    for( ulong j=0UL; callbacks[ j ]; j++ ) {
+      if( FD_LIKELY( strcmp( callbacks[ j ]->name, obj->name ) ) ) continue;
+      if( FD_LIKELY( callbacks[ j ]->new ) ) callbacks[ j ]->new( topo, obj );
+      break;
+    }
   }
 }
 
@@ -148,11 +150,7 @@ fd_topo_workspace_fill( fd_topo_t *      topo,
     link->mcache = fd_mcache_join( fd_topo_obj_laddr( topo, link->mcache_obj_id ) );
     FD_TEST( link->mcache );
 
-    if( FD_LIKELY( link->is_reasm ) ) {
-      if( FD_UNLIKELY( topo->objs[ link->reasm_obj_id].wksp_id!=wksp->id ) ) continue;
-      link->reasm = fd_tpu_reasm_join( fd_topo_obj_laddr( topo, link->reasm_obj_id ) );
-      FD_TEST( link->reasm );
-    } else if ( link->mtu ) {
+    if( link->mtu ) {
       if( FD_UNLIKELY( topo->objs[ link->dcache_obj_id ].wksp_id!=wksp->id ) ) continue;
       link->dcache = fd_dcache_join( fd_topo_obj_laddr( topo, link->dcache_obj_id ) );
       FD_TEST( link->dcache );
@@ -193,19 +191,9 @@ fd_topo_fill( fd_topo_t * topo ) {
 
 FD_FN_CONST static ulong
 fd_topo_tile_extra_huge_pages( fd_topo_tile_t const * tile ) {
-  (void)tile;
-
   /* Every tile maps an additional set of pages for the stack. */
-  ulong extra_pages = (FD_TILE_PRIVATE_STACK_SZ/FD_SHMEM_HUGE_PAGE_SZ)+2UL;
-
-  if( FD_UNLIKELY( !strcmp( tile->name, "replay" ) ) ) {
-    /* TODO: This is extremely gross.  Replay tile spawns a bunch of
-       extra threads which also require stack space.  These huge
-       pages need to be reserved as well. */
-    extra_pages += tile->replay.tpool_thread_count*((FD_TILE_PRIVATE_STACK_SZ/FD_SHMEM_HUGE_PAGE_SZ)+2UL);
-  }
-
-  return extra_pages;
+  (void)tile;
+  return (FD_TILE_PRIVATE_STACK_SZ/FD_SHMEM_HUGE_PAGE_SZ)+2UL;
 }
 
 FD_FN_PURE static ulong
@@ -218,7 +206,7 @@ fd_topo_tile_extra_normal_pages( fd_topo_tile_t const * tile ) {
 
                    !strcmp( tile->name, "gossip" ) ||
                    !strcmp( tile->name, "repair" ) ||
-                   !strcmp( tile->name, "pohi"   ) ||
+                   !strcmp( tile->name, "poh"   ) ||
                    !strcmp( tile->name, "storei" ) ) ) {
     /* Certain tiles using fd_keyload_load need normal pages to hold
        key material. */
@@ -230,8 +218,8 @@ fd_topo_tile_extra_normal_pages( fd_topo_tile_t const * tile ) {
 }
 
 FD_FN_PURE static ulong
-fd_topo_mlock_max_tile1( fd_topo_t const * topo,
-                         fd_topo_tile_t *  tile ) {
+fd_topo_mlock_max_tile1( fd_topo_t const *      topo,
+                         fd_topo_tile_t const * tile ) {
   ulong tile_mem = 0UL;
 
   for( ulong i=0UL; i<topo->wksp_cnt; i++ ) {
@@ -245,10 +233,10 @@ fd_topo_mlock_max_tile1( fd_topo_t const * topo,
 }
 
 FD_FN_PURE ulong
-fd_topo_mlock_max_tile( fd_topo_t * topo ) {
+fd_topo_mlock_max_tile( fd_topo_t const * topo ) {
   ulong highest_tile_mem = 0UL;
   for( ulong i=0UL; i<topo->tile_cnt; i++ ) {
-    fd_topo_tile_t * tile = &topo->tiles[ i ];
+    fd_topo_tile_t const * tile = &topo->tiles[ i ];
     highest_tile_mem = fd_ulong_max( highest_tile_mem, fd_topo_mlock_max_tile1( topo, tile ) );
   }
 
@@ -256,8 +244,8 @@ fd_topo_mlock_max_tile( fd_topo_t * topo ) {
 }
 
 FD_FN_PURE ulong
-fd_topo_gigantic_page_cnt( fd_topo_t * topo,
-                           ulong       numa_idx ) {
+fd_topo_gigantic_page_cnt( fd_topo_t const * topo,
+                           ulong             numa_idx ) {
   ulong result = 0UL;
   for( ulong i=0UL; i<topo->wksp_cnt; i++ ) {
     fd_topo_wksp_t const * wksp = &topo->workspaces[ i ];
@@ -271,9 +259,9 @@ fd_topo_gigantic_page_cnt( fd_topo_t * topo,
 }
 
 FD_FN_PURE ulong
-fd_topo_huge_page_cnt( fd_topo_t * topo,
-                       ulong       numa_idx,
-                       int         include_anonymous ) {
+fd_topo_huge_page_cnt( fd_topo_t const * topo,
+                       ulong             numa_idx,
+                       int               include_anonymous ) {
   ulong result = 0UL;
   for( ulong i=0UL; i<topo->wksp_cnt; i++ ) {
     fd_topo_wksp_t const * wksp = &topo->workspaces[ i ];
@@ -305,7 +293,7 @@ fd_topo_normal_page_cnt( fd_topo_t * topo ) {
 }
 
 FD_FN_PURE ulong
-fd_topo_mlock( fd_topo_t * topo ) {
+fd_topo_mlock( fd_topo_t const * topo ) {
   ulong result = 0UL;
   for( ulong i=0UL; i<topo->wksp_cnt; i++ ) {
     result += topo->workspaces[ i ].page_cnt * topo->workspaces[ i ].page_sz;
@@ -317,15 +305,19 @@ static void
 fd_topo_mem_sz_string( ulong sz, char out[static 24] ) {
   if( FD_LIKELY( sz >= FD_SHMEM_GIGANTIC_PAGE_SZ ) ) {
     FD_TEST( fd_cstr_printf_check( out, 24, NULL, "%lu GiB", sz / (1 << 30) ) );
-  } else {
+  } else if( FD_LIKELY( sz >= 1048576 ) ) {
     FD_TEST( fd_cstr_printf_check( out, 24, NULL, "%lu MiB", sz / (1 << 20) ) );
+  } else if( FD_LIKELY( sz >= 1024 ) ) {
+    FD_TEST( fd_cstr_printf_check( out, 24, NULL, "%lu KiB", sz / (1 << 10) ) );
+  } else {
+    FD_TEST( fd_cstr_printf_check( out, 24, NULL, "%lu B", sz ) );
   }
 }
 
 void
 fd_topo_print_log( int         stdout,
                    fd_topo_t * topo ) {
-  char message[ 16UL*4096UL ] = {0}; /* Same as FD_LOG_BUF_SZ */
+  char message[ 32UL*4096UL ] = {0}; /* Same as FD_LOG_BUF_SZ */
 
   char * cur = message;
   ulong remaining = sizeof(message) - 1; /* Leave one character at the end to ensure NUL terminated */
@@ -375,15 +367,17 @@ fd_topo_print_log( int         stdout,
     PRINT("  %23s (NUMA node %lu): %lu\n", "Required Huge Pages", i, fd_topo_huge_page_cnt( topo, i, 0 ) );
   }
 
-  char agave_affinity[ 4096 ];
-  ulong offset = 0UL;
-  for( ulong i=0UL; i<topo->agave_affinity_cnt; i++ ) {
-    ulong sz;
-    if( FD_LIKELY( i!=0UL ) ) FD_TEST( fd_cstr_printf_check( agave_affinity+offset, 4096-offset, &sz, ", %lu", topo->agave_affinity_cpu_idx[ i ] ) );
-    else                      FD_TEST( fd_cstr_printf_check( agave_affinity+offset, 4096-offset, &sz, "%lu", topo->agave_affinity_cpu_idx[ i ] ) );
-    offset += sz;
+  if( FD_UNLIKELY( topo->agave_affinity_cnt>0UL ) ) {
+    char agave_affinity[4096];
+    ulong offset = 0UL;
+    for ( ulong i = 0UL; i < topo->agave_affinity_cnt; i++ ) {
+      ulong sz;
+      if( FD_LIKELY( i != 0UL )) FD_TEST( fd_cstr_printf_check( agave_affinity+offset, 4096-offset, &sz, ", %lu", topo->agave_affinity_cpu_idx[ i ] ) );
+      else                       FD_TEST( fd_cstr_printf_check( agave_affinity+offset, 4096-offset, &sz, "%lu", topo->agave_affinity_cpu_idx[ i ] ) );
+      offset += sz;
+    }
+    PRINT( "  %23s: %s\n", "Agave Affinity", agave_affinity );
   }
-  PRINT("  %23s: %s\n", "Agave Affinity", agave_affinity );
 
   PRINT( "\nWORKSPACES\n");
   for( ulong i=0UL; i<topo->wksp_cnt; i++ ) {
@@ -391,7 +385,36 @@ fd_topo_print_log( int         stdout,
 
     char size[ 24 ];
     fd_topo_mem_sz_string( wksp->page_sz * wksp->page_cnt, size );
-    PRINT( "  %2lu (%7s): %12s  page_cnt=%lu  page_sz=%-8s  numa_idx=%-2lu  footprint=%-10lu  loose=%lu\n", i, size, wksp->name, wksp->page_cnt, fd_shmem_page_sz_to_cstr( wksp->page_sz ), wksp->numa_idx, wksp->known_footprint, wksp->total_footprint - wksp->known_footprint );
+    PRINT( "  %2lu (%7s): %12s  page_cnt=%3lu  page_sz=%-8s  numa_idx=%-2lu  footprint=%10lu  loose=%lu\n", i, size, wksp->name, wksp->page_cnt, fd_shmem_page_sz_to_cstr( wksp->page_sz ), wksp->numa_idx, wksp->known_footprint, wksp->total_footprint - wksp->known_footprint );
+  }
+
+  PRINT( "\nOBJECTS\n" );
+  for( ulong i=0UL; i<topo->obj_cnt; i++ ) {
+    fd_topo_obj_t * obj = &topo->objs[ i ];
+
+    char size[ 24 ];
+    fd_topo_mem_sz_string( obj->footprint, size );
+    PRINT( "  %3lu: %12s %12s  wksp_id=%-2lu  footprint=%7s  offset=%lu",
+           i, topo->workspaces[ obj->wksp_id ].name, obj->name,
+           obj->wksp_id, size, obj->offset );
+    for( fd_pod_iter_t iter=fd_pod_iter_init( fd_pod_queryf_subpod( topo->props, "obj.%lu", obj->id ) );
+         !fd_pod_iter_done( iter );
+         iter=fd_pod_iter_next( iter ) ) {
+      fd_pod_info_t info = fd_pod_iter_info( iter );
+      if( !strncmp( info.key, "seed", info.key_sz ) ) continue;
+      PRINT( "  %.*s", (int)info.key_sz, info.key );
+      switch( info.val_type ) {
+      case FD_POD_VAL_TYPE_CSTR:
+        PRINT( "=%.*s", (int)info.val_sz, (char const *)info.val );
+        break;
+      case FD_POD_VAL_TYPE_ULONG: {
+        ulong val; fd_ulong_svw_dec( info.val, &val );
+        PRINT( "=%lu", val );
+        break;
+      }
+      }
+    }
+    PRINT( "\n" );
   }
 
   PRINT( "\nLINKS\n" );
@@ -399,11 +422,7 @@ fd_topo_print_log( int         stdout,
     fd_topo_link_t * link = &topo->links[ i ];
 
     char size[ 24 ];
-    if( FD_UNLIKELY( !strcmp( link->name, "quic_verify" ) ) ) {
-      fd_topo_mem_sz_string( fd_tpu_reasm_footprint( link->depth, link->burst ), size );
-    } else {
-      fd_topo_mem_sz_string( fd_dcache_req_data_sz( link->mtu, link->depth, link->burst, 1 ), size );
-    }
+    fd_topo_mem_sz_string( fd_dcache_req_data_sz( link->mtu, link->depth, link->burst, 1 ), size );
     PRINT( "  %2lu (%7s): %12s  kind_id=%-2lu  wksp_id=%-2lu  depth=%-5lu  mtu=%-9lu  burst=%lu\n", i, size, link->name, link->kind_id, topo->objs[ link->dcache_obj_id ].wksp_id, link->depth, link->mtu, link->burst );
   }
 
@@ -416,7 +435,7 @@ fd_topo_print_log( int         stdout,
   } while( 0 )
 
 #define PRINTOUT( ... ) do {                                                            \
-    int n = snprintf( cur_out, remaining_in, __VA_ARGS__ );                             \
+    int n = snprintf( cur_out, remaining_out, __VA_ARGS__ );                            \
     if( FD_UNLIKELY( n < 0 ) ) FD_LOG_ERR(( "snprintf failed" ));                       \
     if( FD_UNLIKELY( (ulong)n >= remaining_out ) ) FD_LOG_ERR(( "snprintf overflow" )); \
     remaining_out -= (ulong)n;                                                          \
@@ -434,7 +453,7 @@ fd_topo_print_log( int         stdout,
     for( ulong j=0UL; j<tile->in_cnt; j++ ) {
       if( FD_LIKELY( j != 0 ) ) PRINTIN( ", " );
       if( FD_LIKELY( tile->in_link_reliable[ j ] ) ) PRINTIN( "%2lu", tile->in_link_id[ j ] );
-      else PRINTIN( "%2ld", -tile->in_link_id[ j ] );
+      else PRINTIN( "%2ld", (long)-tile->in_link_id[ j ] );
     }
 
     char out[ 256 ] = {0};
@@ -446,9 +465,31 @@ fd_topo_print_log( int         stdout,
       PRINTOUT( "%2lu", tile->out_link_id[ j ] );
     }
 
+    /* Determine tile's NUMA node either based on CPU or wksp affinity */
+    ulong tile_numa = 0UL;
+    if( tile->cpu_idx!=ULONG_MAX ) {
+      tile_numa = fd_shmem_numa_idx( tile->cpu_idx );
+    } else {
+      tile_numa = topo->workspaces[ topo->objs[ tile->tile_obj_id ].wksp_id ].numa_idx;
+    }
+
     char size[ 24 ];
     fd_topo_mem_sz_string( fd_topo_mlock_max_tile1( topo, tile ), size );
-    PRINT( "  %2lu (%7s): %12s  kind_id=%-2lu  wksp_id=%-2lu  cpu_idx=%-2lu  in=[%s]  out=[%s]", i, size, tile->name, tile->kind_id, topo->objs[ tile->tile_obj_id ].wksp_id, tile->cpu_idx, in, out );
+    PRINT( "  %2lu (%7s): %12s  kind_id=%-2lu  wksp_id=%-2lu  cpu_idx=", i, size, tile->name, tile->kind_id, topo->objs[ tile->tile_obj_id ].wksp_id );
+    if( tile->cpu_idx!=ULONG_MAX ) {
+      PRINT( "%3lu", tile->cpu_idx );
+    } else {
+      PRINT( "any" );
+    }
+
+    PRINT( "  numa_idx=%lu  in=[%s]  out=[%s]  objs=[", tile_numa, in, out );
+    for( ulong j=0UL; j<tile->uses_obj_cnt; j++ ) {
+      if( FD_LIKELY( j!=0 ) ) PRINT( " " );
+      int is_rw = tile->uses_obj_mode[ j ] == FD_SHMEM_JOIN_MODE_READ_WRITE;
+      PRINT( "%lu:%s", tile->uses_obj_id[ j ], is_rw?"rw":"ro" );
+    }
+    PRINT( "]" );
+
     if( FD_LIKELY( i != topo->tile_cnt-1 ) ) PRINT( "\n" );
   }
 

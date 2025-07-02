@@ -1,26 +1,27 @@
 #include "../fd_quic.h"
 #include "fd_quic_test_helpers.h"
+#include "../../../util/net/fd_ip4.h"
 
 #include <stdio.h>
 #include <stdlib.h>
 
-void
-my_stream_receive_cb( fd_quic_stream_t * stream,
-                      void *             ctx,
-                      uchar const *      data,
-                      ulong              data_sz,
-                      ulong              offset,
-                      int                fin ) {
-  (void)ctx;
-
+int
+my_stream_rx_cb( fd_quic_conn_t * conn,
+                 ulong            stream_id,
+                 ulong            offset,
+                 uchar const *    data,
+                 ulong            data_sz,
+                 int              fin ) {
+  (void)conn;
   FD_LOG_DEBUG(( "server rx stream data stream=%lu size=%lu offset=%lu",
-                 stream->stream_id, data_sz, offset ));
+                 stream_id, data_sz, offset ));
   FD_TEST( fd_ulong_is_aligned( offset, 512UL ) );
   FD_LOG_HEXDUMP_DEBUG(( "received data", data, data_sz ));
 
   FD_TEST( data_sz==512UL );
   FD_TEST( !fin );
   FD_TEST( 0==memcmp( data, "Hello world", 11u ) );
+  return FD_QUIC_SUCCESS;
 }
 
 int server_complete = 0;
@@ -85,9 +86,9 @@ main( int argc, char ** argv ) {
     .conn_cnt           = 10,
     .conn_id_cnt        = 10,
     .handshake_cnt      = 10,
-    .rx_stream_cnt      = 10,
+    .stream_id_cnt      = 10,
     .stream_pool_cnt    = 400,
-    .inflight_pkt_cnt   = 1024,
+    .inflight_frame_cnt = 1024 * 10,
     .tx_buf_sz          = 1<<14
   };
 
@@ -105,7 +106,7 @@ main( int argc, char ** argv ) {
 
   server_quic->cb.now              = test_clock;
   server_quic->cb.conn_new         = my_connection_new;
-  server_quic->cb.stream_receive   = my_stream_receive_cb;
+  server_quic->cb.stream_rx        = my_stream_rx_cb;
   server_quic->config.retry = 1;
 
   client_quic->cb.now              = test_clock;
@@ -123,27 +124,12 @@ main( int argc, char ** argv ) {
   FD_TEST( fd_quic_init( client_quic ) );
 
   FD_LOG_NOTICE(( "Creating connection" ));
-  fd_quic_conn_t * client_conn = fd_quic_connect(
-      client_quic,
-      server_quic->config.net.ip_addr,
-      server_quic->config.net.listen_udp_port,
-      server_quic->config.sni );
+  fd_quic_conn_t * client_conn = fd_quic_connect( client_quic, 0U, 0, 0U, 0 );
   FD_TEST( client_conn );
 
   /* do general processing */
   for( ulong j = 0; j < 20; j++ ) {
-    ulong ct = fd_quic_get_next_wakeup( client_quic );
-    ulong st = fd_quic_get_next_wakeup( server_quic );
-    ulong next_wakeup = fd_ulong_min( ct, st );
-
-    if( next_wakeup == ~(ulong)0 ) {
-      FD_LOG_INFO(( "client and server have no schedule" ));
-      break;
-    }
-
-    if( next_wakeup > now ) now = next_wakeup;
-
-    FD_LOG_INFO(( "running services at %lu", next_wakeup ));
+    FD_LOG_INFO(( "running services" ));
     fd_quic_service( client_quic );
     fd_quic_service( server_quic );
 
@@ -181,18 +167,7 @@ main( int argc, char ** argv ) {
   char buf[512] = "Hello world!\x00-   ";
 
   for( unsigned j = 0; j < 16; ++j ) {
-    ulong ct = fd_quic_get_next_wakeup( client_quic );
-    ulong st = fd_quic_get_next_wakeup( server_quic );
-    ulong next_wakeup = fd_ulong_min( ct, st );
-
-    if( next_wakeup == ~(ulong)0 ) {
-      FD_LOG_INFO(( "client and server have no schedule" ));
-      break;
-    }
-
-    if( next_wakeup > now ) now = next_wakeup;
-
-    FD_LOG_INFO(( "running services at %lu", (ulong)next_wakeup ));
+    FD_LOG_INFO(( "running services" ));
 
     fd_quic_service( client_quic );
     fd_quic_service( server_quic );
@@ -218,20 +193,7 @@ main( int argc, char ** argv ) {
   FD_LOG_NOTICE(( "Waiting for ACKs" ));
 
   for( uint j=0; j<10U; ++j ) {
-    ulong ct = fd_quic_get_next_wakeup( client_quic );
-    ulong st = fd_quic_get_next_wakeup( server_quic );
-    ulong next_wakeup = fd_ulong_min( ct, st );
-
-    if( next_wakeup == ~(ulong)0 ) {
-      /* indicates no schedule, which is correct after connection
-         instances have been reclaimed */
-      FD_LOG_INFO(( "Finished cleaning up connections" ));
-      break;
-    }
-
-    if( next_wakeup > now ) now = next_wakeup;
-
-    FD_LOG_INFO(( "running services at %lu", next_wakeup ));
+    FD_LOG_INFO(( "running services" ));
     fd_quic_service( client_quic );
     fd_quic_service( server_quic );
   }

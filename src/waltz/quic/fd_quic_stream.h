@@ -4,8 +4,6 @@
 #include "fd_quic_common.h"
 #include "../../util/fd_util.h"
 
-#define FD_QUIC_STREAM_ID_UNUSED (~0ul)
-
 /* Forward declarations */
 
 typedef struct fd_quic_conn       fd_quic_conn_t;
@@ -84,14 +82,12 @@ struct fd_quic_stream {
                                   this includes bytes implied by offsets that have not
                                   been received yet */
   ulong  tx_tot_data;        /* the total number of bytes transmitted on this stream */
-  ulong  tx_last_byte;       /* the index of the last byte of the stream
-                                valid only if FD_QUIC_STREAM_FLAGS_TX_FIN set */
 
                              /* the largest acked value of rx_max_stream_data */
   ulong  rx_tot_data;        /* the total number of bytes received on this stream */
 
-  /* last tx packet num with max_stream_data frame referring to this stream
-     set to next_pkt_number to indicate a new max_stream_data frame should be sent
+  /* last tx packet num with stream frame referring to this stream
+     set to FD_QUIC_PKT_NUM_PENDING to indicate a new max_stream_data frame should be sent
      if we time out this packet (or possibly a later packet) we resend the frame
        and update this value */
   ulong upd_pkt_number;
@@ -152,8 +148,6 @@ struct fd_quic_stream {
     FD_QUIC_STREAM_LIST_LINK( stream_prev, stream_next     );   \
     (stream)->next = (stream)->prev = stream;                   \
   } while(0)
-
-
 
 /* stream map for use in fd_map_dynamic map */
 struct fd_quic_stream_map {

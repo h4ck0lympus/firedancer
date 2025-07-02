@@ -34,8 +34,8 @@
 
 union fd_ip4_hdr {
   struct {
-    uchar  verihl;       /* 4 lsb: IP version (==4), assumes little endian */
-                         /* 4 msb: Header length in words (>=5) */
+    uchar  verihl;       /* 4 msb: IP version (==4), assumes little endian */
+                         /* 4 lsb: Header length in words (>=5) */
     uchar  tos;          /* Type of service */
     ushort net_tot_len;  /* Frag size in bytes, incl ip hdr, net order */
     ushort net_id;       /* Frag id, unique from sender for long enough, net order */
@@ -43,8 +43,14 @@ union fd_ip4_hdr {
     uchar  ttl;          /* Frag time to live */
     uchar  protocol;     /* Type of payload */
     ushort check;        /* Header checksum ("invariant" order) */
-    uchar  saddr_c[4];   /* Address of sender, technically net order but all APIs below work with this directly */
-    uchar  daddr_c[4];   /* Address of destination, technically net order but all APIs below work with this directly */
+    union __attribute__((packed)) {
+      uchar saddr_c[4];  /* Address of sender, technically net order but all APIs below work with this directly */
+      uint  saddr;
+    };
+    union __attribute__((packed)) {
+      uchar daddr_c[4];  /* Address of destination, technically net order but all APIs below work with this directly */
+      uint  daddr;
+    };
     /* Up to 40 bytes of options here */
   };
 };
@@ -183,8 +189,8 @@ fd_ip4_hdr_check_fast( void const * vp_hdr ) {
 
 /* fd_cstr_to_ip4_addr parses an IPv4 address matching format
    %u.%u.%u.%u  On success stores address to out and returns 1. On fail
-   returns 0.  The given address is returned in host byte order such
-   that "1.0.0.0" => 0x01000000. */
+   returns 0.  The given address is returned in network byte order such
+   that "1.0.0.0" => 0x00000001. */
 
 int
 fd_cstr_to_ip4_addr( char const * s,
@@ -192,8 +198,8 @@ fd_cstr_to_ip4_addr( char const * s,
 
 /* fd_ip4_addr_is_public checks if the given IPv4 address is a public address.
    assumed to be in net byte order.  */
-  
-FD_FN_CONST static inline int 
+
+FD_FN_CONST static inline int
 fd_ip4_addr_is_public( uint addr ) {
   uint addr_host = fd_uint_bswap( addr );
   return !((addr_host >= fd_uint_bswap( IP4_PRIVATE_RANGE1_START_NET ) && addr_host <= fd_uint_bswap( IP4_PRIVATE_RANGE1_END_NET )) ||

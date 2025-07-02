@@ -26,6 +26,12 @@
        ... map.  The mapping of a key to an element storage index is
        ... arbitrary but an element should not be moved / released while
        ... an element is in a map.
+
+       ... if MAP_OPTIMIZE_RANDOM_ACCESS_REMOVAL is set to 1, elements
+       ... must also have a prev field.  This field is used to optimize
+       ... removing elements from a chain quickly, if they are pointed
+       ... to by some other index.
+       ulong prev; // Technically "MAP_IDX_T MAP_PREV" (default is ulong prev), do not modify while the element is in the map
      };
 
      typedef struct myele myele_t;
@@ -50,7 +56,7 @@
      // mymap_chain_cnt_est returns a reasonable number of chains to use
      // for a map that is expected to hold up to ele_max_est elements.
      // ele_max_est will be clamped to be in [1,mymap_ele_max()] and the
-     // return value will be a integer power-of-two in
+     // return value will be an integer power-of-two in
      // [1,mymap_chain_max()].
 
      ulong mymap_chain_cnt_est( ulong ele_max_est );
@@ -117,8 +123,9 @@
      // mymap_idx_insert inserts an element into the map.  The caller
      // promises the element is not currently in the map and that
      // element key is not equal to the key of any other element
-     // currently in the map.  Assumes there are no concurrent
-     // operations on the map.  This always succeeds.
+     // currently in the map, except if MAP_MULTI is enabled.  Assumes
+     // there are no concurrent operations on the map.  This always
+     // succeeds.
 
      mymap_t *                            // Returns join
      mymap_idx_insert( mymap_t * join,    // Current local join to element map
@@ -233,11 +240,11 @@
    compilation units.  Further, options exist to use index compression,
    different hashing functions, comparison functions, etc as detailed
    below.
-   
+
    If MAP_MULTI is defined to be 1, the map will support multiple
    entries for the same key. In this case, the existing API works as
    is, but new methods are provided:
-   
+
      ulong                                           // Index of found element on success, sentinel on failure
      mymap_idx_next_const( ulong           prev,     // Previous result of mymap_idx_query_const
                            ulong           sentinel, // Value to return on failure
@@ -250,6 +257,17 @@
 
    These take a previous result from query_const (or next_const) and
    return the next element with the same key in the chain.
+
+  IF MAP_OPTIMIZE_RANDOM_ACCESS_REMOVAL is defined to be 1, the map will
+  support removing elements with a known index from the chain in O(1)
+  time without needing to search for them in the chain.  This requires
+  threading a reverse pointer through the elements in the chain.
+
+    void
+    mymap_idx_remove_fast( mymap_t * join,    // Current uslocal join to element map
+                           ulong     ele_idx, // Index of element to remove in the element storage
+                           myele_t * pool );  // Current local join to element storage
+
 */
 
 /* MAP_NAME gives the API prefix to use for map */
@@ -324,6 +342,14 @@
 
 #ifndef MAP_MULTI
 #define MAP_MULTI 0
+#endif
+
+/* MAP_OPTIMIZE_RANDOM_ACCESS_REMOVAL controls whether the map supports
+   removal of an element in a chain without iterating the whole chain
+   from the beginning. */
+
+#ifndef MAP_OPTIMIZE_RANDOM_ACCESS_REMOVAL
+#define MAP_OPTIMIZE_RANDOM_ACCESS_REMOVAL 0
 #endif
 
 /* Implementation *****************************************************/
@@ -494,6 +520,9 @@ FD_FN_PURE static inline MAP_(iter_t)
 MAP_(iter_next)( MAP_(iter_t)      iter,
                  MAP_(t) const *   join,
                  MAP_ELE_T const * pool ) {
+# if FD_TMPL_USE_HANDHOLDING
+  if( FD_UNLIKELY( MAP_(iter_done)( iter, join, pool ) ) ) FD_LOG_CRIT(( "assumes not done" ));
+# endif
   ulong chain_rem = iter.chain_rem;
   ulong ele_idx   = iter.ele_idx;
 
@@ -528,6 +557,9 @@ FD_FN_CONST static inline ulong
 MAP_(iter_idx)( MAP_(iter_t)    iter,
                 MAP_(t) const * join,
                 MAP_ELE_T *     pool ) {
+# if FD_TMPL_USE_HANDHOLDING
+  if( FD_UNLIKELY( MAP_(iter_done)( iter, join, pool ) ) ) FD_LOG_CRIT(( "assumes not done" ));
+# endif
   (void)join; (void)pool;
   return iter.ele_idx;
 }
@@ -536,7 +568,10 @@ FD_FN_CONST static inline MAP_ELE_T *
 MAP_(iter_ele)( MAP_(iter_t)    iter,
                 MAP_(t) const * join,
                 MAP_ELE_T *     pool ) {
-  (void)join; (void)pool;
+# if FD_TMPL_USE_HANDHOLDING
+  if( FD_UNLIKELY( MAP_(iter_done)( iter, join, pool ) ) ) FD_LOG_CRIT(( "assumes not done" ));
+# endif
+  (void)join;
   return pool + iter.ele_idx;
 }
 
@@ -544,7 +579,10 @@ FD_FN_CONST static inline MAP_ELE_T const *
 MAP_(iter_ele_const) ( MAP_(iter_t)      iter,
                        MAP_(t) const *   join,
                        MAP_ELE_T const * pool ) {
-  (void)join; (void)pool;
+# if FD_TMPL_USE_HANDHOLDING
+  if( FD_UNLIKELY( MAP_(iter_done)( iter, join, pool ) ) ) FD_LOG_CRIT(( "assumes not done" ));
+# endif
+  (void)join;
   return pool + iter.ele_idx;
 }
 
@@ -595,7 +633,7 @@ MAP_(idx_next_const)( ulong             prev,     // Previous result of mymap_id
 
 #endif /* MAP_MULTI!=0 */
 
-FD_FN_PURE int
+int
 MAP_(verify)( MAP_(t) const *   join,
               ulong             ele_cnt,
               MAP_ELE_T const * pool );
@@ -719,14 +757,56 @@ MAP_(delete)( void * shmap ) {
   return shmap;
 }
 
+FD_FN_PURE MAP_IMPL_STATIC ulong
+MAP_(idx_query)( MAP_(t) *         join,
+                 MAP_KEY_T const * key,
+                 ulong             sentinel,
+                 MAP_ELE_T *       pool ) {
+  MAP_(private_t) * map = MAP_(private)( join );
+
+  /* Find the key */
+
+  MAP_IDX_T * head = MAP_(private_chain)( map ) + MAP_(private_chain_idx)( key, map->seed, map->chain_cnt );
+  MAP_IDX_T * cur  = head;
+  for(;;) {
+    ulong ele_idx = MAP_(private_unbox)( *cur );
+    if( FD_UNLIKELY( MAP_(private_idx_is_null)( ele_idx ) ) ) break; /* optimize for found */
+    if( FD_LIKELY( MAP_(key_eq)( key, &pool[ ele_idx ].MAP_KEY ) ) ) { /* optimize for found */
+      /* Found, move it to the front of the chain */
+      if( FD_UNLIKELY( cur!=head ) ) { /* Assume already at head from previous query */
+#if MAP_OPTIMIZE_RANDOM_ACCESS_REMOVAL
+        if( FD_UNLIKELY( !MAP_(private_idx_is_null)( pool[ ele_idx ].MAP_NEXT ) ) ) pool[ pool[ ele_idx ].MAP_NEXT ].MAP_PREV = pool[ ele_idx ].MAP_PREV;
+        pool[ ele_idx ].MAP_PREV = MAP_(private_box)( MAP_(private_idx_null)() );
+#endif
+        *cur = pool[ ele_idx ].MAP_NEXT;
+        pool[ ele_idx ].MAP_NEXT = *head;
+        *head = MAP_(private_box)( ele_idx );
+      }
+      return ele_idx;
+    }
+    cur = &pool[ ele_idx ].MAP_NEXT; /* Retain the pointer to next so we can rewrite it later. */
+  }
+
+  /* Not found */
+
+  return sentinel;
+}
+
 MAP_IMPL_STATIC MAP_(t) *
 MAP_(idx_insert)( MAP_(t) *   join,
                   ulong       ele_idx,
                   MAP_ELE_T * pool ) {
+# if FD_TMPL_USE_HANDHOLDING && !MAP_MULTI
+  if( FD_UNLIKELY( MAP_(idx_query)( join, &pool[ ele_idx ].MAP_KEY, 0UL, pool ) ) ) FD_LOG_CRIT(( "ele_idx already in map" ));
+# endif
   MAP_(private_t) * map = MAP_(private)( join );
 
   MAP_IDX_T * head = MAP_(private_chain)( map ) + MAP_(private_chain_idx)( &pool[ ele_idx ].MAP_KEY, map->seed, map->chain_cnt );
 
+# if MAP_OPTIMIZE_RANDOM_ACCESS_REMOVAL
+  if( FD_UNLIKELY( !MAP_(private_idx_is_null)( *head ) ) ) pool[ *head ].MAP_PREV = MAP_(private_box)( ele_idx );
+  pool[ ele_idx ].MAP_PREV = MAP_(private_box)( MAP_(private_idx_null)() );
+# endif
   pool[ ele_idx ].MAP_NEXT = *head;
   *head = MAP_(private_box)( ele_idx );
 
@@ -748,6 +828,9 @@ MAP_(idx_remove)( MAP_(t) *         join,
     if( FD_UNLIKELY( MAP_(private_idx_is_null)( ele_idx ) ) ) break; /* optimize for found (it is remove after all) */
     if( FD_LIKELY( MAP_(key_eq)( key, &pool[ ele_idx ].MAP_KEY ) ) ) { /* " */
       *cur = pool[ ele_idx ].MAP_NEXT;
+#if MAP_OPTIMIZE_RANDOM_ACCESS_REMOVAL
+    if( FD_UNLIKELY( !MAP_(private_idx_is_null)( pool[ ele_idx ].MAP_NEXT ) ) ) pool[ pool[ ele_idx ].MAP_NEXT ].MAP_PREV = pool[ ele_idx ].MAP_PREV;
+#endif
       return ele_idx;
     }
     cur = &pool[ ele_idx ].MAP_NEXT; /* Retain the pointer to next so we can rewrite it later. */
@@ -758,36 +841,21 @@ MAP_(idx_remove)( MAP_(t) *         join,
   return sentinel;
 }
 
-FD_FN_PURE MAP_IMPL_STATIC ulong
-MAP_(idx_query)( MAP_(t) *         join,
-                 MAP_KEY_T const * key,
-                 ulong             sentinel,
-                 MAP_ELE_T *       pool ) {
+#if MAP_OPTIMIZE_RANDOM_ACCESS_REMOVAL
+MAP_IMPL_STATIC void
+MAP_(idx_remove_fast)( MAP_(t) *   join,
+                       ulong       ele_idx,
+                       MAP_ELE_T * pool ) {
   MAP_(private_t) * map = MAP_(private)( join );
 
-  /* Find the key */
+  MAP_ELE_T * ele = pool+ele_idx;
 
-  MAP_IDX_T * head = MAP_(private_chain)( map ) + MAP_(private_chain_idx)( key, map->seed, map->chain_cnt );
-  MAP_IDX_T * cur  = head;
-  for(;;) {
-    ulong ele_idx = MAP_(private_unbox)( *cur );
-    if( FD_UNLIKELY( MAP_(private_idx_is_null)( ele_idx ) ) ) break; /* optimize for found */
-    if( FD_LIKELY( MAP_(key_eq)( key, &pool[ ele_idx ].MAP_KEY ) ) ) { /* optimize for found */
-      /* Found, move it to the front of the chain */
-      if( FD_UNLIKELY( cur!=head ) ) { /* Assume already at head from previous query */
-        *cur = pool[ ele_idx ].MAP_NEXT;
-        pool[ ele_idx ].MAP_NEXT = *head;
-        *head = MAP_(private_box)( ele_idx );
-      }
-      return ele_idx;
-    }
-    cur = &pool[ ele_idx ].MAP_NEXT; /* Retain the pointer to next so we can rewrite it later. */
-  }
+  if( FD_UNLIKELY( !MAP_(private_idx_is_null)( ele->MAP_NEXT ) ) )          pool[ ele->MAP_NEXT ].MAP_PREV = ele->MAP_PREV;
 
-  /* Not found */
-
-  return sentinel;
+  if( FD_UNLIKELY( !MAP_(private_idx_is_null)( ele->MAP_PREV ) ) )          pool[ ele->MAP_PREV ].MAP_NEXT = ele->MAP_NEXT;
+  else { MAP_(private_chain)( map )[ MAP_(private_chain_idx)( &ele->MAP_KEY, map->seed, map->chain_cnt ) ] = ele->MAP_NEXT; }
 }
+#endif
 
 FD_FN_PURE MAP_IMPL_STATIC ulong
 MAP_(idx_query_const)( MAP_(t) const *   join,
@@ -818,7 +886,7 @@ MAP_(idx_next_const)( ulong             prev,     // Previous result of mymap_id
                       ulong             sentinel, // Value to return on failure
                       MAP_ELE_T const * pool ) {  // Current local join to element storage
   /* Go to next element in chain */
-  
+
   MAP_ELE_T const * prev_ele = &pool[ prev ];
   MAP_IDX_T const * cur = &prev_ele->MAP_NEXT;
   for(;;) {
@@ -835,7 +903,7 @@ MAP_(idx_next_const)( ulong             prev,     // Previous result of mymap_id
 
 #endif /* MAP_MULTI!=0 */
 
-FD_FN_PURE MAP_IMPL_STATIC int
+MAP_IMPL_STATIC int
 MAP_(verify)( MAP_(t) const *   join,
               ulong             ele_cnt,
               MAP_ELE_T const * pool ) {
@@ -900,7 +968,7 @@ MAP_(verify)( MAP_(t) const *   join,
       MAP_TEST( idx2 == ele_idx );
 #endif
     }
-  
+
 # undef MAP_TEST
 
   return 0;
@@ -929,6 +997,16 @@ MAP_(ele_remove)( MAP_(t) *         join,
   ulong ele_idx = MAP_(idx_remove)( join, key, MAP_(private_idx_null)(), pool );
   return fd_ptr_if( !MAP_(private_idx_is_null)( ele_idx ), (MAP_ELE_T       *)( (ulong)pool + (ele_idx * sizeof(MAP_ELE_T)) ), sentinel );
 }
+
+#if MAP_OPTIMIZE_RANDOM_ACCESS_REMOVAL
+static inline MAP_ELE_T *
+MAP_(ele_remove_fast)( MAP_(t) *   join,
+                       MAP_ELE_T * ele,
+                       MAP_ELE_T * pool  ) {
+  MAP_(idx_remove_fast)( join, (ulong)(ele-pool), pool );
+  return ele;
+}
+#endif
 
 FD_FN_PURE static inline MAP_ELE_T *
 MAP_(ele_query)( MAP_(t) *         join,
@@ -971,9 +1049,11 @@ FD_PROTOTYPES_END
 #undef MAP_KEY_HASH
 #undef MAP_KEY_EQ
 #undef MAP_NEXT
+#undef MAP_PREV
 #undef MAP_IDX_T
 #undef MAP_KEY
 #undef MAP_KEY_T
 #undef MAP_ELE_T
 #undef MAP_NAME
 #undef MAP_MULTI
+#undef MAP_OPTIMIZE_RANDOM_ACCESS_REMOVAL

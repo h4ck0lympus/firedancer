@@ -82,7 +82,10 @@ _get_stake_weights( fd_solana_manifest_t const * manifest,
   fd_stake_weight_t * weights = fd_scratch_alloc( alignof(fd_stake_weight_t), vote_acc_cnt * sizeof(fd_stake_weight_t) );
   if( FD_UNLIKELY( !weights ) ) FD_LOG_ERR(( "fd_scratch_alloc() failed" ));
 
-  ulong weight_cnt = fd_stake_weights_by_node( vaccs, weights );
+  /* FIXME: This will crash because the spad is not set up and no accs
+     are passed in. */
+
+  ulong weight_cnt = fd_stake_weights_by_node( NULL, weights, NULL );
   if( FD_UNLIKELY( weight_cnt==ULONG_MAX ) ) FD_LOG_ERR(( "fd_stake_weights_by_node() failed" ));
 
   *out_cnt = weight_cnt;
@@ -214,7 +217,6 @@ main( int     argc,
 
   fd_scratch_attach( smem, fmem, smax, scratch_depth );
   fd_scratch_push();
-  fd_valloc_t scratch_valloc = fd_scratch_virtual();
 
   /* Open file */
 
@@ -252,16 +254,13 @@ main( int     argc,
   /* Deserialize manifest */
 
   long dt = -fd_log_wallclock();
-  fd_solana_manifest_t manifest;
 
-  fd_bincode_decode_ctx_t decode = {
-    .valloc  = scratch_valloc,
-    .data    = manifest_bin,
-    .dataend = (void *)( (ulong)manifest_bin + manifest_binsz ),
-  };
-  if( FD_UNLIKELY( FD_BINCODE_SUCCESS!=
-                   fd_solana_manifest_decode( &manifest, &decode ) ) )
-    FD_LOG_ERR(( "Failed to deserialize manifest" ));
+  int decode_err;
+  fd_solana_manifest_t * manifest = fd_bincode_decode_scratch(
+      solana_manifest, manifest_bin, manifest_binsz, &decode_err );
+  if( FD_UNLIKELY( decode_err ) ) {
+    FD_LOG_ERR(( "Failed to decode manifest" ));
+  }
 
   fd_wksp_free_laddr( manifest_bin ); manifest_bin = NULL;
   dt += fd_log_wallclock();
@@ -273,13 +272,13 @@ main( int     argc,
   fd_scratch_push();
   switch( action ) {
   case ACTION_LEADERS:
-    res = action_leaders( &manifest, epoch );
+    res = action_leaders( manifest, epoch );
     break;
   case ACTION_NODES:
-    res = action_nodes( &manifest, epoch );
+    res = action_nodes( manifest, epoch );
     break;
   case ACTION_EPOCHS:
-    res = action_epochs( &manifest );
+    res = action_epochs( manifest );
     break;
   default:
     __builtin_unreachable();

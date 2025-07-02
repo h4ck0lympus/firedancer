@@ -14,13 +14,13 @@
      #include "util/tmpl/fd_prq.c"
 
   will declare the following static inline APIs as a header only style
-  library in the compilation unit: 
+  library in the compilation unit:
 
     // align/footprint - Return the alignment/footprint required for a
     // memory region to be used as eventq that can hold up to max
     // events.
     //
-    // new - Format a memory region pointed to by shmem into a eventq.
+    // new - Format a memory region pointed to by shmem into an eventq.
     // Assumes shmem points to a region with the required alignment and
     // footprint not in use by anything else.  Caller is not joined on
     // return.  Returns shmem.
@@ -79,11 +79,11 @@
     event_t * eventq_remove    ( event_t * heap, ulong idx );
     event_t * eventq_remove_all( event_t * heap );
 
-    // Note none of this APIs do any input argument checking as they are
-    // meant to be used in ultra high performance contexts.  Thus they
-    // require the user to be careful.  There is enough functionality
-    // here though to trivially wrap this in variants that test user
-    // arguments for sanity.
+    // Note none of these APIs do any input argument checking as they
+    // are meant to be used in ultra high performance contexts.  Thus
+    // they require the user to be careful.  There is enough
+    // functionality here though to trivially wrap this in variants that
+    // test user arguments for sanity.
 
     // Really large event_t are not recommended due to excess implied
     // data motion under the hood.  Cases with
@@ -106,8 +106,8 @@
 #error "Define PRQ_NAME"
 #endif
 
-/* A PRQ_T should be something something reasonable to shallow copy with
-   the fields described above.  PRQ_T that are 32-bytes in size with
+/* A PRQ_T should be something reasonable to shallow copy with the
+   fields described above.  PRQ_T that are 32-bytes in size with
    32-byte alignment have particularly good cache Feng Shui. */
 
 #ifndef PRQ_T
@@ -201,6 +201,10 @@
 #define PRQ_TMP_CMOV(c,x,y) if( (c) ) (x) = (y)
 #endif
 
+#if FD_TMPL_USE_HANDHOLDING
+#include "../log/fd_log.h"
+#endif
+
 /* Implementation *****************************************************/
 
 #define PRQ_(n) FD_EXPAND_THEN_CONCAT3(PRQ_NAME,_,n)
@@ -281,7 +285,7 @@ PRQ_(private_fill_hole_dn)( PRQ_T * heap,   /* Heap, half cache line aligned for
                                                heap[max] and heap[max+1] are dummy slots */
                             ulong   hole,   /* Location of the hole to fill, in [0,cnt] */
                             ulong   cnt ) { /* Location of the last heap event == heap event count not including the hole,
-                                               cnt is in [0,max) (if there is is a hole, cnt can't be max) */
+                                               cnt is in [0,max) (if there is a hole, cnt can't be max) */
 
   /* Note that this branch isn't strictly necessary.  If hole==cnt,
      heap[hole] will be detected as childless and will be filled by
@@ -336,7 +340,7 @@ PRQ_(private_fill_hole_dn)( PRQ_T * heap,   /* Heap, half cache line aligned for
        strictly after the child, fill the hole with the child (making a
        new hole).  Otherwise, fill the hole with the event to reinsert
        and we are done.
-       
+
        Sigh - see above DIY sigh. */
 
     ulong use_reinsert = ((ulong)(child>=cnt)) | PRQ_TMP_AFTER( tmp_child, tmp_reinsert );
@@ -378,9 +382,9 @@ PRQ_(private_fill_hole)( PRQ_T * heap,
 
 /* Public APIS ********************************************************/
 
-static inline ulong PRQ_(align)( void ) { return alignof(PRQ_(private_t)); }
+FD_FN_CONST static inline ulong PRQ_(align)( void ) { return alignof(PRQ_(private_t)); }
 
-static inline ulong
+FD_FN_CONST static inline ulong
 PRQ_(footprint)( ulong max ) {
   /* 2UL is for the dummy slots */
   return fd_ulong_align_up( fd_ulong_align_up( 16UL, alignof(PRQ_T) ) + sizeof(PRQ_T)*(max+2UL), alignof(PRQ_(private_t)) );
@@ -389,6 +393,9 @@ PRQ_(footprint)( ulong max ) {
 static inline void *
 PRQ_(new)( void * mem,
            ulong  max ) {
+# if FD_TMPL_USE_HANDHOLDING
+  if( FD_UNLIKELY( !mem | !fd_ulong_is_aligned( (ulong)mem, PRQ_(align)() ) ) ) FD_LOG_CRIT(( "invalid mem" ));
+# endif
   /* FIXME: VALIDATE MEM AND MAX? */
   PRQ_(private_t) * prq = (PRQ_(private_t) *)mem;
   prq->cnt = 0UL;
@@ -407,8 +414,10 @@ static inline PRQ_T *
 PRQ_(insert)( PRQ_T *       heap,
               PRQ_T const * event ) {
   PRQ_(private_t) * prq = PRQ_(private_from_heap)( heap );
-  /* FIXME: HANDHOLDING OPTIONS TO TEST FOR OVERFLOW */
   ulong hole = prq->cnt++;
+# if FD_TMPL_USE_HANDHOLDING
+  if( FD_UNLIKELY( hole==prq->max ) ) FD_LOG_CRIT(( "prq full" ));
+# endif
   PRQ_(private_fill_hole_up)( heap, hole, event );
   return heap;
 }
@@ -416,7 +425,9 @@ PRQ_(insert)( PRQ_T *       heap,
 static inline PRQ_T *
 PRQ_(remove_min)( PRQ_T * heap ) {
   PRQ_(private_t) * prq = PRQ_(private_from_heap)( heap );
-  /* FIXME: HANDHOLDING OPTIONS TO TEST FOR UNDERFLOW */
+# if FD_TMPL_USE_HANDHOLDING
+  if( FD_UNLIKELY( prq->cnt==0UL ) ) FD_LOG_CRIT(( "prq empty" ));
+# endif
   ulong cnt = --prq->cnt;
   PRQ_(private_fill_hole_dn)( heap, 0UL, cnt );
   return heap;
@@ -426,7 +437,9 @@ static inline PRQ_T *
 PRQ_(remove)( PRQ_T * heap,
               ulong   idx ) {
   PRQ_(private_t) * prq = PRQ_(private_from_heap)( heap );
-  /* FIXME: HANDHOLDING OPTIONS TO TEST FOR UNDERFLOW */
+# if FD_TMPL_USE_HANDHOLDING
+  if( FD_UNLIKELY( prq->cnt==0UL ) ) FD_LOG_CRIT(( "prq empty" ));
+# endif
   ulong cnt = --prq->cnt;
   PRQ_(private_fill_hole)( heap, idx, cnt );
   return heap;
@@ -458,4 +471,3 @@ FD_PROTOTYPES_END
 #undef PRQ_EXPLICIT_TIMEOUT
 #undef PRQ_T
 #undef PRQ_NAME
-

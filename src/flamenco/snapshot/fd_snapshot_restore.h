@@ -19,6 +19,15 @@
 #include "../../util/archive/fd_tar.h"
 #include "../runtime/context/fd_exec_slot_ctx.h"
 
+/* We want to exit out of snapshot loading once the manifest has been loaded in.
+   Once it has been seen, we don't want to exit out of snapshot loading if we
+   have already done so once. We exit out to allow for manifest data to be used
+   around the codebase. */
+
+#define MANIFEST_DONE          (INT_MAX)
+#define MANIFEST_DONE_NOT_SEEN (1)
+#define MANIFEST_DONE_SEEN     (2)
+
 /* fd_snapshot_restore_t implements a streaming TAR reader that parses
    archive records on the fly.  Records include the manifest (at the
    start of the file), and account data.  Notably, this object does on-
@@ -41,8 +50,9 @@ typedef struct fd_snapshot_restore fd_snapshot_restore_t;
    API. */
 
 typedef int
-(* fd_snapshot_restore_cb_manifest_fn_t)( void *                 ctx,
-                                          fd_solana_manifest_t * manifest );
+(* fd_snapshot_restore_cb_manifest_fn_t)( void *                              ctx,
+                                          fd_solana_manifest_global_t const * manifest_global,
+                                          fd_spad_t *                         spad );
 
 /* fd_snapshot_restore_cb_status_cache_fn_t is a callback that provides the
    user of snapshot restore with the deserialized slot deltas.  The caller
@@ -54,8 +64,8 @@ typedef int
    API. */
 typedef int
 (* fd_snapshot_restore_cb_status_cache_fn_t)( void *                  ctx,
-                                              fd_bank_slot_deltas_t * slot_deltas );
-
+                                              fd_bank_slot_deltas_t * slot_deltas,
+                                              fd_spad_t *             spad );
 FD_PROTOTYPES_BEGIN
 
 /* fd_snapshot_restore_{align,footprint} return required memory region
@@ -71,7 +81,7 @@ fd_snapshot_restore_footprint( void );
    region, which adheres to above alignment/footprint requirements.
    Returns qualified handle to object given restore object on success.
 
-   valloc is a memory allocator that outlives the snapshot restore
+   spad is a bump allocator that outlives the snapshot restore
    object.  This allocator is used to buffer the serialized snapshot
    manifest (ca ~500 MB) and account data.
 
@@ -87,23 +97,23 @@ fd_snapshot_restore_footprint( void );
 
    Accounts are restored into the given account manager and funk
    transaction.  (Note that the restore process will leave behind
-   "tombstone" account records that are invisible to fd_acc_mgr_view,
-   but do appear to fd_acc_mgr_view_raw.)
+   "tombstone" account records that are invisible to fd_txn_account_init_from_funk_readonly,
+   but do appear to fd_funk_get_acc_meta_readonly.)
 
    On failure, returns NULL.  Reasons for failure include invalid memory
    region.  Logs reasons for failure. */
 
 fd_snapshot_restore_t *
-fd_snapshot_restore_new( void *                               mem,
-                         fd_acc_mgr_t *                       acc_mgr,
-                         fd_funk_txn_t *                      txn,
-                         fd_valloc_t                          valloc,
-                         void *                               cb_manifest_ctx,
-                         fd_snapshot_restore_cb_manifest_fn_t cb_manifest,
-                         fd_snapshot_restore_cb_status_cache_fn_t cb_status_cache );
+fd_snapshot_restore_new( void *                                         mem,
+                         fd_funk_t *                                    funk,
+                         fd_funk_txn_t *                                txn,
+                         fd_spad_t *                                    spad,
+                         void *                                         cb_manifest_ctx,
+                         fd_snapshot_restore_cb_manifest_fn_t           cb_manifest,
+                         fd_snapshot_restore_cb_status_cache_fn_t       cb_status_cache );
 
 /* fd_snapshot_restore_delete destroys the given restore object and
-   frees any resources.  Returns main and scratch memory region back to
+   frees any resources.  Returns allocated memory region back to
    caller. */
 
 void *
@@ -130,6 +140,9 @@ fd_snapshot_restore_chunk( void *       restore,
                            ulong        bufsz );
 
 /* fd_snapshot_restore_tar_vt implements fd_tar_read_vtable_t. */
+
+ulong
+fd_snapshot_restore_get_slot( fd_snapshot_restore_t * restore );
 
 extern fd_tar_read_vtable_t const fd_snapshot_restore_tar_vt;
 

@@ -125,7 +125,7 @@
      latency for these two threads to communicate (e.g. T_send < T_recv
      is preserved).
 
-   * The range over which the this can be done (i.e. the range of which
+   * The range over which this can be done (i.e. the range of which
      the wallclock can be distributed with good synchronization and
      reasonably cheaply read) is the range over which application
      threads can be distributed.
@@ -581,6 +581,8 @@ void fd_log_level_logfile_set( int level );
 void fd_log_level_stderr_set ( int level );
 void fd_log_level_flush_set  ( int level );
 void fd_log_level_core_set   ( int level );
+
+void fd_log_enable_unclean_exit( void );
 
 /* These functions are for fd_log internal use only. */
 

@@ -5,6 +5,7 @@
 #include "fd_vm_base.h"
 #include "fd_vm_private.h"
 #include "test_vm_util.h"
+#include "../runtime/context/fd_exec_slot_ctx.h"
 #include <assert.h>
 #include <ctype.h>
 #include <errno.h>
@@ -53,6 +54,7 @@ typedef struct test_input test_input_t;
 
 struct test_effects {
   int   status;
+  int   force_exec;
   ulong reg[REG_CNT];
 };
 
@@ -99,14 +101,14 @@ parse_advance( test_parser_t * p,
 
 static void
 parse_assign_sep( test_parser_t * p ) {
-  while( p->cur != p->end && isspace( p->cur[0] ) ) {
+  while( p->cur != p->end && fd_isspace( p->cur[0] ) ) {
     parse_advance( p, 1UL );
   }
   if( p->cur == p->end || p->cur[0] != '=' ) {
     FD_LOG_ERR(( "Expected '=' at %s(%lu)", p->path, p->line ));
   }
   parse_advance( p, 1UL );
-  while( p->cur != p->end && isspace( p->cur[0] ) ) {
+  while( p->cur != p->end && fd_isspace( p->cur[0] ) ) {
     parse_advance( p, 1UL );
   }
 }
@@ -126,7 +128,7 @@ parse_hex_buf( test_parser_t * p,
   while( peek + 1 < p->end ) {
     int c0 = peek[0];
     int c1 = peek[1];
-    if( !isxdigit( c0 ) || !isxdigit( c1 ) ) break;
+    if( !fd_isxdigit( c0 ) || !fd_isxdigit( c1 ) ) break;
     peek += 2;
     sz   += 1;
   }
@@ -140,9 +142,9 @@ parse_hex_buf( test_parser_t * p,
   while( p->cur + 1 < p->end ) {
     int c0 = p->cur[0];
     int c1 = p->cur[1];
-    if( !isxdigit( c0 ) || !isxdigit( c1 ) ) break;
-    int hi = isdigit( c0 ) ? c0 - '0' : tolower( c0 ) - 'a' + 10;
-    int lo = isdigit( c1 ) ? c1 - '0' : tolower( c1 ) - 'a' + 10;
+    if( !fd_isxdigit( c0 ) || !fd_isxdigit( c1 ) ) break;
+    int hi = fd_isdigit( c0 ) ? c0 - '0' : tolower( c0 ) - 'a' + 10;
+    int lo = fd_isdigit( c1 ) ? c1 - '0' : tolower( c1 ) - 'a' + 10;
     *(cur++) = (uchar)( ( hi << 4 ) | lo );
     parse_advance( p, 2UL );
   }
@@ -159,8 +161,8 @@ parse_hex_int( test_parser_t * p ) {
   int   empty = 1;
   while( p->cur != p->end ) {
     int c = p->cur[0];
-    if( !isxdigit( c ) ) break;
-    int digit = isdigit( c ) ? c - '0' : tolower( c ) - 'a' + 10;
+    if( !fd_isxdigit( c ) ) break;
+    int digit = fd_isdigit( c ) ? c - '0' : tolower( c ) - 'a' + 10;
     val <<= 4;
     val  |= (ulong)digit;
     empty = 0;
@@ -186,7 +188,7 @@ static test_fixture_t *
 parse_token( test_parser_t *  p,
              test_fixture_t * out ) {
 
-  while( p->cur != p->end && isspace( p->cur[0] ) ) {
+  while( p->cur != p->end && fd_isspace( p->cur[0] ) ) {
     parse_advance( p, 1UL );
   }
 
@@ -249,7 +251,7 @@ parse_token( test_parser_t *  p,
   char const * word = p->cur;
   while( p->cur != p->end ) {
     int c = p->cur[0];
-    if( isalnum( c ) || c == '_' ) {
+    if( fd_isalnum( c ) || c == '_' ) {
       parse_advance( p, 1UL );
     } else {
       break;
@@ -282,14 +284,12 @@ parse_token( test_parser_t *  p,
 
     parse_assign_sep( p );
     ulong reg = parse_hex_int( p );
-    assert( reg < 0x10 );
     p->input.dst = (uchar)(reg & 0xf);
 
   } else if( 0==strncmp( word, "src", word_len ) ) {
 
     parse_assign_sep( p );
     ulong reg = parse_hex_int( p );
-    assert( reg < 0x10 );
     p->input.src = (uchar)(reg & 0xf);
 
   } else if( 0==strncmp( word, "off", word_len ) ) {
@@ -315,8 +315,14 @@ parse_token( test_parser_t *  p,
   } else if( 0==strncmp( word, "vfy", word_len ) ) {
 
     p->effects.status = STATUS_VERIFY_FAIL;
+    p->effects.force_exec = 1;
 
-  } else if( word_len >= 2 && word[0] == 'r' && isdigit( word[1] ) ) {
+  } else if( 0==strncmp( word, "vfyub", word_len ) ) {
+
+    p->effects.status = STATUS_VERIFY_FAIL;
+    p->effects.force_exec = 0;
+
+  } else if( word_len >= 2 && word[0] == 'r' && fd_isdigit( word[1] ) ) {
 
     ulong reg = fd_cstr_to_uchar( word+1 );
     assert( reg < REG_CNT );
@@ -348,10 +354,14 @@ parse_next( test_parser_t *  p,
 
 static void
 run_input2( test_effects_t * out,
-            fd_vm_t *        vm ) {
+            fd_vm_t *        vm,
+            int              force_exec ) {
 
   if( fd_vm_validate( vm ) != FD_VM_SUCCESS ) {
     out->status = STATUS_VERIFY_FAIL;
+    if( force_exec && fd_vm_exec_notrace( vm ) == FD_VM_SUCCESS ) {
+      //TODO: we should mark these tests as vfyub
+    }
     return;
   }
 
@@ -373,7 +383,9 @@ run_input2( test_effects_t * out,
 static void
 run_input( test_input_t const * input,
            test_effects_t *     out,
-           fd_vm_t *            vm ) {
+           fd_vm_t *            vm,
+           ulong                sbpf_version,
+           int                  force_exec ) {
 
   /* Assemble instructions */
 
@@ -431,29 +443,34 @@ run_input( test_input_t const * input,
       fd_sbpf_syscalls_new(
       aligned_alloc( fd_sbpf_syscalls_align(), fd_sbpf_syscalls_footprint() ) ) );
 
-  fd_exec_instr_ctx_t * instr_ctx = test_vm_minimal_exec_instr_ctx( fd_libc_alloc_virtual() );
+  fd_valloc_t valloc = fd_libc_alloc_virtual();
+  fd_exec_slot_ctx_t  * slot_ctx  = fd_valloc_malloc( valloc, FD_EXEC_SLOT_CTX_ALIGN,    FD_EXEC_SLOT_CTX_FOOTPRINT );
+
+  fd_exec_instr_ctx_t * instr_ctx = test_vm_minimal_exec_instr_ctx( valloc, slot_ctx );
 
   int vm_ok = !!fd_vm_init(
-      /* vm               */ vm,
-      /* instr_ctx        */ instr_ctx,
-      /* heap_max         */ 0UL,
-      /* entry_cu         */ 100UL,
-      /* rodata           */ (uchar const *)text,
-      /* rodata_sz        */ text_cnt * sizeof(ulong),
-      /* text             */ text,
-      /* text_cnt         */ text_cnt,
-      /* text_off         */ 0UL,
-      /* text_sz          */ text_cnt * sizeof(ulong),
-      /* entry_pc         */ 0UL,
-      /* calldests        */ calldests,
-      /* syscalls         */ syscalls,
-      /* trace            */ NULL,
-      /* sha              */ NULL,
-      /* mem_regions      */ input_region,
-      /* mem_regions_cnt  */ input->region_boundary_cnt ? input->region_boundary_cnt : 1,
-      /* mem_regions_accs */ NULL,
-      /* is_deprecated    */ 0,
-      /* direct mapping   */ FD_FEATURE_ACTIVE( instr_ctx->slot_ctx, bpf_account_data_direct_mapping )
+      /* vm                 */ vm,
+      /* instr_ctx          */ instr_ctx,
+      /* heap_max           */ 0UL,
+      /* entry_cu           */ 100UL,
+      /* rodata             */ (uchar const *)text,
+      /* rodata_sz          */ text_cnt * sizeof(ulong),
+      /* text               */ text,
+      /* text_cnt           */ text_cnt,
+      /* text_off           */ 0UL,
+      /* text_sz            */ text_cnt * sizeof(ulong),
+      /* entry_pc           */ 0UL,
+      /* calldests          */ calldests,
+      /* sbpf_version       */ sbpf_version,
+      /* syscalls           */ syscalls,
+      /* trace              */ NULL,
+      /* sha                */ NULL,
+      /* mem_regions        */ input_region,
+      /* mem_regions_cnt    */ input->region_boundary_cnt ? input->region_boundary_cnt : 1,
+      /* mem_regions_accs   */ NULL,
+      /* is_deprecated      */ 0,
+      /* direct mapping     */ FD_FEATURE_ACTIVE( instr_ctx->txn_ctx->slot, &instr_ctx->txn_ctx->features, bpf_account_data_direct_mapping ),
+      /* dump_syscall_to_pb */ 0
   );
   assert( vm_ok );
 
@@ -461,10 +478,11 @@ run_input( test_input_t const * input,
     vm->reg[i] = input->reg[i];
   }
 
-  run_input2( out, vm );
+  run_input2( out, vm, force_exec );
 
   /* Clean up */
-  test_vm_exec_instr_ctx_delete( instr_ctx );
+  fd_valloc_free( valloc, slot_ctx );
+  test_vm_exec_instr_ctx_delete( instr_ctx, fd_libc_alloc_virtual() );
   free( fd_sbpf_syscalls_delete ( fd_sbpf_syscalls_leave ( syscalls  ) ) );
   free( fd_sbpf_calldests_delete( fd_sbpf_calldests_leave( calldests ) ) );
   free( input_copy );
@@ -477,13 +495,14 @@ run_input( test_input_t const * input,
 static int
 run_fixture( test_fixture_t const * f,
              char const *           src_file,
-             fd_vm_t *              vm ) {
+             fd_vm_t *              vm,
+             ulong                  sbpf_version ) {
 
   int fail = 0;
 
   test_effects_t const * expected  = &f->effects;
   test_effects_t         actual[1] = {{0}};
-  run_input( &f->input, actual, vm );
+  run_input( &f->input, actual, vm, sbpf_version, expected->force_exec );
 
   if( expected->status != actual->status ) {
     FD_LOG_WARNING(( "FAIL %s(%lu): Expected status %s, got %s",
@@ -515,7 +534,8 @@ run_fixture( test_fixture_t const * f,
 
 static int
 handle_file( char const * file_path,
-             fd_vm_t *    vm ) {
+             fd_vm_t *    vm,
+             ulong        sbpf_version ) {
 
   int fd = open( file_path, O_RDONLY );
   if( FD_UNLIKELY( fd<0 ) ) {
@@ -549,7 +569,7 @@ handle_file( char const * file_path,
     test_fixture_t * f = NULL;
     f = parse_next( &parser, _f );
     if( !f ) break;
-    fail += run_fixture( f, file_path, vm );
+    fail += run_fixture( f, file_path, vm, sbpf_version );
   }
 
   if( FD_UNLIKELY( 0!=close( fd ) ) ) {
@@ -588,7 +608,7 @@ main( int     argc,
   for( int i=1; i<argc; i++ ) {
     int flag = 0==strncmp( argv[i], "--", 2 );
     if( literal || !flag ) {
-      fail += handle_file( argv[i], vm );
+      fail += handle_file( argv[i], vm, TEST_VM_DEFAULT_SBPF_VERSION );
       executed_cnt += 1;
     } else {
       if( argv[i][2] == '\0' ) literal = 1;
@@ -599,17 +619,38 @@ main( int     argc,
   /* No arguments given?  Execute default paths */
 
   if( !executed_cnt ) {
-    char const * default_paths[] = {
-      "src/flamenco/vm/instr_test/bitwise.instr",
-      "src/flamenco/vm/instr_test/int_math.instr",
-      "src/flamenco/vm/instr_test/jump.instr",
-      "src/flamenco/vm/instr_test/load.instr",
-      "src/flamenco/vm/instr_test/opcode.instr",
-      "src/flamenco/vm/instr_test/shift.instr",
-      NULL
-    };
-    for( char const ** path=default_paths; *path; path++ ) {
-      fail |= handle_file( *path, vm );
+    {
+      char const * default_paths[] = {
+        "src/flamenco/vm/instr_test/v0/opcode.instr",
+        "src/flamenco/vm/instr_test/v0/bitwise.instr",
+        "src/flamenco/vm/instr_test/v0/int_math.instr",
+        "src/flamenco/vm/instr_test/v0/jump.instr",
+        "src/flamenco/vm/instr_test/v0/load.instr",
+        "src/flamenco/vm/instr_test/v0/shift.instr",
+        NULL
+      };
+      for( char const ** path=default_paths; *path; path++ ) {
+        fail += handle_file( *path, vm, 0 );
+      }
+      if( !fail ) FD_LOG_NOTICE(( "v0 pass" ));
+      else        FD_LOG_WARNING(( "v0 fail cnt %d", fail ));
+    }
+
+    {
+      char const * default_paths[] = {
+        "src/flamenco/vm/instr_test/v2/opcode.instr",
+        "src/flamenco/vm/instr_test/v2/bitwise.instr",
+        "src/flamenco/vm/instr_test/v2/int_math.instr",
+        "src/flamenco/vm/instr_test/v2/jump.instr",
+        "src/flamenco/vm/instr_test/v2/load.instr",
+        "src/flamenco/vm/instr_test/v2/shift.instr",
+        NULL
+      };
+      for( char const ** path=default_paths; *path; path++ ) {
+        fail += handle_file( *path, vm, 2 );
+      }
+      if( !fail ) FD_LOG_NOTICE(( "v2 pass" ));
+      else        FD_LOG_WARNING(( "v2 fail cnt %d", fail ));
     }
   }
 

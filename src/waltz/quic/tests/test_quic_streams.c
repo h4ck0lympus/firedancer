@@ -4,24 +4,23 @@
 
 static ulong recvd = 0;
 
-void
-my_stream_receive_cb( fd_quic_stream_t * stream,
-                      void *             ctx,
-                      uchar const *      data,
-                      ulong              data_sz,
-                      ulong              offset,
-                      int                fin ) {
-  (void)ctx;
-  (void)fin;
+int
+my_stream_rx_cb( fd_quic_conn_t * conn,
+                 ulong            stream_id,
+                 ulong            offset,
+                 uchar const *    data,
+                 ulong            data_sz,
+                 int              fin ) {
+  (void)conn;
 
   /* Derive expected payload */
 
   uchar payload_buf[ 4096UL ];
   fd_aio_pkt_info_t pkt = { .buf=payload_buf, .buf_sz=4096UL };
-  fd_quic_stream_spam_gen( NULL, &pkt, stream );
+  fd_quic_stream_spam_gen( NULL, &pkt, stream_id );
 
   FD_LOG_DEBUG(( "server rx stream data stream=%lu size=%lu offset=%lu",
-        stream->stream_id, data_sz, offset ));
+        stream_id, data_sz, offset ));
 
   if( FD_UNLIKELY( ( offset+data_sz != pkt.buf_sz && fin ) ||
                    ( offset+data_sz >  pkt.buf_sz        ) ) ) {
@@ -36,6 +35,7 @@ my_stream_receive_cb( fd_quic_stream_t * stream,
   }
 
   recvd++;
+  return FD_QUIC_SUCCESS;
 }
 
 
@@ -106,8 +106,7 @@ main( int     argc,
     .conn_cnt           = 2,
     .conn_id_cnt        = 4,
     .handshake_cnt      = 10,
-    .rx_stream_cnt      = 20,
-    .inflight_pkt_cnt   = 100,
+    .inflight_frame_cnt = 100 * 2,
     .tx_buf_sz          = 1<<15,
     .stream_pool_cnt    = 512
   };
@@ -120,8 +119,8 @@ main( int     argc,
     .conn_cnt           = 2,
     .conn_id_cnt        = 4,
     .handshake_cnt      = 10,
-    .rx_stream_cnt      = 20,
-    .inflight_pkt_cnt   = 100,
+    .stream_id_cnt      = 20,
+    .inflight_frame_cnt = 100 * 2,
     .tx_buf_sz          = 1<<15,
     .stream_pool_cnt    = 512
   };
@@ -130,7 +129,7 @@ main( int     argc,
 
   server_quic->cb.now              = test_clock;
   server_quic->cb.conn_new         = my_connection_new;
-  server_quic->cb.stream_receive   = my_stream_receive_cb;
+  server_quic->cb.stream_rx        = my_stream_rx_cb;
 
   client_quic->cb.now              = test_clock;
   client_quic->cb.conn_hs_complete = my_handshake_complete;
@@ -153,27 +152,12 @@ main( int     argc,
   FD_TEST( fd_quic_init( client_quic ) );
 
   FD_LOG_NOTICE(( "Creating connection" ));
-  fd_quic_conn_t * client_conn = fd_quic_connect(
-      client_quic,
-      server_quic->config.net.ip_addr,
-      server_quic->config.net.listen_udp_port,
-      server_quic->config.sni );
+  fd_quic_conn_t * client_conn = fd_quic_connect( client_quic, 0U, 0, 0U, 0 );
   FD_TEST( client_conn );
 
   /* do general processing */
   for( ulong j = 0; j < 20; j++ ) {
-    ulong ct = fd_quic_get_next_wakeup( client_quic );
-    ulong st = fd_quic_get_next_wakeup( server_quic );
-    ulong next_wakeup = fd_ulong_min( ct, st );
-
-    if( next_wakeup == ~(ulong)0 ) {
-      FD_LOG_INFO(( "client and server have no schedule" ));
-      break;
-    }
-
-    if( next_wakeup > now ) now = next_wakeup;
-
-    FD_LOG_INFO(( "running services at %lu", next_wakeup ));
+    FD_LOG_INFO(( "running services" ));
     fd_quic_service( client_quic );
     fd_quic_service( server_quic );
 
@@ -193,22 +177,7 @@ main( int     argc,
     cum_sent_cnt += sent_cnt;
     if( sent_cnt>0 ) FD_LOG_INFO(( "sent %ld streams (total %ld)", sent_cnt, cum_sent_cnt ));
 
-    ulong ct = fd_quic_get_next_wakeup( client_quic );
-    ulong st = fd_quic_get_next_wakeup( server_quic );
-    ulong next_wakeup = fd_ulong_min( ct, st );
-
-    if( next_wakeup == ~(ulong)0 ) {
-      FD_LOG_INFO(( "client and server have no schedule" ));
-      break;
-    }
-
-    if( next_wakeup > now ) {
-      now = next_wakeup;
-    } else {
-      now += (ulong)10e6;
-    }
-
-    FD_LOG_DEBUG(( "running services at %lu", next_wakeup ));
+    FD_LOG_DEBUG(( "running services" ));
 
     fd_quic_service( server_quic );
     fd_quic_service( client_quic );
@@ -223,20 +192,7 @@ main( int     argc,
   FD_LOG_NOTICE(( "Waiting for ACKs" ));
 
   for( unsigned j = 0; j < 10; ++j ) {
-    ulong ct = fd_quic_get_next_wakeup( client_quic );
-    ulong st = fd_quic_get_next_wakeup( server_quic );
-    ulong next_wakeup = fd_ulong_min( ct, st );
-
-    if( next_wakeup == ~(ulong)0 ) {
-      /* indicates no schedule, which is correct after connection
-         instances have been reclaimed */
-      FD_LOG_INFO(( "Finished cleaning up connections" ));
-      break;
-    }
-
-    if( next_wakeup > now ) now = next_wakeup;
-
-    FD_LOG_INFO(( "running services at %lu", next_wakeup ));
+    FD_LOG_INFO(( "running services" ));
     fd_quic_service( client_quic );
     fd_quic_service( server_quic );
   }

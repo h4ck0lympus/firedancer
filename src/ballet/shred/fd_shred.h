@@ -1,7 +1,8 @@
 #ifndef HEADER_fd_src_ballet_shred_fd_shred_h
 #define HEADER_fd_src_ballet_shred_fd_shred_h
 
-#include <stdio.h>
+#include "../bmtree/fd_bmtree.h"
+
 /* Shreds form the on-wire representation of Solana block data
    optimized for transmission over unreliable links/WAN.
 
@@ -31,7 +32,7 @@
       | Merkle node #1         | 20 bytes
       ..........................
 
-       for resigned shreds shreds, followed by:
+       for resigned shreds, followed by:
 
       +------------------------+
       | signature              | 64 bytes
@@ -89,6 +90,14 @@
 #define FD_SHRED_DATA_HEADER_SZ (0x58UL)
 /* FD_SHRED_CODE_HEADER_SZ: size of all headers for coding type shreds. */
 #define FD_SHRED_CODE_HEADER_SZ (0x59UL)
+/* This is a conservative bound.
+   It's possible for a modified validator to create a data shred with
+   this much payload.
+   A validator that follows the default shredding policy should have
+   payloads of no more than 1015 bytes.
+   In general, shreds that are chained or resigned should have smaller
+   payloads and a tigher bound. */
+#define FD_SHRED_DATA_PAYLOAD_MAX (FD_SHRED_MIN_SZ-FD_SHRED_DATA_HEADER_SZ)
 
 /* FD_SHRED_TYPE_* identifies the type of a shred.
    It is located at the four high bits of byte 0x40 (64) of the shred header
@@ -127,6 +136,8 @@
 /* A merkle inclusion proof node. */
 typedef uchar fd_shred_merkle_t[FD_SHRED_MERKLE_NODE_SZ];
 
+FD_STATIC_ASSERT( sizeof(fd_bmtree_node_t) == FD_SHRED_MERKLE_ROOT_SZ, update FD_SHRED_MERKLE_ROOT_SZ );
+
 /* Constants relating to the data shred "flags" field. */
 
 /* Mask of the "reference tick"    field in shred.data.flags */
@@ -138,7 +149,25 @@ typedef uchar fd_shred_merkle_t[FD_SHRED_MERKLE_NODE_SZ];
 #define FD_SHRED_DATA_FLAG_DATA_COMPLETE ((uchar)0x40)
 
 /* Maximum number of data shreds in a slot, also maximum number of parity shreds in a slot */
-#define FD_SHRED_MAX_PER_SLOT (1 << 15UL) /* 32,768 shreds */
+#define FD_SHRED_BLK_MAX (1 << 15UL) /* 32,768 shreds */
+#define FD_SHRED_IDX_MAX (FD_SHRED_BLK_MAX - 1)
+
+/* Many static bounds are specified around the assumption that this is a
+   protocol limit on the max number of shreds in a slot. If this limit
+   changes, all the relevant usages in other areas of the Firedancer
+   codebase should be updated before modifying this assertion. */
+
+FD_STATIC_ASSERT( FD_SHRED_BLK_MAX == 32768, check all usages before changing this limit! );
+
+/* Many static bounds are specified around the assumption that this is a
+   protocol limit on the max number of shreds in a slot. If this limit
+   changes, all the relevant usages in other areas of the Firedancer
+   codebase should be updated before modifying this assertion. */
+
+FD_STATIC_ASSERT( FD_SHRED_BLK_MAX == 32768, check all usages before changing this limit! );
+
+/* 36,536,320 bytes per slot */
+#define FD_SHRED_DATA_PAYLOAD_MAX_PER_SLOT (FD_SHRED_DATA_PAYLOAD_MAX * FD_SHRED_BLK_MAX)
 
 /* Offset of the shred variant. Used for parsing. */
 #define FD_SHRED_VARIANT_OFF 0x40
@@ -221,10 +250,10 @@ struct __attribute__((packed)) fd_shred {
 
     /* Common coding shred header */
     struct __attribute__((packed)) {
-      /* Total number of data shreds in slot. Must be positive. */
+      /* Total number of data shreds in FEC set. Must be positive <= FD_REEDSOL_DATA_SHREDS_MAX. */
       /* 0x53 */ ushort data_cnt;
 
-      /* Total number of coding shreds in slot. Must be positive. */
+      /* Total number of coding shreds in FEC set. Must be positive <= FD_REEDSOL_CODE_SHREDS_MAX. */
       /* 0x55 */ ushort code_cnt;
 
       /* Index within the vector of coding shreds in slot. In [0,
@@ -381,6 +410,14 @@ fd_shred_merkle_nodes( fd_shred_t const * shred ) {
   return (fd_shred_merkle_t const *)ptr;
 }
 
+/* fd_shred_merkle_root: Assuming that `shred` is a Merkle variant,
+   reconstructs the merkle root from a shred and populates it in
+   root_out.  Returns 1 on success, 0 on failure.  The output value must
+   be ignored if a failure is returned.  U.B. if the shred is not a
+   merkle variant. */
+FD_FN_PURE int
+fd_shred_merkle_root( fd_shred_t const * shred, void * bmtree_mem, fd_bmtree_node_t * root_out );
+
 /* fd_shred_data_payload: Returns a pointer to a data shred payload.
 
   The provided shred must have passed validation in fd_shred_parse(),
@@ -406,7 +443,7 @@ fd_shred_code_payload( fd_shred_t const * shred ) {
    of the chained Merkle root.  U.B. if the shred is not a chained
    variant. */
 FD_FN_CONST static inline ulong
-fd_shred_chain_offset( uchar variant ) {
+fd_shred_chain_off( uchar variant ) {
   ulong type = fd_shred_type( variant );
   return fd_ulong_if( type & FD_SHRED_TYPEMASK_CODE, FD_SHRED_MAX_SZ, FD_SHRED_MIN_SZ )
     - FD_SHRED_MERKLE_ROOT_SZ

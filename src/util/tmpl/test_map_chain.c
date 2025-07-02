@@ -1,8 +1,14 @@
 #include "../fd_util.h"
+#if FD_HAS_HOSTED
+#include <sys/types.h>
+#include <sys/wait.h>
+#include <unistd.h>
+#endif
 
 struct pair {
   uint mykey;
   uint mynext;
+  uint myprev;
   uint val;
   uint tag;
 };
@@ -27,6 +33,18 @@ typedef struct pair pair_t;
 #define MAP_IDX_T         uint
 #define MAP_NEXT          mynext
 #define MAP_KEY_HASH(k,s) fd_ulong_hash( ((ulong)*(k)) ^ (s) )
+#include "fd_map_chain.c"
+
+#define MAP_NAME          mapfr
+#define MAP_ELE_T         pair_t
+#define MAP_KEY_T         uint
+#define MAP_KEY           mykey
+#define MAP_IDX_T         uint
+#define MAP_NEXT          mynext
+#define MAP_PREV          myprev
+#define MAP_KEY_HASH(k,s) fd_ulong_hash( ((ulong)*(k)) ^ (s) )
+#define MAP_OPTIMIZE_RANDOM_ACCESS_REMOVAL 1
+#define MAP_MULTI         1
 #include "fd_map_chain.c"
 
 static void
@@ -257,6 +275,71 @@ main( int     argc,
     /* Map is empty at this point */
   }
 
+  /* Test handholding */
+  FD_LOG_NOTICE(( "Testing handholding" ));
+#if FD_HAS_HOSTED && FD_TMPL_USE_HANDHOLDING
+  #define FD_EXPECT_LOG_CRIT( ACTION ) do {                         \
+    pid_t pid = fork();                                            \
+    FD_TEST( pid >= 0 );                                           \
+    if( pid == 0 ) {                                               \
+      fd_log_level_logfile_set( 6 );                               \
+      ACTION;                                                      \
+      _exit( 0 );                                                  \
+    }                                                              \
+    int status = 0;                                                \
+    wait( &status );                                               \
+                                                                   \
+    FD_TEST( WIFSIGNALED(status) && WTERMSIG(status)==6 );         \
+  } while( 0 )
+
+  /* we know from above that the map is empty */
+  FD_TEST(           map_idx_insert( map, 1, pool ) );
+  FD_EXPECT_LOG_CRIT( map_idx_insert( map, 1, pool ) );
+
+  map_iter_t iter = map_iter_init( map, pool );
+  for( ; !map_iter_done( iter, map, pool ); iter=map_iter_next( iter, map, pool ) ) {
+    FD_LOG_NOTICE(( "%lu", iter.chain_rem ));
+  }
+  /* work around "inline asm not supported yet: don't know how to handle
+     tied indirect register inputs" */
+  FD_EXPECT_LOG_CRIT( __extension__({ iter = map_iter_next( iter, map, pool );
+                                     FD_LOG_NOTICE(( "%lu", iter.chain_rem )); }) );
+#else
+  FD_LOG_WARNING(( "skip: testing handholding, requires hosted" ));
+#endif
+
+  /* Test fast removal cases */
+
+  FD_LOG_NOTICE(( "Testing fast removal" ));
+
+  pair_t * ele1 = pool_ele_acquire( pool );
+  ele1->mykey = 15;
+  pair_t * ele2 = pool_ele_acquire( pool );
+  ele2->mykey = 15;
+  pair_t * ele3 = pool_ele_acquire( pool );
+  ele3->mykey = 15;
+
+  shmap = mapfr_new( mem, chain_cnt, seed ); FD_TEST( shmap );
+
+  mapfr_t * mapfr = mapfr_join( shmap );     FD_TEST( mapfr );
+  mapfr_ele_insert( mapfr, ele3, pool );
+  mapfr_ele_insert( mapfr, ele2, pool );
+  mapfr_ele_insert( mapfr, ele1, pool );
+
+  mapfr_ele_remove_fast( mapfr, ele2, pool );
+  uint key = 15;
+  FD_TEST( ele1==mapfr_ele_query_const( mapfr, &key, NULL, pool ) );
+  FD_TEST( ele3==mapfr_ele_next_const( ele1, NULL, pool ) );
+  mapfr_ele_remove_fast( mapfr, ele3, pool );
+  FD_TEST( NULL==mapfr_ele_next_const( ele1, NULL, pool ) );
+
+  mapfr_ele_insert( mapfr, ele3, pool );
+  mapfr_ele_remove_fast( mapfr, ele1, pool );
+  FD_TEST( ele3==mapfr_ele_query_const( mapfr, &key, NULL, pool ) );
+  mapfr_ele_remove_fast( mapfr, ele3, pool );
+  FD_TEST( NULL==mapfr_ele_query_const( mapfr, &key, NULL, pool ) );
+
+  FD_LOG_NOTICE(( "Testing leave and delete" ));
   FD_TEST( !map_delete( NULL  ) ); /* NULL map */
   FD_TEST( !map_delete( mem+1 ) ); /* misaligned map */
   FD_TEST( map_delete( shmap )==(void *)mem );

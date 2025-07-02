@@ -2,6 +2,7 @@
 #include "fd_vm_base.h"
 #include "fd_vm_private.h"
 #include "test_vm_util.h"
+#include "../runtime/context/fd_exec_slot_ctx.h"
 #include <stdlib.h>  /* malloc */
 
 static int
@@ -33,26 +34,28 @@ test_program_success( char *                test_case_name,
   FD_TEST( vm );
 
   int vm_ok = !!fd_vm_init(
-      /* vm               */ vm,
-      /* instr_ctx        */ instr_ctx,
-      /* heap_max         */ FD_VM_HEAP_DEFAULT,
-      /* entry_cu         */ FD_VM_COMPUTE_UNIT_LIMIT,
-      /* rodata           */ (uchar *)text,
-      /* rodata_sz        */ 8UL*text_cnt,
-      /* text             */ text,
-      /* text_cnt         */ text_cnt,
-      /* text_off         */ 0UL,
-      /* text_sz          */ 8UL*text_cnt,
-      /* entry_pc         */ 0UL,
-      /* calldests        */ NULL,
-      /* syscalls         */ syscalls,
-      /* trace            */ NULL,
-      /* sha              */ sha,
-      /* mem_regions      */ NULL,
-      /* mem_regions_cnt  */ 0UL,
-      /* mem_regions_accs */ NULL,
-      /* is_deprecated    */ 0,
-      /* direct mapping   */ FD_FEATURE_ACTIVE( instr_ctx->slot_ctx, bpf_account_data_direct_mapping )
+      /* vm                 */ vm,
+      /* instr_ctx          */ instr_ctx,
+      /* heap_max           */ FD_VM_HEAP_DEFAULT,
+      /* entry_cu           */ FD_VM_COMPUTE_UNIT_LIMIT,
+      /* rodata             */ (uchar *)text,
+      /* rodata_sz          */ 8UL*text_cnt,
+      /* text               */ text,
+      /* text_cnt           */ text_cnt,
+      /* text_off           */ 0UL,
+      /* text_sz            */ 8UL*text_cnt,
+      /* entry_pc           */ 0UL,
+      /* calldests          */ NULL,
+      /* sbpf_version       */ TEST_VM_DEFAULT_SBPF_VERSION,
+      /* syscalls           */ syscalls,
+      /* trace              */ NULL,
+      /* sha                */ sha,
+      /* mem_regions        */ NULL,
+      /* mem_regions_cnt    */ 0UL,
+      /* mem_regions_accs   */ NULL,
+      /* is_deprecated      */ 0,
+      /* direct mapping     */ FD_FEATURE_ACTIVE( instr_ctx->txn_ctx->slot, &instr_ctx->txn_ctx->features, bpf_account_data_direct_mapping ),
+      /* dump_syscall_to_pb */ 0
   );
   FD_TEST( vm_ok );
 
@@ -220,32 +223,37 @@ test_0cu_exit( void ) {
     fd_vm_instr( FD_SBPF_OP_EXIT,      0, 0, 0, 0 )
   };
   ulong text_cnt = 3UL;
-  fd_exec_instr_ctx_t * instr_ctx = test_vm_minimal_exec_instr_ctx( fd_libc_alloc_virtual() );
+
+  fd_valloc_t valloc = fd_libc_alloc_virtual();
+  fd_exec_slot_ctx_t  * slot_ctx  = fd_valloc_malloc( valloc, FD_EXEC_SLOT_CTX_ALIGN,    FD_EXEC_SLOT_CTX_FOOTPRINT );
+  fd_exec_instr_ctx_t * instr_ctx = test_vm_minimal_exec_instr_ctx( valloc, slot_ctx );
 
   /* Ensure the VM exits with success if the CU count after the final
      exit instruction reaches zero. */
 
   int vm_ok = !!fd_vm_init(
-      /* vm               */ vm,
-      /* instr_ctx        */ instr_ctx,
-      /* heap_max         */ FD_VM_HEAP_DEFAULT,
-      /* entry_cu         */ text_cnt,
-      /* rodata           */ (uchar *)text,
-      /* rodata_sz        */ 8UL*text_cnt,
-      /* text             */ text,
-      /* text_cnt         */ text_cnt,
-      /* text_off         */ 0UL,
-      /* text_sz          */ 8UL*text_cnt,
-      /* entry_pc         */ 0UL,
-      /* calldests        */ NULL,
-      /* syscalls         */ NULL,
-      /* trace            */ NULL,
-      /* sha              */ sha,
-      /* mem_regions      */ NULL,
-      /* mem_regions_cnt  */ 0UL,
-      /* mem_regions_accs */ NULL,
-      /* is_deprecated    */ 0,
-      /* direct mapping   */ FD_FEATURE_ACTIVE( instr_ctx->slot_ctx, bpf_account_data_direct_mapping )
+      /* vm                 */ vm,
+      /* instr_ctx          */ instr_ctx,
+      /* heap_max           */ FD_VM_HEAP_DEFAULT,
+      /* entry_cu           */ text_cnt,
+      /* rodata             */ (uchar *)text,
+      /* rodata_sz          */ 8UL*text_cnt,
+      /* text               */ text,
+      /* text_cnt           */ text_cnt,
+      /* text_off           */ 0UL,
+      /* text_sz            */ 8UL*text_cnt,
+      /* entry_pc           */ 0UL,
+      /* calldests          */ NULL,
+      /* sbpf_version       */ TEST_VM_DEFAULT_SBPF_VERSION,
+      /* syscalls           */ NULL,
+      /* trace              */ NULL,
+      /* sha                */ sha,
+      /* mem_regions        */ NULL,
+      /* mem_regions_cnt    */ 0UL,
+      /* mem_regions_accs   */ NULL,
+      /* is_deprecated      */ 0,
+      /* direct mapping     */ FD_FEATURE_ACTIVE( instr_ctx->txn_ctx->slot, &instr_ctx->txn_ctx->features, bpf_account_data_direct_mapping ),
+      /* dump_syscall_to_pb */ 0
   );
   FD_TEST( vm_ok );
 
@@ -256,26 +264,28 @@ test_0cu_exit( void ) {
   /* Ensure the VM exits with failure if CUs are exhausted. */
 
   vm_ok = !!fd_vm_init(
-      /* vm               */ vm,
-      /* instr_ctx        */ instr_ctx,
-      /* heap_max         */ FD_VM_HEAP_DEFAULT,
-      /* entry_cu         */ text_cnt - 1UL,
-      /* rodata           */ (uchar *)text,
-      /* rodata_sz        */ 8UL*text_cnt,
-      /* text             */ text,
-      /* text_cnt         */ text_cnt,
-      /* text_off         */ 0UL,
-      /* text_sz          */ 8UL*text_cnt,
-      /* entry_pc         */ 0UL,
-      /* calldests        */ NULL,
-      /* syscalls         */ NULL,
-      /* trace            */ NULL,
-      /* sha              */ sha,
-      /* mem_regions      */ NULL,
-      /* mem_regions_cnt  */ 0UL,
-      /* mem_regions_accs */ NULL,
-      /* is_deprecated    */ 0,
-      /* direct mapping   */ FD_FEATURE_ACTIVE( instr_ctx->slot_ctx, bpf_account_data_direct_mapping )
+      /* vm                 */ vm,
+      /* instr_ctx          */ instr_ctx,
+      /* heap_max           */ FD_VM_HEAP_DEFAULT,
+      /* entry_cu           */ text_cnt - 1UL,
+      /* rodata             */ (uchar *)text,
+      /* rodata_sz          */ 8UL*text_cnt,
+      /* text               */ text,
+      /* text_cnt           */ text_cnt,
+      /* text_off           */ 0UL,
+      /* text_sz            */ 8UL*text_cnt,
+      /* entry_pc           */ 0UL,
+      /* calldests          */ NULL,
+      /* sbpf_version       */ TEST_VM_DEFAULT_SBPF_VERSION,
+      /* syscalls           */ NULL,
+      /* trace              */ NULL,
+      /* sha                */ sha,
+      /* mem_regions        */ NULL,
+      /* mem_regions_cnt    */ 0UL,
+      /* mem_regions_accs   */ NULL,
+      /* is_deprecated      */ 0,
+      /* direct mapping     */ FD_FEATURE_ACTIVE( instr_ctx->txn_ctx->slot, &instr_ctx->txn_ctx->features, bpf_account_data_direct_mapping ),
+      /* dump_syscall_to_pb */ 0
   );
   FD_TEST( vm_ok );
 
@@ -283,8 +293,150 @@ test_0cu_exit( void ) {
   FD_TEST( fd_vm_exec    ( vm )==FD_VM_ERR_SIGCOST );
 
   fd_vm_delete( fd_vm_leave( vm ) );
-  test_vm_exec_instr_ctx_delete( instr_ctx );
+  fd_valloc_free( valloc, slot_ctx );
+  test_vm_exec_instr_ctx_delete( instr_ctx, fd_libc_alloc_virtual() );
   fd_sha256_delete( fd_sha256_leave( sha ) );
+}
+
+static const uint FD_VM_SBPF_STATIC_SYSCALLS_LIST[] = {
+  0,
+  //  1 = abort
+  0xb6fc1a11,
+  //  2 = sol_panic_
+  0x686093bb,
+  //  3 = sol_memcpy_
+  0x717cc4a3,
+  //  4 = sol_memmove_
+  0x434371f8,
+  //  5 = sol_memset_
+  0x3770fb22,
+  //  6 = sol_memcmp_
+  0x5fdcde31,
+  //  7 = sol_log_
+  0x207559bd,
+  //  8 = sol_log_64_
+  0x5c2a3178,
+  //  9 = sol_log_pubkey
+  0x7ef088ca,
+  // 10 = sol_log_compute_units_
+  0x52ba5096,
+  // 11 = sol_alloc_free_
+  0x83f00e8f,
+  // 12 = sol_invoke_signed_c
+  0xa22b9c85,
+  // 13 = sol_invoke_signed_rust
+  0xd7449092,
+  // 14 = sol_set_return_data
+  0xa226d3eb,
+  // 15 = sol_get_return_data
+  0x5d2245e4,
+  // 16 = sol_log_data
+  0x7317b434,
+  // 17 = sol_sha256
+  0x11f49d86,
+  // 18 = sol_keccak256
+  0xd7793abb,
+  // 19 = sol_secp256k1_recover
+  0x17e40350,
+  // 20 = sol_blake3
+  0x174c5122,
+  // 21 = sol_poseidon
+  0xc4947c21,
+  // 22 = sol_get_processed_sibling_instruction
+  0xadb8efc8,
+  // 23 = sol_get_stack_height
+  0x85532d94,
+  // 24 = sol_curve_validate_point
+  0xaa2607ca,
+  // 25 = sol_curve_group_op
+  0xdd1c41a6,
+  // 26 = sol_curve_multiscalar_mul
+  0x60a40880,
+  // 27 = sol_curve_pairing_map
+  0xf111a47e,
+  // 28 = sol_alt_bn128_group_op
+  0xae0c318b,
+  // 29 = sol_alt_bn128_compression
+  0x334fd5ed,
+  // 30 = sol_big_mod_exp
+  0x780e4c15,
+  // 31 = sol_remaining_compute_units
+  0xedef5aee,
+  // 32 = sol_create_program_address
+  0x9377323c,
+  // 33 = sol_try_find_program_address
+  0x48504a38,
+  // 34 = sol_get_sysvar
+  0x13c1b505,
+  // 35 = sol_get_epoch_stake
+  0x5be92f4a,
+  // 36 = sol_get_clock_sysvar
+  0xd56b5fe9,
+  // 37 = sol_get_epoch_schedule_sysvar
+  0x23a29a61,
+  // 38 = sol_get_last_restart_slot
+  0x188a0031,
+  // 39 = sol_get_epoch_rewards_sysvar
+  0xfdba2b3b,
+  // 40 = sol_get_fees_sysvar
+  0x3b97b73c,
+  // 41 = sol_get_rent_sysvar
+  0xbf7188f6,
+};
+#define FD_VM_SBPF_STATIC_SYSCALLS_LIST_SZ (sizeof(FD_VM_SBPF_STATIC_SYSCALLS_LIST) / sizeof(uint))
+
+static void
+test_static_syscalls_list( void ) {
+  const char *static_syscalls_from_simd[] = {
+    "abort",
+    "sol_panic_",
+    "sol_memcpy_",
+    "sol_memmove_",
+    "sol_memset_",
+    "sol_memcmp_",
+    "sol_log_",
+    "sol_log_64_",
+    "sol_log_pubkey",
+    "sol_log_compute_units_",
+    "sol_alloc_free_",
+    "sol_invoke_signed_c",
+    "sol_invoke_signed_rust",
+    "sol_set_return_data",
+    "sol_get_return_data",
+    "sol_log_data",
+    "sol_sha256",
+    "sol_keccak256",
+    "sol_secp256k1_recover",
+    "sol_blake3",
+    "sol_poseidon",
+    "sol_get_processed_sibling_instruction",
+    "sol_get_stack_height",
+    "sol_curve_validate_point",
+    "sol_curve_group_op",
+    "sol_curve_multiscalar_mul",
+    "sol_curve_pairing_map",
+    "sol_alt_bn128_group_op",
+    "sol_alt_bn128_compression",
+    "sol_big_mod_exp",
+    "sol_remaining_compute_units",
+    "sol_create_program_address",
+    "sol_try_find_program_address",
+    "sol_get_sysvar",
+    "sol_get_epoch_stake",
+    "sol_get_clock_sysvar",
+    "sol_get_epoch_schedule_sysvar",
+    "sol_get_last_restart_slot",
+    "sol_get_epoch_rewards_sysvar",
+    "sol_get_fees_sysvar",
+    "sol_get_rent_sysvar",
+  };
+
+  FD_TEST( FD_VM_SBPF_STATIC_SYSCALLS_LIST[0]==0 );
+  for( ulong i=1; i<FD_VM_SBPF_STATIC_SYSCALLS_LIST_SZ; i++ ) {
+    const char *name = static_syscalls_from_simd[i-1];
+    uint key = fd_murmur3_32( name, strlen(name), 0 );
+    FD_TEST( FD_VM_SBPF_STATIC_SYSCALLS_LIST[i]==key );
+  }
 }
 
 static fd_sbpf_syscalls_t _syscalls[ FD_SBPF_SYSCALLS_SLOT_CNT ];
@@ -298,7 +450,9 @@ main( int     argc,
 
   fd_sbpf_syscalls_t * syscalls = fd_sbpf_syscalls_join( fd_sbpf_syscalls_new( _syscalls ) ); FD_TEST( syscalls );
 
-  fd_exec_instr_ctx_t * instr_ctx = test_vm_minimal_exec_instr_ctx( fd_libc_alloc_virtual() );
+  fd_valloc_t valloc = fd_libc_alloc_virtual();
+  fd_exec_slot_ctx_t  * slot_ctx  = fd_valloc_malloc( valloc, FD_EXEC_SLOT_CTX_ALIGN,    FD_EXEC_SLOT_CTX_FOOTPRINT );
+  fd_exec_instr_ctx_t * instr_ctx = test_vm_minimal_exec_instr_ctx( valloc, slot_ctx );
 
   FD_TEST( fd_vm_syscall_register( syscalls, "accumulator", accumulator_syscall )==FD_VM_SUCCESS );
 
@@ -953,7 +1107,10 @@ main( int     argc,
   free( text );
 
   fd_sbpf_syscalls_delete( fd_sbpf_syscalls_leave( syscalls ) );
-  test_vm_exec_instr_ctx_delete( instr_ctx );
+  fd_valloc_free( valloc, slot_ctx );
+  test_vm_exec_instr_ctx_delete( instr_ctx, valloc );
+
+  test_static_syscalls_list();
 
   FD_LOG_NOTICE(( "pass" ));
   fd_rng_delete( fd_rng_leave( rng ) );

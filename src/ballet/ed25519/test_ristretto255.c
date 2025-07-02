@@ -1,8 +1,13 @@
 #include <stdlib.h>
+#include <stdio.h>
 
 #include "../fd_ballet.h"
 #include "../hex/fd_hex.h"
 #include "fd_ristretto255.h"
+
+#if FD_USING_GCC && __GNUC__ >= 15
+#pragma GCC diagnostic ignored "-Wunterminated-string-initialization"
+#endif
 
 /* base_point_multiples was imported from
    draft-irtf-cfrg-ristretto255-decaf448-08 Appendix A.1 */
@@ -134,7 +139,7 @@ test_point_decompress( FD_FN_UNUSED fd_rng_t * rng ) {
 }
 
 void
-test_point_compress( FD_FN_UNUSED fd_rng_t * rng ) {
+test_point_compress( fd_rng_t * rng ) {
   uchar                   _s[32]; uchar *                   s = _s;
   fd_ristretto255_point_t _h[1];  fd_ristretto255_point_t * h = _h;
 
@@ -382,7 +387,7 @@ fd_rng_b256( fd_rng_t * rng,
 }
 
 static void FD_FN_NO_ASAN
-test_multiscalar_mul( FD_FN_UNUSED fd_rng_t * rng ) {
+test_multiscalar_mul( fd_rng_t * rng ) {
   fd_ristretto255_point_t _h[1];       fd_ristretto255_point_t * h = _h;
 
   /* Correctness */

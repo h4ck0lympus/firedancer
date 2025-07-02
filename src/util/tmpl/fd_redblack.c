@@ -11,12 +11,12 @@
    Tree nodes are allocated from a pool before insertion. After
    removal, they are returned to the pool. The pool is the result of
    the join operation.
-   
+
    Multiple trees can coexist in the same pool, provided the total
    size of all the trees does not exceed the pool size. This is
    convenient for removing nodes from one tree and inserting them into
    another without copying the key or value.
-   
+
    Example usage:
 
      struct my_rb_node {
@@ -128,7 +128,7 @@
 /* Namespace macro */
 #define REDBLK_(n) FD_EXPAND_THEN_CONCAT3(REDBLK_NAME,_,n)
 
-#if REDBLK_IMPL_STYLE==0 || REDBLK_IMPL_STYLE==1 /* need structures and inlines */
+#if REDBLK_IMPL_STYLE==1 /* need structures and inlines */
 
 FD_PROTOTYPES_BEGIN
 
@@ -235,7 +235,7 @@ REDBLK_T * REDBLK_(acquire)( REDBLK_T * pool );
     my_node_t * n = my_rb_find( pool, root, &k );
     n = my_rb_remove( pool, &root, n );
     my_rb_release( pool, n );
-  
+
 */
 void REDBLK_(release)( REDBLK_T * pool, REDBLK_T * node );
 
@@ -318,12 +318,36 @@ REDBLK_T * REDBLK_(predecessor)(REDBLK_T * pool, REDBLK_T * node);
 */
 REDBLK_T * REDBLK_(insert)(REDBLK_T * pool, REDBLK_T ** root, REDBLK_T * x);
 /*
+  E.g. my_node_t * my_rb_insert_or_replace(my_node_t * pool, my_node_t ** root, my_node_t * x, my_node_t ** out);
+
+  This function inserts a node into the red-black tree. If a matching node with the same key already exists,
+  it is replaced, and the replaced node is returned via the `out` pointer. The caller is responsible
+  for freeing the replaced node (if applicable). The inserted node is always returned.
+
+  Before calling this function, the new node should be allocated (typically from a pool) and
+  initialized with the required values (e.g., key and value).
+
+  For example:
+    my_node_t * n = my_rb_acquire(pool);     // Acquire from the pool
+    n->key = 123;                            // Initialize key
+    n->value = 456;                          // Initialize value
+    my_node_t * out = NULL;                  // Prepare to store replaced node
+
+    n = my_rb_insert_or_replace(pool, &root, n, &out);  // Insert or replace into the tree
+
+    if (out != NULL)
+      my_rb_release(pool, out);             // Release replaced node (if any)
+
+  The `insert_or_replace` function returns the new node after insertion.
+*/
+REDBLK_T * REDBLK_(insert_or_replace)(REDBLK_T * pool, REDBLK_T ** root, REDBLK_T * x, REDBLK_T ** out);
+/*
   E.g. my_node_t * my_rb_remove(my_node_t * pool, my_node_t ** root, my_node_t * z);
 
   Remove a node from a tree. The node must be a member of the tree,
   usually the result of a find operation. The node is typically
   released to the pool afterwards. For example:
- 
+
     my_node_t * n = my_rb_find( pool, root, &k );
     n = my_rb_remove( pool, &root, n );
     my_rb_pool_release( pool, n );
@@ -387,7 +411,7 @@ int REDBLK_(verify)(REDBLK_T * pool, REDBLK_T * root);
 
 /*
   E.g. long my_rb_compare(my_node_t * left, my_node_t * right);
-  
+
   Defined by application to implement key comparison. Returns a
   negative number, zero, or positive depending on whether the left is
   less than, equal to, or greater than right. For example:
@@ -403,6 +427,12 @@ FD_FN_PURE long REDBLK_(compare)(REDBLK_T * left, REDBLK_T * right);
 FD_PROTOTYPES_END
 
 #endif /* REDBLK_IMPL_STYLE==0 || REDBLK_IMPL_STYLE==1 */
+
+#if REDBLK_IMPL_STYLE==0 /* local only */
+#define REDBLK_IMPL_STATIC FD_FN_UNUSED static
+#else
+#define REDBLK_IMPL_STATIC
+#endif
 
 #if REDBLK_IMPL_STYLE==0 || REDBLK_IMPL_STYLE==2 /* need implementations */
 
@@ -441,19 +471,19 @@ FD_PROTOTYPES_END
 
 #define REDBLK_NIL 0UL /* Must be same as pool sentinel */
 
-ulong REDBLK_(max_for_footprint)( ulong footprint ) {
+REDBLK_IMPL_STATIC ulong REDBLK_(max_for_footprint)( ulong footprint ) {
   return REDBLK_POOL_(max_for_footprint)(footprint) - 1; /* Allow for sentinel */
 }
 
-ulong REDBLK_(align)( void ) {
+REDBLK_IMPL_STATIC ulong REDBLK_(align)( void ) {
   return REDBLK_POOL_(align)();
 }
 
-ulong REDBLK_(footprint)( ulong max ) {
+REDBLK_IMPL_STATIC ulong REDBLK_(footprint)( ulong max ) {
   return REDBLK_POOL_(footprint)(max + 1); /* Allow for sentinel */
 }
 
-void * REDBLK_(new)( void * shmem, ulong max ) {
+REDBLK_IMPL_STATIC void * REDBLK_(new)( void * shmem, ulong max ) {
   void * shmem2 = REDBLK_POOL_(new)(shmem, max + 1); /* Allow for sentinel */
   if ( FD_UNLIKELY( shmem2 == NULL ) )
     return NULL;
@@ -469,38 +499,38 @@ void * REDBLK_(new)( void * shmem, ulong max ) {
   return shmem2;
 }
 
-REDBLK_T * REDBLK_(join)( void * shpool ) {
+REDBLK_IMPL_STATIC REDBLK_T * REDBLK_(join)( void * shpool ) {
   FD_COMPILER_MFENCE();
   return REDBLK_POOL_(join)(shpool);
 }
 
-void * REDBLK_(leave)( REDBLK_T * pool ) {
+REDBLK_IMPL_STATIC void * REDBLK_(leave)( REDBLK_T * pool ) {
   FD_COMPILER_MFENCE();
   return REDBLK_POOL_(leave)(pool);
 }
 
-void * REDBLK_(delete)( void * shpool ) {
+REDBLK_IMPL_STATIC void * REDBLK_(delete)( void * shpool ) {
   FD_COMPILER_MFENCE();
   return REDBLK_POOL_(delete)(shpool);
 }
 
-ulong REDBLK_(max)( REDBLK_T const * pool ) {
+REDBLK_IMPL_STATIC ulong REDBLK_(max)( REDBLK_T const * pool ) {
   return REDBLK_POOL_(max)(pool) - 1; /* Allow for sentinel */
 }
 
-ulong REDBLK_(free)( REDBLK_T const * pool ) {
+REDBLK_IMPL_STATIC ulong REDBLK_(free)( REDBLK_T const * pool ) {
   return REDBLK_POOL_(free)(pool);
 }
 
-ulong REDBLK_(idx)( REDBLK_T const * pool, REDBLK_T const * node ) {
+REDBLK_IMPL_STATIC ulong REDBLK_(idx)( REDBLK_T const * pool, REDBLK_T const * node ) {
   return REDBLK_POOL_(idx)(pool, node);
 }
 
-REDBLK_T * REDBLK_(node)( REDBLK_T * pool, ulong idx ) {
+REDBLK_IMPL_STATIC REDBLK_T * REDBLK_(node)( REDBLK_T * pool, ulong idx ) {
   return REDBLK_POOL_(ele)(pool, idx);
 }
 
-REDBLK_T * REDBLK_(acquire)( REDBLK_T * pool ) {
+REDBLK_IMPL_STATIC REDBLK_T * REDBLK_(acquire)( REDBLK_T * pool ) {
   if ( REDBLK_POOL_(free)( pool ) == 0 )
     return NULL;
   REDBLK_T * node = REDBLK_POOL_(ele_acquire)(pool);
@@ -509,21 +539,21 @@ REDBLK_T * REDBLK_(acquire)( REDBLK_T * pool ) {
 }
 
 #ifndef REDBLK_UNSAFE
-void REDBLK_(validate_element)( REDBLK_T * pool, REDBLK_T * node ) {
+REDBLK_IMPL_STATIC void REDBLK_(validate_element)( REDBLK_T * pool, REDBLK_T * node ) {
   if ( !REDBLK_POOL_(ele_test)( pool, node ) )
-    FD_LOG_ERR(( "invalid redblack node" ));
+    FD_LOG_CRIT(( "invalid redblack node" ));
   if ( node && node->REDBLK_COLOR == REDBLK_FREE )
-    FD_LOG_ERR(( "invalid redblack node" ));
+    FD_LOG_CRIT(( "invalid redblack node" ));
 }
-void REDBLK_(validate_element_const)( REDBLK_T const * pool, REDBLK_T const * node ) {
+REDBLK_IMPL_STATIC void REDBLK_(validate_element_const)( REDBLK_T const * pool, REDBLK_T const * node ) {
   if ( !REDBLK_POOL_(ele_test)( pool, node ) )
-    FD_LOG_ERR(( "invalid redblack node" ));
+    FD_LOG_CRIT(( "invalid redblack node" ));
   if ( node && node->REDBLK_COLOR == REDBLK_FREE )
-    FD_LOG_ERR(( "invalid redblack node" ));
+    FD_LOG_CRIT(( "invalid redblack node" ));
 }
 #endif
 
-void REDBLK_(release)( REDBLK_T * pool, REDBLK_T * node ) {
+REDBLK_IMPL_STATIC void REDBLK_(release)( REDBLK_T * pool, REDBLK_T * node ) {
 #ifndef REDBLK_UNSAFE
   REDBLK_(validate_element)(pool, node);
 #endif
@@ -536,17 +566,17 @@ void REDBLK_(release)( REDBLK_T * pool, REDBLK_T * node ) {
   Recursively release all nodes in a tree to a pool. The root argument
   is invalid after this method is called.
 */
-void REDBLK_(release_tree)( REDBLK_T * pool, REDBLK_T * node ) {
+REDBLK_IMPL_STATIC void REDBLK_(release_tree)( REDBLK_T * pool, REDBLK_T * node ) {
   if (!node || node == &pool[REDBLK_NIL])
     return;
 
 #ifndef REDBLK_UNSAFE
   REDBLK_(validate_element)(pool, node);
 #endif
-  
+
   REDBLK_T * left = &pool[node->REDBLK_LEFT];
   REDBLK_T * right = &pool[node->REDBLK_RIGHT];
-  
+
   REDBLK_(release)(pool, node);
 
   REDBLK_(release_tree)(pool, left);
@@ -556,7 +586,7 @@ void REDBLK_(release_tree)( REDBLK_T * pool, REDBLK_T * node ) {
 /*
   Return the node in a tree that has the smallest key (leftmost).
 */
-REDBLK_T * REDBLK_(minimum)(REDBLK_T * pool, REDBLK_T * node) {
+REDBLK_IMPL_STATIC REDBLK_T * REDBLK_(minimum)(REDBLK_T * pool, REDBLK_T * node) {
   if (!node || node == &pool[REDBLK_NIL])
     return NULL;
 #ifndef REDBLK_UNSAFE
@@ -567,7 +597,7 @@ REDBLK_T * REDBLK_(minimum)(REDBLK_T * pool, REDBLK_T * node) {
   }
   return node;
 }
-REDBLK_T const * REDBLK_(minimum_const)(REDBLK_T const * pool, REDBLK_T const * node) {
+REDBLK_IMPL_STATIC REDBLK_T const * REDBLK_(minimum_const)(REDBLK_T const * pool, REDBLK_T const * node) {
   if (!node || node == &pool[REDBLK_NIL])
     return NULL;
 #ifndef REDBLK_UNSAFE
@@ -582,7 +612,7 @@ REDBLK_T const * REDBLK_(minimum_const)(REDBLK_T const * pool, REDBLK_T const * 
 /*
   Return the node in a tree that has the largest key (rightmost).
 */
-REDBLK_T * REDBLK_(maximum)(REDBLK_T * pool, REDBLK_T * node) {
+REDBLK_IMPL_STATIC REDBLK_T * REDBLK_(maximum)(REDBLK_T * pool, REDBLK_T * node) {
   if (!node || node == &pool[REDBLK_NIL])
     return NULL;
 #ifndef REDBLK_UNSAFE
@@ -593,7 +623,7 @@ REDBLK_T * REDBLK_(maximum)(REDBLK_T * pool, REDBLK_T * node) {
   }
   return node;
 }
-REDBLK_T const * REDBLK_(maximum_const)(REDBLK_T const * pool, REDBLK_T const * node) {
+REDBLK_IMPL_STATIC REDBLK_T const * REDBLK_(maximum_const)(REDBLK_T const * pool, REDBLK_T const * node) {
   if (!node || node == &pool[REDBLK_NIL])
     return NULL;
 #ifndef REDBLK_UNSAFE
@@ -608,7 +638,7 @@ REDBLK_T const * REDBLK_(maximum_const)(REDBLK_T const * pool, REDBLK_T const * 
 /*
   Return the next node which is larger than the given node.
 */
-REDBLK_T * REDBLK_(successor)(REDBLK_T * pool, REDBLK_T * x) {
+REDBLK_IMPL_STATIC REDBLK_T * REDBLK_(successor)(REDBLK_T * pool, REDBLK_T * x) {
 #ifndef REDBLK_UNSAFE
   REDBLK_(validate_element)(pool, x);
 #endif
@@ -631,7 +661,7 @@ REDBLK_T * REDBLK_(successor)(REDBLK_T * pool, REDBLK_T * x) {
     x = y;
   }
 }
-REDBLK_T const * REDBLK_(successor_const)(REDBLK_T const * pool, REDBLK_T const * x) {
+REDBLK_IMPL_STATIC REDBLK_T const * REDBLK_(successor_const)(REDBLK_T const * pool, REDBLK_T const * x) {
 #ifndef REDBLK_UNSAFE
   REDBLK_(validate_element_const)(pool, x);
 #endif
@@ -658,13 +688,13 @@ REDBLK_T const * REDBLK_(successor_const)(REDBLK_T const * pool, REDBLK_T const 
 /*
   Return the previous node which is smaller than the given node.
 */
-REDBLK_T * REDBLK_(predecessor)(REDBLK_T * pool, REDBLK_T * x) {
+REDBLK_IMPL_STATIC REDBLK_T * REDBLK_(predecessor)(REDBLK_T * pool, REDBLK_T * x) {
 #ifndef REDBLK_UNSAFE
   REDBLK_(validate_element)(pool, x);
 #endif
 
   // if the left subtree is not null,
-  // the predecessor is the rightmost node in the 
+  // the predecessor is the rightmost node in the
   // left subtree
   if (x->REDBLK_LEFT != REDBLK_NIL) {
     return REDBLK_(maximum)(pool, &pool[x->REDBLK_LEFT]);
@@ -681,13 +711,13 @@ REDBLK_T * REDBLK_(predecessor)(REDBLK_T * pool, REDBLK_T * x) {
     x = y;
   }
 }
-REDBLK_T const * REDBLK_(predecessor_const)(REDBLK_T const * pool, REDBLK_T const * x) {
+REDBLK_IMPL_STATIC REDBLK_T const * REDBLK_(predecessor_const)(REDBLK_T const * pool, REDBLK_T const * x) {
 #ifndef REDBLK_UNSAFE
   REDBLK_(validate_element_const)(pool, x);
 #endif
 
   // if the left subtree is not null,
-  // the predecessor is the rightmost node in the 
+  // the predecessor is the rightmost node in the
   // left subtree
   if (x->REDBLK_LEFT != REDBLK_NIL) {
     return REDBLK_(maximum_const)(pool, &pool[x->REDBLK_LEFT]);
@@ -799,7 +829,7 @@ static void REDBLK_(insertFixup)(REDBLK_T * pool, REDBLK_T ** root, REDBLK_T * x
         gp->REDBLK_COLOR = REDBLK_RED;
         REDBLK_(rotateRight)(pool, root, gp);
       }
-      
+
     } else {
       /* mirror image of above code */
       REDBLK_T * y = &pool[gp->REDBLK_LEFT];
@@ -833,7 +863,7 @@ static void REDBLK_(insertFixup)(REDBLK_T * pool, REDBLK_T ** root, REDBLK_T * x
   Insert a node into a tree. Typically, the node must be allocated
   from a pool first.
 */
-REDBLK_T * REDBLK_(insert)(REDBLK_T * pool, REDBLK_T ** root, REDBLK_T * x) {
+REDBLK_IMPL_STATIC REDBLK_T * REDBLK_(insert)(REDBLK_T * pool, REDBLK_T ** root, REDBLK_T * x) {
 #ifndef REDBLK_UNSAFE
   REDBLK_(validate_element)(pool, *root);
   REDBLK_(validate_element)(pool, x);
@@ -849,6 +879,77 @@ REDBLK_T * REDBLK_(insert)(REDBLK_T * pool, REDBLK_T ** root, REDBLK_T * x) {
   parent = &pool[REDBLK_NIL];
   while (current != &pool[REDBLK_NIL]) {
     long c = REDBLK_(compare)(x, current);
+    parent = current;
+    current = (c < 0 ? &pool[current->REDBLK_LEFT] : &pool[current->REDBLK_RIGHT]);
+  }
+
+  /* setup new node */
+  x->REDBLK_PARENT = (uint)(parent - pool);
+  x->REDBLK_LEFT = REDBLK_NIL;
+  x->REDBLK_RIGHT = REDBLK_NIL;
+  x->REDBLK_COLOR = REDBLK_RED;
+
+  /* insert node in tree */
+  if (parent != &pool[REDBLK_NIL]) {
+    long c = REDBLK_(compare)(x, parent);
+    if (c < 0)
+      parent->REDBLK_LEFT = (uint)(x - pool);
+    else
+      parent->REDBLK_RIGHT = (uint)(x - pool);
+  } else {
+    *root = x;
+  }
+
+  REDBLK_(insertFixup)(pool, root, x);
+  return x;
+}
+
+/*
+  Insert a node into a tree, replacing any elements that have the same key. Typically, the node must be allocated
+  from a pool first.
+*/
+REDBLK_IMPL_STATIC REDBLK_T * REDBLK_(insert_or_replace)(REDBLK_T * pool, REDBLK_T ** root, REDBLK_T * x, REDBLK_T ** out) {
+#ifndef REDBLK_UNSAFE
+  REDBLK_(validate_element)(pool, *root);
+  REDBLK_(validate_element)(pool, x);
+#endif
+
+  REDBLK_T * current;
+  REDBLK_T * parent;
+
+  /* find where node belongs */
+  current = *root;
+  if (current == NULL)
+    current = &pool[REDBLK_NIL];
+  parent = &pool[REDBLK_NIL];
+  while (current != &pool[REDBLK_NIL]) {
+    long c = REDBLK_(compare)(x, current);
+    if(c == 0) { /* Already in the tree so lets special case this */
+      if(out != NULL)
+        *out = current;
+
+      x->REDBLK_PARENT = current->REDBLK_PARENT;
+      x->REDBLK_LEFT = current->REDBLK_LEFT;
+      x->REDBLK_RIGHT = current->REDBLK_RIGHT;
+      x->REDBLK_COLOR = current->REDBLK_COLOR;
+
+      /* Lets wire this in */
+      if( x->REDBLK_LEFT != REDBLK_NIL )
+        pool[x->REDBLK_LEFT].REDBLK_PARENT = (uint)(x - pool);
+      if( x->REDBLK_RIGHT != REDBLK_NIL )
+        pool[x->REDBLK_RIGHT].REDBLK_PARENT = (uint)(x - pool);
+      if( x->REDBLK_PARENT != REDBLK_NIL ) {
+        if( pool[x->REDBLK_PARENT].REDBLK_LEFT == (uint)(current - pool) )
+          pool[x->REDBLK_PARENT].REDBLK_LEFT = (uint)(x - pool);
+        if( pool[x->REDBLK_PARENT].REDBLK_RIGHT == (uint)(current - pool) )
+          pool[x->REDBLK_PARENT].REDBLK_RIGHT = (uint)(x - pool);
+      }
+      if(*root == current)
+        *root = x;
+
+      return x;
+    }
+
     parent = current;
     current = (c < 0 ? &pool[current->REDBLK_LEFT] : &pool[current->REDBLK_RIGHT]);
   }
@@ -907,7 +1008,7 @@ static void REDBLK_(deleteFixup)(REDBLK_T * pool, REDBLK_T ** root, REDBLK_T * x
         REDBLK_(rotateLeft)(pool, root, p);
         x = *root;
       }
-      
+
     } else {
       REDBLK_T * w = &pool[p->REDBLK_LEFT];
       if (w->REDBLK_COLOR == REDBLK_RED) {
@@ -937,7 +1038,7 @@ static void REDBLK_(deleteFixup)(REDBLK_T * pool, REDBLK_T ** root, REDBLK_T * x
       }
     }
   }
-  
+
   x->REDBLK_COLOR = REDBLK_BLACK;
 }
 
@@ -946,7 +1047,7 @@ static void REDBLK_(deleteFixup)(REDBLK_T * pool, REDBLK_T ** root, REDBLK_T * x
   usually the result of a find operation. The node is typically
   released to the pool afterwards.
 */
-REDBLK_T * REDBLK_(remove)(REDBLK_T * pool, REDBLK_T ** root, REDBLK_T * z) {
+REDBLK_IMPL_STATIC REDBLK_T * REDBLK_(remove)(REDBLK_T * pool, REDBLK_T ** root, REDBLK_T * z) {
 #ifndef REDBLK_UNSAFE
   REDBLK_(validate_element)(pool, *root);
   REDBLK_(validate_element)(pool, z);
@@ -1015,7 +1116,7 @@ REDBLK_T * REDBLK_(remove)(REDBLK_T * pool, REDBLK_T ** root, REDBLK_T * z) {
   temporary instance of the node type rather than a properly
   allocated node.
 */
-REDBLK_T * REDBLK_(find)(REDBLK_T * pool, REDBLK_T * root, REDBLK_T * key) {
+REDBLK_IMPL_STATIC REDBLK_T * REDBLK_(find)(REDBLK_T * pool, REDBLK_T * root, REDBLK_T * key) {
 #ifndef REDBLK_UNSAFE
   REDBLK_(validate_element)(pool, root);
 #endif
@@ -1039,7 +1140,7 @@ REDBLK_T * REDBLK_(find)(REDBLK_T * pool, REDBLK_T * root, REDBLK_T * key) {
   special case, the key can be a temporary instance of the node type
   rather than a properly allocated node.
 */
-REDBLK_T * REDBLK_(nearby)(REDBLK_T * pool, REDBLK_T * root, REDBLK_T * key) {
+REDBLK_IMPL_STATIC REDBLK_T * REDBLK_(nearby)(REDBLK_T * pool, REDBLK_T * root, REDBLK_T * key) {
 #ifndef REDBLK_UNSAFE
   REDBLK_(validate_element)(pool, root);
 #endif
@@ -1061,7 +1162,7 @@ REDBLK_T * REDBLK_(nearby)(REDBLK_T * pool, REDBLK_T * root, REDBLK_T * key) {
 /*
   Count the number of nodes in a tree.
 */
-ulong REDBLK_(size)(REDBLK_T * pool, REDBLK_T * root) {
+REDBLK_IMPL_STATIC ulong REDBLK_(size)(REDBLK_T * pool, REDBLK_T * root) {
 #ifndef REDBLK_UNSAFE
   REDBLK_(validate_element)(pool, root);
 #endif
@@ -1075,7 +1176,7 @@ ulong REDBLK_(size)(REDBLK_T * pool, REDBLK_T * root) {
 /*
   Recursive implementation of the verify function
 */
-int REDBLK_(verify_private)(REDBLK_T * pool, REDBLK_T * node, REDBLK_T * parent, ulong curblkcnt, ulong correctblkcnt) {
+static int REDBLK_(verify_private)(REDBLK_T * pool, REDBLK_T * node, REDBLK_T * parent, ulong curblkcnt, ulong correctblkcnt) {
 # define REDBLK_TEST(c) do {                                                        \
     if( FD_UNLIKELY( !(c) ) ) { FD_LOG_WARNING(( "FAIL: %s", #c )); return -1; } \
   } while(0)
@@ -1088,7 +1189,7 @@ int REDBLK_(verify_private)(REDBLK_T * pool, REDBLK_T * node, REDBLK_T * parent,
 #ifndef REDBLK_UNSAFE
   REDBLK_(validate_element)(pool, node);
 #endif
-  
+
   REDBLK_TEST(&pool[node->REDBLK_PARENT] == parent);
 
   if (node->REDBLK_COLOR == REDBLK_BLACK)
@@ -1097,7 +1198,7 @@ int REDBLK_(verify_private)(REDBLK_T * pool, REDBLK_T * node, REDBLK_T * parent,
     REDBLK_TEST(node->REDBLK_COLOR == REDBLK_RED);
     REDBLK_TEST(parent->REDBLK_COLOR == REDBLK_BLACK);
   }
-  
+
   if (node->REDBLK_LEFT != REDBLK_NIL)
     REDBLK_TEST(REDBLK_(compare)(&pool[node->REDBLK_LEFT], node) <= 0);
   if (node->REDBLK_RIGHT != REDBLK_NIL)
@@ -1113,7 +1214,7 @@ int REDBLK_(verify_private)(REDBLK_T * pool, REDBLK_T * node, REDBLK_T * parent,
   debugging memory corruption. A non-zero result is returned if an error
   is detected.
 */
-int REDBLK_(verify)(REDBLK_T * pool, REDBLK_T * root) {
+REDBLK_IMPL_STATIC int REDBLK_(verify)(REDBLK_T * pool, REDBLK_T * root) {
   REDBLK_TEST(pool[REDBLK_NIL].REDBLK_LEFT == REDBLK_NIL &&
        pool[REDBLK_NIL].REDBLK_RIGHT == REDBLK_NIL &&
        pool[REDBLK_NIL].REDBLK_COLOR == REDBLK_BLACK);
@@ -1151,6 +1252,8 @@ int REDBLK_(verify)(REDBLK_T * pool, REDBLK_T * root) {
 
 #endif /* REDBLK_IMPL_STYLE==0 || REDBLK_IMPL_STYLE==2 */
 
+#undef REDBLK_IMPL_STATIC
 #undef REDBLK_
 #undef REDBLK_T
 #undef REDBLK_IMPL_STYLE
+#undef REDBLK_NAME

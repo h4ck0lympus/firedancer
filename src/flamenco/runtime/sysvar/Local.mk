@@ -1,9 +1,6 @@
 ifdef FD_HAS_INT128
-$(call add-hdrs,fd_sysvar.h fd_sysvar_cache.h)
+$(call add-hdrs,fd_sysvar.h)
 $(call add-objs,fd_sysvar,fd_flamenco)
-
-$(call add-hdrs,fd_sysvar_cache.h)
-$(call add-objs,fd_sysvar_cache,fd_flamenco)
 
 $(call add-hdrs,fd_sysvar_clock.h)
 $(call add-objs,fd_sysvar_clock,fd_flamenco)
@@ -18,9 +15,6 @@ $(call make-unit-test,test_sysvar_epoch_schedule,test_sysvar_epoch_schedule,fd_f
 $(call run-unit-test,test_sysvar_epoch_schedule)
 endif
 
-$(call add-hdrs,fd_sysvar_fees.h)
-$(call add-objs,fd_sysvar_fees,fd_flamenco)
-
 $(call add-hdrs,fd_sysvar_instructions.h)
 $(call add-objs,fd_sysvar_instructions,fd_flamenco)
 
@@ -31,9 +25,9 @@ $(call add-hdrs,fd_sysvar_recent_hashes.h)
 $(call add-objs,fd_sysvar_recent_hashes,fd_flamenco)
 
 $(call add-hdrs,fd_sysvar_rent.h)
-$(call add-objs,fd_sysvar_rent,fd_flamenco)
+$(call add-objs,fd_sysvar_rent fd_sysvar_rent1,fd_flamenco)
 ifdef FD_HAS_HOSTED
-$(call make-unit-test,test_sysvar_rent,test_sysvar_rent,fd_flamenco fd_funk fd_ballet fd_util)
+$(call make-unit-test,test_sysvar_rent,test_sysvar_rent,fd_flamenco fd_ballet fd_util)
 $(call run-unit-test,test_sysvar_rent)
 endif
 

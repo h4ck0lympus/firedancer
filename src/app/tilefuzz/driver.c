@@ -221,10 +221,42 @@ setup_topo_funk( fd_topo_t *  topo,
 FD_FN_UNUSED static fd_topo_tile_t*
 init_replay_tile(fd_topo_t* topo, config_t* config) {
   fd_topo_tile_t* replay_tile = fd_topob_tile(topo, "replay", "replay", "metric_in", 0, 0, 0);
-  
-  strncpy(replay_tile->replay.identity_key_path, config->paths.identity_key, sizeof(replay_tile->replay.identity_key_path));  
-  strncpy(replay_tile->replay.vote_account_path, config->paths.vote_account, sizeof(replay_tile->replay.vote_account_path));  
-  strncpy(replay_tile->replay.tower_checkpt, config->tiles.replay.tower_checkpt, sizeof(replay_tile->replay.tower_checkpt));  
+
+    replay_tile->replay.fec_max = config->tiles.shred.max_pending_shred_sets;
+    replay_tile->replay.max_vote_accounts = config->firedancer.runtime.limits.max_vote_accounts;
+
+    strncpy( replay_tile->replay.blockstore_file,    config->firedancer.blockstore.file,    sizeof(replay_tile->replay.blockstore_file) );
+    strncpy( replay_tile->replay.blockstore_checkpt, config->firedancer.blockstore.checkpt, sizeof(replay_tile->replay.blockstore_checkpt) );
+
+    replay_tile->replay.tx_metadata_storage = config->rpc.extended_tx_metadata_storage;
+    strncpy( replay_tile->replay.funk_checkpt, config->tiles.replay.funk_checkpt, sizeof(replay_tile->replay.funk_checkpt) );
+
+    replay_tile->replay.funk_obj_id = fd_pod_query_ulong( config->topo.props, "funk", ULONG_MAX );
+    replay_tile->replay.plugins_enabled = fd_topo_find_tile( &config->topo, "plugin", 0UL ) != ULONG_MAX;
+
+    if( FD_UNLIKELY( !strncmp( config->tiles.replay.genesis,  "", 1 )
+                  && !strncmp( config->tiles.replay.snapshot, "", 1 ) ) ) {
+      fd_cstr_printf_check( config->tiles.replay.genesis, PATH_MAX, NULL, "%s/genesis.bin", config->paths.ledger );
+    }
+    strncpy( replay_tile->replay.genesis, config->tiles.replay.genesis, sizeof(replay_tile->replay.genesis) );
+
+    strncpy( replay_tile->replay.slots_replayed, config->tiles.replay.slots_replayed, sizeof(replay_tile->replay.slots_replayed) );
+    strncpy( replay_tile->replay.status_cache, config->tiles.replay.status_cache, sizeof(replay_tile->replay.status_cache) );
+    strncpy( replay_tile->replay.cluster_version, config->tiles.replay.cluster_version, sizeof(replay_tile->replay.cluster_version) );
+    strncpy( replay_tile->replay.tower_checkpt, config->tiles.replay.tower_checkpt, sizeof(replay_tile->replay.tower_checkpt) );
+
+
+    strncpy( replay_tile->replay.identity_key_path, config->paths.identity_key, sizeof(replay_tile->replay.identity_key_path) );
+    replay_tile->replay.ip_addr = config->net.ip_addr;
+    strncpy( replay_tile->replay.vote_account_path, config->paths.vote_account, sizeof(replay_tile->replay.vote_account_path) );
+    replay_tile->replay.enable_bank_hash_cmp = 1;
+
+    replay_tile->replay.capture_start_slot = config->capture.capture_start_slot;
+    strncpy( replay_tile->replay.solcap_capture, config->capture.solcap_capture, sizeof(replay_tile->replay.solcap_capture) );
+    strncpy( replay_tile->replay.dump_proto_dir, config->capture.dump_proto_dir, sizeof(replay_tile->replay.dump_proto_dir) );
+    replay_tile->replay.dump_block_to_pb = config->capture.dump_block_to_pb;
+
+    FD_TEST( replay_tile->replay.funk_obj_id == fd_pod_query_ulong( config->topo.props, "funk", ULONG_MAX ) );
 
   return replay_tile;
 }
@@ -328,17 +360,27 @@ isolated_tower_topo(config_t* config, fd_topo_obj_callbacks_t* callbacks[])
   // create tower tile
   fd_topo_tile_t* tower_tile = fd_topob_tile(topo, "tower", "tower", "metric_in", 0, 0, 0);
 
-  //funk setup
-  strncpy(tower_tile->tower.funk_file, "/tmp/test_funk.db", sizeof(tower_tile->tower.funk_file));
+  config->firedancer.funk.max_account_records = 1000000;  
+  config->firedancer.funk.max_database_transactions = 1024;  
+  config->firedancer.funk.heap_size_gib = 1;
+
+  //TODO funk setup
+  fd_topob_wksp(topo, "funk");
+  fd_topo_obj_t * funk_obj = setup_topo_funk( topo, "funk",
+      config->firedancer.funk.max_account_records,
+      config->firedancer.funk.max_database_transactions,
+      config->firedancer.funk.heap_size_gib 
+    );
   
   // do necessary config required by tower
-  strncpy(tower_tile->tower.funk_file, config->tiles.replay.funk_file, sizeof(tower_tile->tower.funk_file));
+  tower_tile->tower.funk_obj_id = fd_pod_query_ulong( config->topo.props, "funk", ULONG_MAX );
   strncpy(tower_tile->tower.identity_key_path, config->paths.identity_key, sizeof(tower_tile->tower.identity_key_path));
   strncpy(tower_tile->tower.vote_acc_path, config->paths.vote_account, sizeof(tower_tile->tower.vote_acc_path));
  
   // tower requires initialization of gossip tile and replay tile
   init_gossip_tile(topo, config);
   fd_topo_tile_t* replay_tile = init_replay_tile(topo, config);
+  
   init_send_tile(topo, config);
 
   fd_topob_tile_in(topo, "tower", 0UL, "metric_in", "gossip_tower", 0UL, FD_TOPOB_UNRELIABLE, FD_TOPOB_POLLED);
@@ -362,12 +404,8 @@ isolated_tower_topo(config_t* config, fd_topo_obj_callbacks_t* callbacks[])
   fd_topob_tile_uses( topo, replay_tile, turbine_slot_obj, FD_SHMEM_JOIN_MODE_READ_ONLY );
   FD_TEST( fd_pod_insertf_ulong( topo->props, turbine_slot_obj->id, "turbine_slot" ) );
 
-  fd_topo_obj_t * funk_obj = setup_topo_funk( topo, "funk",
-      config->firedancer.funk.max_account_records,
-      config->firedancer.funk.max_database_transactions,
-      config->firedancer.funk.heap_size_gib 
-    );
-  
+  fd_topob_tile_uses( topo, replay_tile,  funk_obj, FD_SHMEM_JOIN_MODE_READ_WRITE );
+
   fd_topob_finish(topo, callbacks);
 }
 
@@ -475,6 +513,7 @@ isolated_shred_topo( config_t * config, fd_topo_obj_callbacks_t * callbacks[] ) 
 
 /* Maybe similar to what initialize workspaces does, without
    following it closely */
+// TODO: can we share wksp between different objects?
 static void
 back_wksps( fd_topo_t * topo, fd_topo_obj_callbacks_t * callbacks[] ) {
   ulong keyswitch_obj_id = ULONG_MAX;
@@ -508,7 +547,7 @@ back_wksps( fd_topo_t * topo, fd_topo_obj_callbacks_t * callbacks[] ) {
 
     obj->wksp_id = obj->id;
     topo->workspaces[ obj->wksp_id ].wksp = wksp; // aligned_alloc( align, obj->footprint );
-    obj->offset = 0UL;
+    // obj->offset = 0UL;
     FD_LOG_NOTICE(( "obj %s %lu %lu %lu %lu", obj->name, obj->wksp_id, obj->footprint, obj->offset, align ));
     FD_LOG_NOTICE(( "wksp pointer %p", (void*)topo->workspaces[ obj->wksp_id ].wksp ));
     /* ~equivalent to fd_topo_wksp_new in a world of real workspaces */
@@ -573,32 +612,6 @@ tile_topo_to_run( fd_drv_t * drv, fd_topo_tile_t * topo_tile ) {
   return find_run_tile( drv, topo_tile->name );
 }
 
-
-fd_topo_obj_t *
-setup_topo_funk( fd_topo_t *  topo,
-                 char const * wksp_name,
-                 ulong        max_account_records,
-                 ulong        max_database_transactions,
-                 ulong        heap_size_gib ) {
-  fd_topo_obj_t * obj = fd_topob_obj( topo, "funk", wksp_name );
-  FD_TEST( fd_pod_insert_ulong(  topo->props, "funk", obj->id ) );
-  FD_TEST( fd_pod_insertf_ulong( topo->props, max_account_records,       "obj.%lu.rec_max",  obj->id ) );
-  FD_TEST( fd_pod_insertf_ulong( topo->props, max_database_transactions, "obj.%lu.txn_max",  obj->id ) );
-  FD_TEST( fd_pod_insertf_ulong( topo->props, heap_size_gib*(1UL<<30),   "obj.%lu.heap_max", obj->id ) );
-  ulong funk_footprint = fd_funk_footprint( max_database_transactions, max_account_records );
-  if( FD_UNLIKELY( !funk_footprint ) ) FD_LOG_ERR(( "Invalid [funk] parameters" ));
-
-  /* Increase workspace partition count */
-  ulong wksp_idx = fd_topo_find_wksp( topo, wksp_name );
-  FD_TEST( wksp_idx!=ULONG_MAX );
-  fd_topo_wksp_t * wksp = &topo->workspaces[ wksp_idx ];
-  ulong part_max = fd_wksp_part_max_est( funk_footprint, 1U<<14U );
-  if( FD_UNLIKELY( !part_max ) ) FD_LOG_ERR(( "fd_wksp_part_max_est(%lu,16KiB) failed", funk_footprint ));
-  wksp->part_max += part_max;
-
-  return obj;
-}
-
 static void
 init_tiles( fd_drv_t * drv ) {
   for( ulong i=0UL; i<drv->config.topo.tile_cnt; i++ ) {
@@ -617,7 +630,6 @@ init_tiles( fd_drv_t * drv ) {
     if (FD_LIKELY(run_tile->unprivileged_init)  ) {
       run_tile->unprivileged_init( &drv->config.topo, topo_tile );
     }
-
     fd_metrics_register( topo_tile->metrics ); // TODO check if this is correct in a one thread world
   }
 
@@ -636,7 +648,7 @@ init_tiles( fd_drv_t * drv ) {
  // fd_funk_t tst_[1];
  // fd_funk_t * tst = fd_funk_join( tst_, shfunk );
  // if( FD_UNLIKELY( !tst ) ) FD_LOG_ERR(( "Unable to create tst" ));
-}//
+}
 
 void
 fd_drv_init( fd_drv_t * drv,

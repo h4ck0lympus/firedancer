@@ -21,6 +21,7 @@ extern fd_topo_obj_callbacks_t fd_obj_cb_runtime_pub;
 extern fd_topo_obj_callbacks_t fd_obj_cb_blockstore;
 extern fd_topo_obj_callbacks_t fd_obj_cb_txncache;
 extern fd_topo_obj_callbacks_t fd_obj_cb_exec_spad;
+extern fd_topo_obj_callbacks_t fd_obj_cb_funk;
 
 fd_topo_obj_callbacks_t * CALLBACKS[] = {
     &fd_obj_cb_mcache,
@@ -38,6 +39,7 @@ fd_topo_obj_callbacks_t * CALLBACKS[] = {
     &fd_obj_cb_blockstore,
     &fd_obj_cb_txncache,
     &fd_obj_cb_exec_spad,
+    &fd_obj_cb_funk,
     NULL,
 };
 
@@ -46,7 +48,6 @@ extern fd_topo_run_tile_t fd_tile_shred;
 extern fd_topo_run_tile_t fd_tile_sign;
 extern fd_topo_run_tile_t fd_tile_replay;
 extern fd_topo_run_tile_t fd_tile_tower;
-extern fd_topo_run_tile_t fd_tile_batch;
 extern fd_topo_run_tile_t fd_tile_send;
 
 fd_topo_run_tile_t * TILES[] = {
@@ -55,7 +56,6 @@ fd_topo_run_tile_t * TILES[] = {
   &fd_tile_shred,
   &fd_tile_replay,
   &fd_tile_tower,
-  &fd_tile_batch,
   &fd_tile_send,
   NULL
 };

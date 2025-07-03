@@ -6,7 +6,6 @@
 
    Address: BPFLoaderUpgradeab1e11111111111111111111111 */
 
-#include "../fd_borrowed_account.h"
 #include "fd_bpf_program_util.h"
 
 /* https://github.com/anza-xyz/agave/blob/77daab497df191ef485a7ad36ed291c1874596e5/programs/bpf_loader/src/lib.rs#L67-L69 */
@@ -71,7 +70,7 @@ fd_deploy_program( fd_exec_instr_ctx_t * instr_ctx,
                    fd_spad_t *           spad );
 
 int
-fd_bpf_execute( fd_exec_instr_ctx_t * instr_ctx, fd_sbpf_validated_program_t * prog, uchar is_deprecated );
+fd_bpf_execute( fd_exec_instr_ctx_t * instr_ctx, fd_sbpf_validated_program_t const * prog, uchar is_deprecated );
 
 int
 fd_bpf_loader_program_execute( fd_exec_instr_ctx_t * instr_ctx );

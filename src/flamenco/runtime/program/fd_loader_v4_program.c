@@ -773,7 +773,7 @@ fd_loader_v4_program_instruction_finalize( fd_exec_instr_ctx_t * instr_ctx ) {
    https://github.com/anza-xyz/agave/blob/v2.2.6/programs/loader-v4/src/lib.rs#L487-L549 */
 int
 fd_loader_v4_program_execute( fd_exec_instr_ctx_t * instr_ctx ) {
-  if( FD_UNLIKELY( !FD_FEATURE_ACTIVE( instr_ctx->txn_ctx->slot, instr_ctx->txn_ctx->features, enable_loader_v4 ) ) ) {
+  if( FD_UNLIKELY( !FD_FEATURE_ACTIVE_BANK( instr_ctx->txn_ctx->bank, enable_loader_v4 ) ) ) {
     return FD_EXECUTOR_INSTR_ERR_UNSUPPORTED_PROGRAM_ID;
   }
 
@@ -853,12 +853,18 @@ fd_loader_v4_program_execute( fd_exec_instr_ctx_t * instr_ctx ) {
 
       /* See note in `fd_bpf_loader_program_execute()` as to why we must tie the cache into consensus :(
          https://github.com/anza-xyz/agave/blob/v2.2.6/programs/loader-v4/src/lib.rs#L522-L528 */
-      fd_sbpf_validated_program_t * prog = NULL;
+      fd_sbpf_validated_program_t const * prog = NULL;
       if( FD_UNLIKELY( fd_bpf_load_cache_entry( instr_ctx->txn_ctx->funk,
                                                 instr_ctx->txn_ctx->funk_txn,
                                                 program_id,
                                                 &prog )!=0 ) ) {
         fd_log_collector_msg_literal( instr_ctx, "Program is not cached" );
+        return FD_EXECUTOR_INSTR_ERR_UNSUPPORTED_PROGRAM_ID;
+      }
+
+      /* The program may be in the cache but could have failed verification in the current epoch. */
+      if( FD_UNLIKELY( prog->failed_verification ) ) {
+        fd_log_collector_msg_literal( instr_ctx, "Program is not deployed" );
         return FD_EXECUTOR_INSTR_ERR_UNSUPPORTED_PROGRAM_ID;
       }
 

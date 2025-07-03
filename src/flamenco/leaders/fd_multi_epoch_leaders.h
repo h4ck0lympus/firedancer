@@ -87,6 +87,20 @@ fd_multi_epoch_leaders_delete( void * shleaders );
 
 /* ********    LEADER INFO GETTER FUNCTIONS    ******** */
 
+/* fd_multi_epoch_leaders_get_stake_{weights,cnt} returns a pointer to
+   the stake weights and count for the latest epoch. Returns null if never
+   initialized. The pointer lifetime is until the next leave on mleaders.
+   However, cnt is the valid length for stake_weights only until the next
+   call to stake_msg_init. */
+FD_FN_PURE static inline fd_stake_weight_t const *
+fd_multi_epoch_leaders_get_stake_weights( fd_multi_epoch_leaders_t const * mleaders ) {
+   return fd_ptr_if( mleaders->init_done[0] | mleaders->init_done[1], (fd_stake_weight_t const *)mleaders->stake_weight, NULL );
+}
+FD_FN_PURE static inline ulong
+fd_multi_epoch_leaders_get_stake_cnt( fd_multi_epoch_leaders_t const * mleaders ) {
+   return mleaders->scratch->staked_cnt;
+}
+
 /* fd_multi_epoch_leaders_get_leader_for_slot returns a pointer to the selected
    public key given a slot.  Returns NULL if slot is not in epochs tracked
    by multi-epoch leader object. If the leader for slot is part of the
@@ -123,14 +137,13 @@ fd_multi_epoch_leaders_get_sorted_lscheds( fd_multi_epoch_leaders_t const * mlea
 
 
 /* fd_multi_epoch_leaders_get_next_slot returns the first slot on or after
-   start_slot that 'leader' will be leader. It only checks the epoch containing
-   start_slot. If it can't find one, returns ULONG_MAX.
+   start_slot that 'leader' will be leader. If it can't find one, returns ULONG_MAX.
 
    Failures cases include:
       - mleaders does not track the epoch containing start_slot
         - It was either never initialized with that epoch information, or
         - It was overwritten by another epoch with the same parity
-      - leader_q does not have a leader slot in the epoch containing start_slot
+      - leader_q does not have a leader slot in the epochs tracked
       - leader_q was part of the excluded_stake for that epoch, and the lsched
         returns FD_INDETERMINATE_LEADER as the leader for leader_q's slots.
 */

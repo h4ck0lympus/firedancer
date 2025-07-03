@@ -38,6 +38,97 @@ fd_topo_obj_callbacks_t fd_obj_cb_runtime_pub = {
 };
 
 static ulong
+banks_footprint( fd_topo_t const *     topo,
+                 fd_topo_obj_t const * obj ) {
+  return fd_banks_footprint( VAL("max_banks") );
+}
+
+static ulong
+banks_align( fd_topo_t const *     topo FD_FN_UNUSED,
+             fd_topo_obj_t const * obj  FD_FN_UNUSED ) {
+  return fd_banks_align();
+}
+
+static void
+banks_new( fd_topo_t const *     topo,
+           fd_topo_obj_t const * obj ) {
+  FD_TEST( fd_banks_new( fd_topo_obj_laddr( topo, obj->id ), VAL("max_banks") ) );
+}
+
+fd_topo_obj_callbacks_t fd_obj_cb_banks = {
+  .name      = "banks",
+  .footprint = banks_footprint,
+  .align     = banks_align,
+  .new       = banks_new,
+};
+
+static ulong
+bh_cmp_footprint( fd_topo_t const *     topo,
+                  fd_topo_obj_t const * obj ) {
+  (void)topo; (void)obj;
+  return fd_bank_hash_cmp_footprint();
+}
+
+static ulong
+bh_cmp_align( fd_topo_t const *     topo,
+              fd_topo_obj_t const * obj ) {
+  (void)topo; (void)obj;
+  return fd_bank_hash_cmp_align();
+}
+
+static void
+bh_cmp_new( fd_topo_t const *     topo,
+                   fd_topo_obj_t const * obj ) {
+  (void)topo; (void)obj;
+  FD_TEST( fd_bank_hash_cmp_new( fd_topo_obj_laddr( topo, obj->id ) ) );
+}
+
+fd_topo_obj_callbacks_t fd_obj_cb_bank_hash_cmp = {
+  .name      = "bh_cmp",
+  .footprint = bh_cmp_footprint,
+  .align     = bh_cmp_align,
+  .new       = bh_cmp_new,
+};
+
+static ulong
+funk_align( fd_topo_t const *     topo,
+            fd_topo_obj_t const * obj ) {
+  (void)topo; (void)obj;
+  return fd_funk_align();
+}
+
+static ulong
+funk_footprint( fd_topo_t const *     topo,
+                fd_topo_obj_t const * obj ) {
+  (void)topo;
+  return fd_funk_footprint( VAL("txn_max"), VAL("rec_max") );
+}
+
+static ulong
+funk_loose( fd_topo_t const *     topo,
+            fd_topo_obj_t const * obj ) {
+  (void)topo;
+  return VAL("heap_max");
+}
+
+static void
+funk_new( fd_topo_t const *     topo,
+           fd_topo_obj_t const * obj ) {
+  (void)topo;
+  ulong funk_seed = fd_pod_queryf_ulong( topo->props, 0UL, "obj.%lu.seed", obj->id );
+  if( !funk_seed ) FD_TEST( fd_rng_secure( &funk_seed, sizeof(ulong) ) );
+  FD_TEST( fd_funk_new( fd_topo_obj_laddr( topo, obj->id ), 2UL, funk_seed, VAL("txn_max"), VAL("rec_max") ) );
+}
+
+fd_topo_obj_callbacks_t fd_obj_cb_funk = {
+  .name      = "funk",
+  .footprint = funk_footprint,
+  .loose     = funk_loose,
+  .align     = funk_align,
+  .new       = funk_new,
+};
+
+static ulong
 blockstore_footprint( fd_topo_t const *     topo,
                       fd_topo_obj_t const * obj ) {
   return fd_blockstore_footprint( VAL("shred_max"), VAL("block_max"), VAL("idx_max"), VAL("txn_max") ) + VAL("alloc_max");
@@ -90,7 +181,7 @@ fd_topo_obj_callbacks_t fd_obj_cb_fec_sets = {
 static ulong
 txncache_footprint( fd_topo_t const *     topo,
                     fd_topo_obj_t const * obj ) {
-  return fd_txncache_footprint( VAL("max_rooted_slots"), VAL("max_live_slots"), VAL("max_txn_per_slot"), VAL("max_constipated_slots") );
+  return fd_txncache_footprint( VAL("max_rooted_slots"), VAL("max_live_slots"), VAL("max_txn_per_slot") );
 }
 
 static ulong
@@ -102,7 +193,7 @@ txncache_align( fd_topo_t const *     topo FD_FN_UNUSED,
 static void
 txncache_new( fd_topo_t const *     topo,
               fd_topo_obj_t const * obj ) {
-  FD_TEST( fd_txncache_new( fd_topo_obj_laddr( topo, obj->id ), VAL("max_rooted_slots"), VAL("max_live_slots"), VAL("max_txn_per_slot"), VAL("max_constipated_slots") ) );
+  FD_TEST( fd_txncache_new( fd_topo_obj_laddr( topo, obj->id ), VAL("max_rooted_slots"), VAL("max_live_slots"), VAL("max_txn_per_slot") ) );
 }
 
 fd_topo_obj_callbacks_t fd_obj_cb_txncache = {

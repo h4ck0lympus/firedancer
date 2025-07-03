@@ -3,7 +3,6 @@
 
 #include "../gossip/fd_gossip.h"
 #include "../../ballet/shred/fd_shred.h"
-#include "../runtime/context/fd_exec_epoch_ctx.h"
 #include "../../disco/metrics/generated/fd_metrics_repair.h"
 
 
@@ -33,7 +32,7 @@
 /* Sha256 pre-image size for pings */
 #define FD_PING_PRE_IMAGE_SZ (48UL)
 /* Number of peers to send requests to. */
-#define FD_REPAIR_NUM_NEEDED_PEERS (4)
+#define FD_REPAIR_NUM_NEEDED_PEERS (2)
 
 typedef fd_gossip_peer_addr_t fd_repair_peer_addr_t;
 

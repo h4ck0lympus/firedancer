@@ -20,11 +20,11 @@ FUNK_PAGES="--funk-page-cnt 16"
 INDEX_MAX="--index-max 5000000"
 TRASH_HASH=""
 LOG="/tmp/ledger_log$$"
-TILE_CPUS="--tile-cpus 5-15"
+TILE_CPUS="--tile-cpus 5-9"
 THREAD_MEM_BOUND="--thread-mem-bound 0"
 CLUSTER_VERSION=""
 DUMP_DIR=${DUMP_DIR:="./dump"}
-ONE_OFFS=""
+ONE_OFFS="--one-off-features 2B2SBNbUcr438LtGXNcJNBP2GBSxjx81F945SdSkUSfC,LTHasHQX6661DaDD4S6A2TFi6QBuiwXKv66fB1obfHq,LTdLt9Ycbyoipz5fLysCi1NnDnASsZfmJLJXts5ZxZz"
 
 while [[ $# -gt 0 ]]; do
   case $1 in
@@ -177,6 +177,7 @@ then
     echo "inverted test passed"
     exit 0
   fi
+  echo "LAST 40 LINES OF LOG:"
   tail -40 $LOG
   echo_error "ledger test failed: $*"
   echo $LOG

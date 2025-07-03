@@ -292,6 +292,52 @@ void *fd_solana_account_generate( void *mem, void **alloc_mem, fd_rng_t * rng ) 
   return mem;
 }
 
+void *fd_solana_account_stored_meta_generate( void *mem, void **alloc_mem, fd_rng_t * rng ) {
+  fd_solana_account_stored_meta_t *self = (fd_solana_account_stored_meta_t *) mem;
+  *alloc_mem = (uchar *) *alloc_mem + sizeof(fd_solana_account_stored_meta_t);
+  fd_solana_account_stored_meta_new(mem);
+  self->write_version_obsolete = fd_rng_ulong( rng );
+  self->data_len = fd_rng_ulong( rng );
+  LLVMFuzzerMutate( &self->pubkey[0], sizeof(self->pubkey), sizeof(self->pubkey) );
+  return mem;
+}
+
+void *fd_solana_account_meta_generate( void *mem, void **alloc_mem, fd_rng_t * rng ) {
+  fd_solana_account_meta_t *self = (fd_solana_account_meta_t *) mem;
+  *alloc_mem = (uchar *) *alloc_mem + sizeof(fd_solana_account_meta_t);
+  fd_solana_account_meta_new(mem);
+  self->lamports = fd_rng_ulong( rng );
+  self->rent_epoch = fd_rng_ulong( rng );
+  LLVMFuzzerMutate( &self->owner[0], sizeof(self->owner), sizeof(self->owner) );
+  self->executable = fd_rng_uchar( rng );
+  LLVMFuzzerMutate( self->padding, 3, 3 );
+  return mem;
+}
+
+void *fd_solana_account_hdr_generate( void *mem, void **alloc_mem, fd_rng_t * rng ) {
+  fd_solana_account_hdr_t *self = (fd_solana_account_hdr_t *) mem;
+  *alloc_mem = (uchar *) *alloc_mem + sizeof(fd_solana_account_hdr_t);
+  fd_solana_account_hdr_new(mem);
+  fd_solana_account_stored_meta_generate( &self->meta, alloc_mem, rng );
+  fd_solana_account_meta_generate( &self->info, alloc_mem, rng );
+  LLVMFuzzerMutate( self->padding, 4, 4 );
+  fd_hash_generate( &self->hash, alloc_mem, rng );
+  return mem;
+}
+
+void *fd_account_meta_generate( void *mem, void **alloc_mem, fd_rng_t * rng ) {
+  fd_account_meta_t *self = (fd_account_meta_t *) mem;
+  *alloc_mem = (uchar *) *alloc_mem + sizeof(fd_account_meta_t);
+  fd_account_meta_new(mem);
+  self->magic = fd_rng_ushort( rng );
+  self->hlen = fd_rng_ushort( rng );
+  self->dlen = fd_rng_ulong( rng );
+  LLVMFuzzerMutate( &self->hash[0], sizeof(self->hash), sizeof(self->hash) );
+  self->slot = fd_rng_ulong( rng );
+  fd_solana_account_meta_generate( &self->info, alloc_mem, rng );
+  return mem;
+}
+
 void *fd_vote_accounts_pair_generate( void *mem, void **alloc_mem, fd_rng_t * rng ) {
   fd_vote_accounts_pair_t *self = (fd_vote_accounts_pair_t *) mem;
   *alloc_mem = (uchar *) *alloc_mem + sizeof(fd_vote_accounts_pair_t);
@@ -307,7 +353,7 @@ void *fd_vote_accounts_generate( void *mem, void **alloc_mem, fd_rng_t * rng ) {
   *alloc_mem = (uchar *) *alloc_mem + sizeof(fd_vote_accounts_t);
   fd_vote_accounts_new(mem);
   ulong vote_accounts_len = fd_rng_ulong( rng ) % 8;
-  self->vote_accounts_pool = fd_vote_accounts_pair_t_map_join_new( alloc_mem, fd_ulong_max( vote_accounts_len, 15000 ) );
+  self->vote_accounts_pool = fd_vote_accounts_pair_t_map_join_new( alloc_mem, fd_ulong_max( vote_accounts_len, 50000 ) );
   self->vote_accounts_root = NULL;
   for( ulong i=0; i < vote_accounts_len; i++ ) {
     fd_vote_accounts_pair_t_mapnode_t * node = fd_vote_accounts_pair_t_map_acquire( self->vote_accounts_pool );
@@ -410,7 +456,7 @@ void *fd_stakes_generate( void *mem, void **alloc_mem, fd_rng_t * rng ) {
   fd_stakes_new(mem);
   fd_vote_accounts_generate( &self->vote_accounts, alloc_mem, rng );
   ulong stake_delegations_len = fd_rng_ulong( rng ) % 8;
-  self->stake_delegations_pool = fd_delegation_pair_t_map_join_new( alloc_mem, stake_delegations_len );
+  self->stake_delegations_pool = fd_delegation_pair_t_map_join_new( alloc_mem, fd_ulong_max( stake_delegations_len, 2000000 ) );
   self->stake_delegations_root = NULL;
   for( ulong i=0; i < stake_delegations_len; i++ ) {
     fd_delegation_pair_t_mapnode_t * node = fd_delegation_pair_t_map_acquire( self->stake_delegations_pool );
@@ -497,27 +543,21 @@ void *fd_epoch_stakes_generate( void *mem, void **alloc_mem, fd_rng_t * rng ) {
   fd_epoch_stakes_new(mem);
   fd_stakes_generate( &self->stakes, alloc_mem, rng );
   self->total_stake = fd_rng_ulong( rng );
-  self->node_id_to_vote_accounts_len = fd_rng_ulong( rng ) % 8;
-  if( self->node_id_to_vote_accounts_len ) {
-    self->node_id_to_vote_accounts = (fd_pubkey_node_vote_accounts_pair_t *) *alloc_mem;
-    *alloc_mem = (uchar *) *alloc_mem + sizeof(fd_pubkey_node_vote_accounts_pair_t)*self->node_id_to_vote_accounts_len;
-    for( ulong i=0; i < self->node_id_to_vote_accounts_len; i++ ) {
-      fd_pubkey_node_vote_accounts_pair_new( self->node_id_to_vote_accounts + i );
-      fd_pubkey_node_vote_accounts_pair_generate( self->node_id_to_vote_accounts + i, alloc_mem, rng );
-    }
-  } else {
-    self->node_id_to_vote_accounts = NULL;
+  ulong node_id_to_vote_accounts_len = fd_rng_ulong( rng ) % 8;
+  self->node_id_to_vote_accounts_pool = fd_pubkey_node_vote_accounts_pair_t_map_join_new( alloc_mem, node_id_to_vote_accounts_len );
+  self->node_id_to_vote_accounts_root = NULL;
+  for( ulong i=0; i < node_id_to_vote_accounts_len; i++ ) {
+    fd_pubkey_node_vote_accounts_pair_t_mapnode_t * node = fd_pubkey_node_vote_accounts_pair_t_map_acquire( self->node_id_to_vote_accounts_pool );
+    fd_pubkey_node_vote_accounts_pair_generate( &node->elem, alloc_mem, rng );
+    fd_pubkey_node_vote_accounts_pair_t_map_insert( self->node_id_to_vote_accounts_pool, &self->node_id_to_vote_accounts_root, node );
   }
-  self->epoch_authorized_voters_len = fd_rng_ulong( rng ) % 8;
-  if( self->epoch_authorized_voters_len ) {
-    self->epoch_authorized_voters = (fd_pubkey_pubkey_pair_t *) *alloc_mem;
-    *alloc_mem = (uchar *) *alloc_mem + sizeof(fd_pubkey_pubkey_pair_t)*self->epoch_authorized_voters_len;
-    for( ulong i=0; i < self->epoch_authorized_voters_len; i++ ) {
-      fd_pubkey_pubkey_pair_new( self->epoch_authorized_voters + i );
-      fd_pubkey_pubkey_pair_generate( self->epoch_authorized_voters + i, alloc_mem, rng );
-    }
-  } else {
-    self->epoch_authorized_voters = NULL;
+  ulong epoch_authorized_voters_len = fd_rng_ulong( rng ) % 8;
+  self->epoch_authorized_voters_pool = fd_pubkey_pubkey_pair_t_map_join_new( alloc_mem, epoch_authorized_voters_len );
+  self->epoch_authorized_voters_root = NULL;
+  for( ulong i=0; i < epoch_authorized_voters_len; i++ ) {
+    fd_pubkey_pubkey_pair_t_mapnode_t * node = fd_pubkey_pubkey_pair_t_map_acquire( self->epoch_authorized_voters_pool );
+    fd_pubkey_pubkey_pair_generate( &node->elem, alloc_mem, rng );
+    fd_pubkey_pubkey_pair_t_map_insert( self->epoch_authorized_voters_pool, &self->epoch_authorized_voters_root, node );
   }
   return mem;
 }
@@ -762,27 +802,21 @@ void *fd_versioned_epoch_stakes_current_generate( void *mem, void **alloc_mem, f
   fd_versioned_epoch_stakes_current_new(mem);
   fd_stakes_stake_generate( &self->stakes, alloc_mem, rng );
   self->total_stake = fd_rng_ulong( rng );
-  self->node_id_to_vote_accounts_len = fd_rng_ulong( rng ) % 8;
-  if( self->node_id_to_vote_accounts_len ) {
-    self->node_id_to_vote_accounts = (fd_pubkey_node_vote_accounts_pair_t *) *alloc_mem;
-    *alloc_mem = (uchar *) *alloc_mem + sizeof(fd_pubkey_node_vote_accounts_pair_t)*self->node_id_to_vote_accounts_len;
-    for( ulong i=0; i < self->node_id_to_vote_accounts_len; i++ ) {
-      fd_pubkey_node_vote_accounts_pair_new( self->node_id_to_vote_accounts + i );
-      fd_pubkey_node_vote_accounts_pair_generate( self->node_id_to_vote_accounts + i, alloc_mem, rng );
-    }
-  } else {
-    self->node_id_to_vote_accounts = NULL;
+  ulong node_id_to_vote_accounts_len = fd_rng_ulong( rng ) % 8;
+  self->node_id_to_vote_accounts_pool = fd_pubkey_node_vote_accounts_pair_t_map_join_new( alloc_mem, node_id_to_vote_accounts_len );
+  self->node_id_to_vote_accounts_root = NULL;
+  for( ulong i=0; i < node_id_to_vote_accounts_len; i++ ) {
+    fd_pubkey_node_vote_accounts_pair_t_mapnode_t * node = fd_pubkey_node_vote_accounts_pair_t_map_acquire( self->node_id_to_vote_accounts_pool );
+    fd_pubkey_node_vote_accounts_pair_generate( &node->elem, alloc_mem, rng );
+    fd_pubkey_node_vote_accounts_pair_t_map_insert( self->node_id_to_vote_accounts_pool, &self->node_id_to_vote_accounts_root, node );
   }
-  self->epoch_authorized_voters_len = fd_rng_ulong( rng ) % 8;
-  if( self->epoch_authorized_voters_len ) {
-    self->epoch_authorized_voters = (fd_pubkey_pubkey_pair_t *) *alloc_mem;
-    *alloc_mem = (uchar *) *alloc_mem + sizeof(fd_pubkey_pubkey_pair_t)*self->epoch_authorized_voters_len;
-    for( ulong i=0; i < self->epoch_authorized_voters_len; i++ ) {
-      fd_pubkey_pubkey_pair_new( self->epoch_authorized_voters + i );
-      fd_pubkey_pubkey_pair_generate( self->epoch_authorized_voters + i, alloc_mem, rng );
-    }
-  } else {
-    self->epoch_authorized_voters = NULL;
+  ulong epoch_authorized_voters_len = fd_rng_ulong( rng ) % 8;
+  self->epoch_authorized_voters_pool = fd_pubkey_pubkey_pair_t_map_join_new( alloc_mem, epoch_authorized_voters_len );
+  self->epoch_authorized_voters_root = NULL;
+  for( ulong i=0; i < epoch_authorized_voters_len; i++ ) {
+    fd_pubkey_pubkey_pair_t_mapnode_t * node = fd_pubkey_pubkey_pair_t_map_acquire( self->epoch_authorized_voters_pool );
+    fd_pubkey_pubkey_pair_generate( &node->elem, alloc_mem, rng );
+    fd_pubkey_pubkey_pair_t_map_insert( self->epoch_authorized_voters_pool, &self->epoch_authorized_voters_root, node );
   }
   return mem;
 }
@@ -1554,37 +1588,6 @@ void *fd_feature_entry_generate( void *mem, void **alloc_mem, fd_rng_t * rng ) {
   return mem;
 }
 
-void *fd_firedancer_bank_generate( void *mem, void **alloc_mem, fd_rng_t * rng ) {
-  fd_firedancer_bank_t *self = (fd_firedancer_bank_t *) mem;
-  *alloc_mem = (uchar *) *alloc_mem + sizeof(fd_firedancer_bank_t);
-  fd_firedancer_bank_new(mem);
-  fd_stakes_generate( &self->stakes, alloc_mem, rng );
-  fd_recent_block_hashes_generate( &self->recent_block_hashes, alloc_mem, rng );
-  fd_clock_timestamp_votes_generate( &self->timestamp_votes, alloc_mem, rng );
-  self->slot = fd_rng_ulong( rng );
-  self->prev_slot = fd_rng_ulong( rng );
-  fd_hash_generate( &self->poh, alloc_mem, rng );
-  fd_hash_generate( &self->banks_hash, alloc_mem, rng );
-  fd_fee_rate_governor_generate( &self->fee_rate_governor, alloc_mem, rng );
-  self->capitalization = fd_rng_ulong( rng );
-  self->block_height = fd_rng_ulong( rng );
-  self->lamports_per_signature = fd_rng_ulong( rng );
-  self->hashes_per_tick = fd_rng_ulong( rng );
-  self->ticks_per_slot = fd_rng_ulong( rng );
-  self->ns_per_slot = fd_rng_uint128( rng );
-  self->genesis_creation_time = fd_rng_ulong( rng );
-  self->slots_per_year = fd_rng_double_o( rng );
-  self->max_tick_height = fd_rng_ulong( rng );
-  fd_inflation_generate( &self->inflation, alloc_mem, rng );
-  fd_epoch_schedule_generate( &self->epoch_schedule, alloc_mem, rng );
-  fd_rent_generate( &self->rent, alloc_mem, rng );
-  self->collected_fees = fd_rng_ulong( rng );
-  self->collected_rent = fd_rng_ulong( rng );
-  fd_vote_accounts_generate( &self->epoch_stakes, alloc_mem, rng );
-  fd_sol_sysvar_last_restart_slot_generate( &self->last_restart_slot, alloc_mem, rng );
-  return mem;
-}
-
 void *fd_cluster_type_generate( void *mem, void **alloc_mem, fd_rng_t * rng ) {
   fd_cluster_type_t *self = (fd_cluster_type_t *) mem;
   *alloc_mem = (uchar *) *alloc_mem + sizeof(fd_cluster_type_t);
@@ -1593,57 +1596,13 @@ void *fd_cluster_type_generate( void *mem, void **alloc_mem, fd_rng_t * rng ) {
   return mem;
 }
 
-void *fd_rent_fresh_account_generate( void *mem, void **alloc_mem, fd_rng_t * rng ) {
-  fd_rent_fresh_account_t *self = (fd_rent_fresh_account_t *) mem;
-  *alloc_mem = (uchar *) *alloc_mem + sizeof(fd_rent_fresh_account_t);
-  fd_rent_fresh_account_new(mem);
-  self->partition = fd_rng_ulong( rng );
-  fd_pubkey_generate( &self->pubkey, alloc_mem, rng );
-  self->present = fd_rng_ulong( rng );
-  return mem;
-}
-
-void *fd_rent_fresh_accounts_generate( void *mem, void **alloc_mem, fd_rng_t * rng ) {
-  fd_rent_fresh_accounts_t *self = (fd_rent_fresh_accounts_t *) mem;
-  *alloc_mem = (uchar *) *alloc_mem + sizeof(fd_rent_fresh_accounts_t);
-  fd_rent_fresh_accounts_new(mem);
-  self->total_count = fd_rng_ulong( rng );
-  self->fresh_accounts_len = fd_rng_ulong( rng ) % 8;
-  if( self->fresh_accounts_len ) {
-    self->fresh_accounts = (fd_rent_fresh_account_t *) *alloc_mem;
-    *alloc_mem = (uchar *) *alloc_mem + sizeof(fd_rent_fresh_account_t)*self->fresh_accounts_len;
-    for( ulong i=0; i < self->fresh_accounts_len; i++ ) {
-      fd_rent_fresh_account_new( self->fresh_accounts + i );
-      fd_rent_fresh_account_generate( self->fresh_accounts + i, alloc_mem, rng );
-    }
-  } else {
-    self->fresh_accounts = NULL;
-  }
-  return mem;
-}
-
-void *fd_epoch_bank_generate( void *mem, void **alloc_mem, fd_rng_t * rng ) {
-  fd_epoch_bank_t *self = (fd_epoch_bank_t *) mem;
-  *alloc_mem = (uchar *) *alloc_mem + sizeof(fd_epoch_bank_t);
-  fd_epoch_bank_new(mem);
-  fd_stakes_generate( &self->stakes, alloc_mem, rng );
-  self->hashes_per_tick = fd_rng_ulong( rng );
-  self->ticks_per_slot = fd_rng_ulong( rng );
-  self->ns_per_slot = fd_rng_uint128( rng );
-  self->genesis_creation_time = fd_rng_ulong( rng );
-  self->slots_per_year = fd_rng_double_o( rng );
-  self->max_tick_height = fd_rng_ulong( rng );
-  fd_inflation_generate( &self->inflation, alloc_mem, rng );
-  fd_epoch_schedule_generate( &self->epoch_schedule, alloc_mem, rng );
-  fd_rent_generate( &self->rent, alloc_mem, rng );
-  self->eah_start_slot = fd_rng_ulong( rng );
-  self->eah_stop_slot = fd_rng_ulong( rng );
-  self->eah_interval = fd_rng_ulong( rng );
-  fd_hash_generate( &self->genesis_hash, alloc_mem, rng );
-  self->cluster_type = fd_rng_uint( rng );
-    LLVMFuzzerMutate( (uchar *)self->cluster_version, sizeof(uint)*3, sizeof(uint)*3 );
-  fd_vote_accounts_generate( &self->next_epoch_stakes, alloc_mem, rng );
-  fd_epoch_schedule_generate( &self->rent_epoch_schedule, alloc_mem, rng );
+void *fd_cluster_version_generate( void *mem, void **alloc_mem, fd_rng_t * rng ) {
+  fd_cluster_version_t *self = (fd_cluster_version_t *) mem;
+  *alloc_mem = (uchar *) *alloc_mem + sizeof(fd_cluster_version_t);
+  fd_cluster_version_new(mem);
+  self->major = fd_rng_uint( rng );
+  self->minor = fd_rng_uint( rng );
+  self->patch = fd_rng_uint( rng );
   return mem;
 }
 
@@ -1822,46 +1781,6 @@ void *fd_epoch_reward_status_generate( void *mem, void **alloc_mem, fd_rng_t * r
   fd_epoch_reward_status_new(mem);
   self->discriminant = fd_rng_uint( rng ) % 2;
   fd_epoch_reward_status_inner_generate( &self->inner, alloc_mem, self->discriminant, rng );
-  return mem;
-}
-
-void *fd_slot_bank_generate( void *mem, void **alloc_mem, fd_rng_t * rng ) {
-  fd_slot_bank_t *self = (fd_slot_bank_t *) mem;
-  *alloc_mem = (uchar *) *alloc_mem + sizeof(fd_slot_bank_t);
-  fd_slot_bank_new(mem);
-  fd_clock_timestamp_votes_generate( &self->timestamp_votes, alloc_mem, rng );
-  self->slot = fd_rng_ulong( rng );
-  self->prev_slot = fd_rng_ulong( rng );
-  fd_hash_generate( &self->poh, alloc_mem, rng );
-  fd_hash_generate( &self->banks_hash, alloc_mem, rng );
-  fd_hash_generate( &self->epoch_account_hash, alloc_mem, rng );
-  fd_fee_rate_governor_generate( &self->fee_rate_governor, alloc_mem, rng );
-  self->capitalization = fd_rng_ulong( rng );
-  self->block_height = fd_rng_ulong( rng );
-  self->max_tick_height = fd_rng_ulong( rng );
-  self->collected_execution_fees = fd_rng_ulong( rng );
-  self->collected_priority_fees = fd_rng_ulong( rng );
-  self->collected_rent = fd_rng_ulong( rng );
-  fd_vote_accounts_generate( &self->epoch_stakes, alloc_mem, rng );
-  fd_sol_sysvar_last_restart_slot_generate( &self->last_restart_slot, alloc_mem, rng );
-  fd_account_keys_generate( &self->stake_account_keys, alloc_mem, rng );
-  fd_account_keys_generate( &self->vote_account_keys, alloc_mem, rng );
-  self->lamports_per_signature = fd_rng_ulong( rng );
-  self->transaction_count = fd_rng_ulong( rng );
-  fd_slot_lthash_generate( &self->lthash, alloc_mem, rng );
-  fd_block_hash_queue_generate( &self->block_hash_queue, alloc_mem, rng );
-  fd_hash_generate( &self->prev_banks_hash, alloc_mem, rng );
-  self->parent_signature_cnt = fd_rng_ulong( rng );
-  self->tick_height = fd_rng_ulong( rng );
-  {
-    self->has_use_preceeding_epoch_stakes = fd_rng_uchar( rng ) % 2;
-    if( self->has_use_preceeding_epoch_stakes ) {
-      LLVMFuzzerMutate( (uchar *)&(self->use_preceeding_epoch_stakes), sizeof(ulong), sizeof(ulong) );
-    }
-  }
-  fd_hard_forks_generate( &self->hard_forks, alloc_mem, rng );
-  fd_rent_fresh_accounts_generate( &self->rent_fresh_accounts, alloc_mem, rng );
-  fd_epoch_reward_status_generate( &self->epoch_reward_status, alloc_mem, rng );
   return mem;
 }
 
@@ -3007,8 +2926,6 @@ void *fd_gossip_socket_addr_ip6_generate( void *mem, void **alloc_mem, fd_rng_t 
   fd_gossip_socket_addr_ip6_new(mem);
   fd_gossip_ip6_addr_generate( &self->addr, alloc_mem, rng );
   self->port = fd_rng_ushort( rng );
-  self->flowinfo = fd_rng_uint( rng );
-  self->scope_id = fd_rng_uint( rng );
   return mem;
 }
 
@@ -3280,7 +3197,7 @@ void *fd_gossip_node_instance_generate( void *mem, void **alloc_mem, fd_rng_t * 
   fd_gossip_node_instance_new(mem);
   fd_pubkey_generate( &self->from, alloc_mem, rng );
   self->wallclock = fd_rng_ulong( rng );
-  self->timestamp = fd_rng_long( rng );
+  self->timestamp = fd_rng_ulong( rng );
   self->token = fd_rng_ulong( rng );
   return mem;
 }

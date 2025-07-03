@@ -2,7 +2,7 @@
     affinity = "auto"
     bank_tile_count = 1
     shred_tile_count = 4
-    exec_tile_count = 10
+    exec_tile_count = 4
 [tiles]
     [tiles.archiver]
         enabled = true
@@ -11,15 +11,17 @@
         file = "{ledger}/backtest.blockstore"
     [tiles.replay]
         snapshot = "{snapshot}"
-        funk_sz_gb = {funk_pages}
-        funk_txn_max = 1024
-        funk_rec_max = {index_max}
         cluster_version = "{cluster_version}"
-        funk_file = "{ledger}/backtest.funk"
     [tiles.gui]
         enabled = false
+[funk]
+    heap_size_gib = {funk_pages}
+    max_account_records = {index_max}
+    max_database_transactions = 64
 [runtime]
     heap_size_gib = {heap_size}
+    [runtime.limits]
+        max_banks = 36
 [blockstore]
     shred_max = 16777216
     block_max = 8192

@@ -15,15 +15,15 @@ _set_accv_sz( fd_snapshot_restore_t * restore,
   FD_TEST( fd_snapshot_accv_map_query( restore->accv_map, key, NULL ) == rec );
 }
 
-static int                     _cb_retcode    = 0;
-static fd_solana_manifest_t  * _cb_v_manifest = NULL;
-static fd_bank_slot_deltas_t * _cb_v_cache    = NULL;
-static void *                  _cb_v_ctx      = NULL;
+static int                                 _cb_retcode    = 0;
+static fd_solana_manifest_global_t const * _cb_v_manifest = NULL;
+static fd_bank_slot_deltas_t *             _cb_v_cache    = NULL;
+static void *                              _cb_v_ctx      = NULL;
 
 int
-cb_manifest( void *                 ctx,
-             fd_solana_manifest_t * manifest,
-             fd_spad_t *            spad ) {
+cb_manifest( void *                              ctx,
+             fd_solana_manifest_global_t const * manifest,
+             fd_spad_t *                         spad ) {
   (void)spad;
   _cb_v_manifest = manifest;
   _cb_v_ctx      = ctx;
@@ -46,7 +46,7 @@ main( int     argc,
   fd_boot( &argc, &argv );
 
   char const * _page_sz = fd_env_strip_cmdline_cstr  ( &argc, &argv, "--page-sz",  NULL,      "gigantic" );
-  ulong        page_cnt = fd_env_strip_cmdline_ulong ( &argc, &argv, "--page-cnt", NULL,             1UL );
+  ulong        page_cnt = fd_env_strip_cmdline_ulong ( &argc, &argv, "--page-cnt", NULL,             3UL );
   ulong        near_cpu = fd_env_strip_cmdline_ulong ( &argc, &argv, "--near-cpu", NULL, fd_log_cpu_id() );
 
   /* Setup workspace */
@@ -71,7 +71,7 @@ main( int     argc,
 
   void * restore_mem = fd_wksp_alloc_laddr( wksp, fd_snapshot_restore_align(), fd_snapshot_restore_footprint(), static_tag );
 
-  fd_spad_t * _spad = fd_spad_new( fd_wksp_alloc_laddr( wksp, FD_SPAD_ALIGN, FD_SPAD_FOOTPRINT( 4194304UL ), static_tag ), 4194304UL );
+  fd_spad_t * _spad = fd_spad_new( fd_wksp_alloc_laddr( wksp, FD_SPAD_ALIGN, FD_SPAD_FOOTPRINT( 1000000000UL ), static_tag ), 1000000000UL );
   fd_spad_push( _spad );
 
   fd_funk_txn_xid_t xid[1] = {{ .ul = {4} }};
@@ -83,14 +83,14 @@ main( int     argc,
      context that is waiting for a manifest. */
 
 # define NEW_RESTORE() \
-    fd_snapshot_restore_new( restore_mem, funk, NULL, _spad, _dummy_ctx, cb_manifest, cb_status_cache, NULL )
+    fd_snapshot_restore_new( restore_mem, funk, NULL, _spad, _dummy_ctx, cb_manifest, cb_status_cache )
 
   /* NEW_RESTORE_POST_MANIFEST is a convenience macro to create a new
      snapshot restore context that pretends that the manifest has
      already been restored. */
 
 # define NEW_RESTORE_POST_MANIFEST() __extension__({ \
-    fd_snapshot_restore_t * restore = fd_snapshot_restore_new( restore_mem, funk, NULL, _spad, _dummy_ctx, cb_manifest, cb_status_cache, NULL ); \
+    fd_snapshot_restore_t * restore = fd_snapshot_restore_new( restore_mem, funk, NULL, _spad, _dummy_ctx, cb_manifest, cb_status_cache ); \
     restore->manifest_done = MANIFEST_DONE_SEEN; \
     restore->slot          = restore_slot; \
     restore; \
@@ -98,15 +98,15 @@ main( int     argc,
 
   /* Test invalid params */
   fd_spad_push( _spad );
-  FD_TEST( !fd_snapshot_restore_new( NULL,        funk, NULL, _spad, NULL, cb_manifest, cb_status_cache, NULL ) );  /* NULL mem */
-  FD_TEST( !fd_snapshot_restore_new( restore_mem, NULL, NULL, _spad, NULL, cb_manifest, cb_status_cache, NULL ) );  /* NULL funk */
+  FD_TEST( !fd_snapshot_restore_new( NULL,        funk, NULL, _spad, NULL, cb_manifest, cb_status_cache ) );  /* NULL mem */
+  FD_TEST( !fd_snapshot_restore_new( restore_mem, NULL, NULL, _spad, NULL, cb_manifest, cb_status_cache ) );  /* NULL funk */
   fd_spad_pop( _spad );
 
   /* Reject accounts before manifest */
 
   do {
     fd_spad_push( _spad );
-    fd_snapshot_restore_t * restore = fd_snapshot_restore_new( restore_mem, funk, NULL, _spad, NULL, cb_manifest, cb_status_cache, NULL );
+    fd_snapshot_restore_t * restore = fd_snapshot_restore_new( restore_mem, funk, NULL, _spad, NULL, cb_manifest, cb_status_cache );
     FD_TEST( restore );
     FD_TEST( restore->failed        == 0 );
     FD_TEST( restore->manifest_done == 0 );
@@ -127,7 +127,7 @@ main( int     argc,
   do {
     fd_spad_push( _spad );
     FD_LOG_WARNING(("SPAD %lu", _spad->mem_max));
-    fd_snapshot_restore_t * restore = fd_snapshot_restore_new( restore_mem, funk, NULL, _spad, NULL, cb_manifest, cb_status_cache, NULL );
+    fd_snapshot_restore_t * restore = fd_snapshot_restore_new( restore_mem, funk, NULL, _spad, NULL, cb_manifest, cb_status_cache );
     FD_TEST( restore );
     fd_tar_meta_t meta = { .name = "snapshots/status_cache", .typeflag = FD_TAR_TYPE_REGULAR };
     FD_TEST( 0==fd_snapshot_restore_file( restore, &meta, 18UL ) );
@@ -141,7 +141,7 @@ main( int     argc,
 
   do {
     fd_spad_push( _spad );
-    fd_snapshot_restore_t * restore = fd_snapshot_restore_new( restore_mem, funk, NULL, _spad, NULL, cb_manifest, cb_status_cache, NULL );
+    fd_snapshot_restore_t * restore = fd_snapshot_restore_new( restore_mem, funk, NULL, _spad, NULL, cb_manifest, cb_status_cache );
     FD_TEST( restore );
     fd_tar_meta_t meta = { .name = "snapshots/123/123", .typeflag = FD_TAR_TYPE_REGULAR };
     FD_TEST( 0==fd_snapshot_restore_file( restore, &meta, 18UL ) );
@@ -155,7 +155,7 @@ main( int     argc,
 
   do {
     fd_spad_push( _spad );
-    fd_snapshot_restore_t * restore = fd_snapshot_restore_new( restore_mem, funk, NULL, _spad, NULL, cb_manifest, cb_status_cache, NULL );
+    fd_snapshot_restore_t * restore = fd_snapshot_restore_new( restore_mem, funk, NULL, _spad, NULL, cb_manifest, cb_status_cache );
     FD_TEST( restore );
     fd_tar_meta_t meta = { .name = "snapshots/status_cache", .typeflag = FD_TAR_TYPE_REGULAR };
     FD_TEST( ENOMEM==fd_snapshot_restore_file( restore, &meta, ULONG_MAX ) );
@@ -168,7 +168,7 @@ main( int     argc,
 
   do {
     fd_spad_push( _spad );
-    fd_snapshot_restore_t * restore = fd_snapshot_restore_new( restore_mem, funk, NULL, _spad, NULL, cb_manifest, cb_status_cache, NULL );
+    fd_snapshot_restore_t * restore = fd_snapshot_restore_new( restore_mem, funk, NULL, _spad, NULL, cb_manifest, cb_status_cache );
     FD_TEST( restore );
     fd_tar_meta_t meta = { .name = "snapshots/123/123", .typeflag = FD_TAR_TYPE_REGULAR };
     FD_TEST( ENOMEM==fd_snapshot_restore_file( restore, &meta, ULONG_MAX ) );

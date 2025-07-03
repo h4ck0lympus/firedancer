@@ -1,5 +1,4 @@
 #include "fd_vm_private.h"
-#include "../runtime/context/fd_exec_epoch_ctx.h"
 #include "../runtime/context/fd_exec_slot_ctx.h"
 #include "../features/fd_features.h"
 
@@ -619,11 +618,6 @@ fd_vm_init(
 
   if ( FD_UNLIKELY( vm->magic != FD_VM_MAGIC ) ) {
     FD_LOG_WARNING(( "bad magic" ));
-    return NULL;
-  }
-
-  if ( FD_UNLIKELY( instr_ctx == NULL ) ) {
-    FD_LOG_WARNING(( "NULL instr_ctx" ));
     return NULL;
   }
 

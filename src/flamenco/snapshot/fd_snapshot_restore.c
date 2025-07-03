@@ -68,8 +68,7 @@ fd_snapshot_restore_new( void *                                         mem,
                          fd_spad_t *                                    spad,
                          void *                                         cb_manifest_ctx,
                          fd_snapshot_restore_cb_manifest_fn_t           cb_manifest,
-                         fd_snapshot_restore_cb_status_cache_fn_t       cb_status_cache,
-                         fd_snapshot_restore_cb_rent_fresh_account_fn_t cb_rent_fresh_account ) {
+                         fd_snapshot_restore_cb_status_cache_fn_t       cb_status_cache ) {
 
   if( FD_UNLIKELY( !mem ) ) {
     FD_LOG_WARNING(( "NULL mem" ));
@@ -105,9 +104,6 @@ fd_snapshot_restore_new( void *                                         mem,
 
   self->cb_status_cache     = cb_status_cache;
   self->cb_status_cache_ctx = cb_manifest_ctx;
-
-  self->cb_rent_fresh_account     = cb_rent_fresh_account;
-  self->cb_rent_fresh_account_ctx = cb_manifest_ctx;
 
   void * accv_map_mem = FD_SCRATCH_ALLOC_APPEND( l, fd_snapshot_accv_map_align(), fd_snapshot_accv_map_footprint() );
   self->accv_map = fd_snapshot_accv_map_join( fd_snapshot_accv_map_new( accv_map_mem ) );
@@ -194,9 +190,7 @@ fd_snapshot_restore_account_hdr( fd_snapshot_restore_t * restore ) {
     rec->vt->set_slot( rec, restore->accv_slot );
     rec->vt->set_hash( rec, &hdr->hash );
     rec->vt->set_info( rec, &hdr->info );
-    if( rec->vt->get_meta( rec ) && rec->vt->get_lamports( rec ) && rec->vt->get_rent_epoch( rec ) != FD_RENT_EXEMPT_RENT_EPOCH ) {
-      restore->cb_rent_fresh_account( restore->cb_rent_fresh_account_ctx, key );
-    }
+
     restore->acc_data = rec->vt->get_data_mut( rec );
 
     fd_txn_account_mutable_fini( rec, funk, funk_txn );
@@ -229,15 +223,19 @@ fd_snapshot_restore_account_hdr( fd_snapshot_restore_t * restore ) {
    error code. */
 
 static int
-fd_snapshot_accv_index( fd_snapshot_accv_map_t *               map,
-                        fd_solana_accounts_db_fields_t const * fields ) {
+fd_snapshot_accv_index( fd_snapshot_accv_map_t *                      map,
+                        fd_solana_accounts_db_fields_global_t const * fields ) {
 
-  for( ulong i=0UL; i < fields->storages_len; i++ ) {
+  fd_snapshot_slot_acc_vecs_global_t * storages = fd_solana_accounts_db_fields_storages_join( fields );
+  for( ulong i=0UL; i<fields->storages_len; i++ ) {
 
-    fd_snapshot_slot_acc_vecs_t * slot = &fields->storages[ i ];
+    fd_snapshot_slot_acc_vecs_global_t * slot = &storages[ i ];
+    if( FD_UNLIKELY( !slot ) ) {
+      FD_LOG_CRIT(( "storages idx=%lu is NULL", i ));
+    }
 
     for( ulong j=0UL; j < slot->account_vecs_len; j++ ) {
-      fd_snapshot_acc_vec_t * accv = &slot->account_vecs[ j ];
+      fd_snapshot_acc_vec_t * accv = fd_snapshot_slot_acc_vecs_account_vecs_join( slot );
 
       /* Insert new AppendVec */
       fd_snapshot_accv_key_t key = { .slot = slot->slot, .id = accv->id };
@@ -268,7 +266,7 @@ fd_snapshot_restore_manifest( fd_snapshot_restore_t * restore ) {
      revisit this. */
 
   int err;
-  fd_solana_manifest_t * manifest = fd_bincode_decode_spad(
+  fd_solana_manifest_global_t * manifest = fd_bincode_decode_spad_global(
       solana_manifest, restore->spad,
       restore->buf,
       restore->buf_sz,
@@ -278,19 +276,16 @@ fd_snapshot_restore_manifest( fd_snapshot_restore_t * restore ) {
     return err;
   }
 
-  if( manifest->bank_incremental_snapshot_persistence ) {
+
+  fd_bank_incremental_snapshot_persistence_t * bank_incremental_snapshot_persistence = fd_solana_manifest_bank_incremental_snapshot_persistence_join( manifest );
+  if( bank_incremental_snapshot_persistence ) {
     FD_LOG_NOTICE(( "Incremental snapshot has incremental snapshot persistence with full acc_hash=%s and incremental acc_hash=%s",
-                    FD_BASE58_ENC_32_ALLOCA(&manifest->bank_incremental_snapshot_persistence->full_hash),
-                    FD_BASE58_ENC_32_ALLOCA(&manifest->bank_incremental_snapshot_persistence->incremental_hash) ));
+                    FD_BASE58_ENC_32_ALLOCA(&bank_incremental_snapshot_persistence->full_hash),
+                    FD_BASE58_ENC_32_ALLOCA(&bank_incremental_snapshot_persistence->incremental_hash) ));
 
   } else {
     FD_LOG_NOTICE(( "Full snapshot acc_hash=%s", FD_BASE58_ENC_32_ALLOCA(&manifest->accounts_db.bank_hash_info.accounts_hash) ));
   }
-
-  /* Move over accounts DB fields */
-
-  fd_solana_accounts_db_fields_t accounts_db = manifest->accounts_db;
-  fd_memset( &manifest->accounts_db, 0, sizeof(fd_solana_accounts_db_fields_t) );
 
   /* Remember slot number */
 
@@ -306,7 +301,7 @@ fd_snapshot_restore_manifest( fd_snapshot_restore_t * restore ) {
   /* Read AccountVec map */
 
   if( FD_LIKELY( !err ) )
-    err = fd_snapshot_accv_index( restore->accv_map, &accounts_db );
+    err = fd_snapshot_accv_index( restore->accv_map, &manifest->accounts_db );
 
   /* Discard buffer to reclaim heap space */
 

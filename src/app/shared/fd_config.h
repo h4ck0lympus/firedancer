@@ -35,6 +35,7 @@ struct fd_configh {
     char  account_index_exclude_keys[ 32 ][ FD_BASE58_ENCODED_32_SZ ];
     char  accounts_index_path[ PATH_MAX ];
     char  accounts_hash_cache_path[ PATH_MAX ];
+    int   enable_accounts_disk_index;
     int   require_tower;
     char  snapshot_archive_format[ 10 ];
   } ledger;
@@ -112,8 +113,15 @@ struct fd_configf {
       ulong max_transactions_per_slot;
       ulong snapshot_grace_period_seconds;
       ulong max_vote_accounts;
+      ulong max_banks;
     } limits;
   } runtime;
+
+  struct {
+    ulong max_account_records;
+    ulong heap_size_gib;
+    ulong max_database_transactions;
+  } funk;
 
   struct {
     uint exec_tile_count; /* TODO: redundant ish with bank tile cnt */
@@ -314,6 +322,10 @@ struct fd_config {
     } quic;
 
     struct {
+      ushort send_src_port;
+    } send;
+
+    struct {
       uint signature_cache_size;
       uint receive_buffer_size;
       uint mtu;
@@ -332,6 +344,7 @@ struct fd_config {
       char tip_distribution_authority[ FD_BASE58_ENCODED_32_SZ ];
       uint commission_bps;
       ulong keepalive_interval_millis;
+      int   tls_cert_verify;
     } bundle;
 
     struct {
@@ -370,15 +383,11 @@ struct fd_config {
       ushort repair_intake_listen_port;
       ushort repair_serve_listen_port;
       char   good_peer_cache_file[ PATH_MAX ];
+      ulong  slot_max;
     } repair;
 
     struct {
-      char  capture[ PATH_MAX ];
       char  funk_checkpt[ PATH_MAX ];
-      uint  funk_rec_max;
-      ulong funk_sz_gb;
-      ulong funk_txn_max;
-      char  funk_file[ PATH_MAX ];
       char  genesis[ PATH_MAX ];
       char  incremental[ PATH_MAX ];
       char  incremental_url[ PATH_MAX ];
@@ -401,24 +410,27 @@ struct fd_config {
     } store_int;
 
     struct {
-      ulong full_interval;
-      ulong incremental_interval;
-      char  out_dir[ PATH_MAX ];
-    } batch;
-
-    struct {
-      int   enabled;
-      char  genesis_hash[ FD_BASE58_ENCODED_32_SZ ];
-      char  wen_restart_coordinator[ FD_BASE58_ENCODED_32_SZ ];
-    } restart;
-
-    struct {
       int   enabled;
       ulong end_slot;
       char  archiver_path[ PATH_MAX ];
     } archiver;
 
+    struct {
+      int   enabled;
+      char  folder_path[ PATH_MAX ];
+      ulong write_buffer_size;
+    } shredcap;
+
   } tiles;
+  struct {
+    ulong capture_start_slot;
+    char  dump_proto_dir[ PATH_MAX ];
+    char  solcap_capture[ PATH_MAX ];
+    int   dump_syscall_to_pb;
+    int   dump_instr_to_pb;
+    int   dump_txn_to_pb;
+    int   dump_block_to_pb;
+  } capture;
 };
 
 typedef struct fd_config fd_config_t;

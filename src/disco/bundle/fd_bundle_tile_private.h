@@ -7,6 +7,7 @@
 #include "../keyguard/fd_keyguard_client.h"
 #include "../../waltz/grpc/fd_grpc_client.h"
 #include "../../waltz/resolv/fd_netdb.h"
+#include "../../waltz/fd_rtt_est.h"
 #include "../../util/alloc/fd_alloc.h"
 
 #if FD_HAS_OPENSSL
@@ -46,7 +47,6 @@ typedef struct fd_bundle_metrics fd_bundle_metrics_t;
 struct fd_bundle_tile {
   /* Key switch */
   fd_keyswitch_t * keyswitch;
-  uint             identity_switched : 1;
 
   /* Key guard */
   fd_keyguard_client_t keyguard_client[1];
@@ -58,7 +58,6 @@ struct fd_bundle_tile {
   SSL_CTX *    ssl_ctx;
   SSL *        ssl;
   fd_alloc_t * ssl_alloc;
-  uint         skip_cert_verify : 1;
 # endif /* FD_HAS_OPENSSL */
 
   /* Config */
@@ -79,10 +78,12 @@ struct fd_bundle_tile {
   uint defer_reset : 1;
 
   /* Keepalive via HTTP/2 PINGs (randomized) */
-  long  last_ping_tx_ts;       /* last TX tickcount */
+  long  last_ping_tx_ticks;    /* last TX tickcount */
+  long  last_ping_tx_nanos;
   long  last_ping_rx_ts;       /* last RX tickcount */
   ulong ping_randomize;        /* random 64 bits */
   ulong ping_threshold_ticks;  /* avg keepalive timeout in ticks, 2^n-1 */
+  fd_rtt_estimate_t rtt[1];
 
   /* gRPC client */
   void *                   grpc_client_mem;
@@ -98,8 +99,8 @@ struct fd_bundle_tile {
   uchar builder_pubkey[ 32 ];
   uchar builder_commission;  /* in [0,100] (percent) */
   uchar builder_info_avail : 1;  /* Block builder info available? (potentially stale) */
-  uchar builder_info_live  : 1;  /* Block builder info recent enough? */
   uchar builder_info_wait  : 1;  /* Request already in-flight? */
+  long  builder_info_valid_until_ticks;
 
   /* Bundle subscriptions */
   uchar packet_subscription_live : 1;  /* Want to subscribe to a stream? */
@@ -128,6 +129,8 @@ struct fd_bundle_tile {
   /* Check engine light */
   uchar bundle_status_recent;  /* most recently observed 'check engine light' */
   uchar bundle_status_plugin;  /* last 'plugin' update written */
+  uchar bundle_status_logged;
+  long  last_bundle_status_log_nanos;
 };
 
 typedef struct fd_bundle_tile fd_bundle_tile_t;
@@ -153,6 +156,15 @@ void
 fd_bundle_client_step( fd_bundle_tile_t * bundle,
                        int *              charge_busy );
 
+/* fd_bundle_client_step_reconnect drives the 'reconnect' state machine.
+   Once the HTTP/2 conn is established (SETTINGS exchanged), this
+   function drives the auth logic, requests block builder info, sets up
+   packet and bundle subscriptions, and PINGs. */
+
+int
+fd_bundle_client_step_reconnect( fd_bundle_tile_t * ctx,
+                                 long               io_ticks );
+
 /* fd_bundle_tile_backoff is called whenever an error occurs.  Stalls
    forward progress for a randomized amount of time to prevent error
    floods. */
@@ -170,6 +182,11 @@ fd_bundle_tile_should_stall( fd_bundle_tile_t const * ctx,
   return tickcount < ctx->backoff_until;
 }
 
+/* fd_bundle_tile_housekeeping runs periodically at a low frequency. */
+
+void
+fd_bundle_tile_housekeeping( fd_bundle_tile_t * ctx );
+
 /* fd_bundle_client_grpc_rx_msg is called by grpc_client when a gRPC
    message arrives (unary or server-streaming response). */
 
@@ -179,6 +196,26 @@ fd_bundle_client_grpc_rx_msg(
     void const * protobuf,
     ulong        protobuf_sz,
     ulong        request_ctx   /* FD_BUNDLE_CLIENT_REQ_{...} */
+);
+
+/* fd_bundle_client_grpc_rx_end is called by grpc_client when a gRPC
+   server-streaming response finishes. */
+
+void
+fd_bundle_client_grpc_rx_end(
+    void *                app_ctx,
+    ulong                 request_ctx,
+    fd_grpc_resp_hdrs_t * resp
+);
+
+/* fd_bundle_client_grpc_rx_timeout is called by grpc_client when a
+   gRPC request deadline gets exceeded. */
+
+void
+fd_bundle_client_grpc_rx_timeout(
+    void * app_ctx,
+    ulong  request_ctx, /* FD_BUNDLE_CLIENT_REQ_{...} */
+    int    deadline_kind /* FD_GRPC_DEADLINE_{HEADER|RX_END} */
 );
 
 /* fd_bundle_client_status provides a "check engine light".
@@ -199,6 +236,13 @@ fd_bundle_client_grpc_rx_msg(
 
 int
 fd_bundle_client_status( fd_bundle_tile_t const * ctx );
+
+/* fd_bundle_request_ctx_cstr returns the gRPC method name for a
+   FD_BUNDLE_CLIENT_REQ_* ID.  Returns "unknown" the ID is not
+   recognized. */
+
+FD_FN_CONST char const *
+fd_bundle_request_ctx_cstr( ulong request_ctx );
 
 FD_PROTOTYPES_END
 

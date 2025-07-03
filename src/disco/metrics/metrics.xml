@@ -224,12 +224,84 @@ metric introduced.
     <counter name="PktRetransmissions" summary="Number of QUIC packets that retransmitted." />
 </tile>
 
+
+<enum name="NewContactOutcome">
+    <int value="0" name="Connect" label="Initiated connection" />
+    <int value="1" name="Unroutable" label="Skipped (unroutable)" />
+    <int value="2" name="Unstaked" label="Skipped (unstaked)" />
+    <int value="3" name="Changed" label="Contact info changed" />
+    <int value="4" name="NoChange" label="Contact info unchanged" />
+</enum>
+
+<enum name="TxnQuicSendResult">
+    <int value="0" name="Success" label="Success" />
+    <int value="1" name="NoConn" label="No QUIC connection" />
+    <int value="2" name="NoStream" label="No QUIC stream" />
+</enum>
+
 <tile name="send">
-    <counter name="TxnsSentToLeader" summary="Total count of transactions sent to leader" />
-    <counter name="LeaderSchedNotFound" summary="Total count of times leader schedule not found" />
-    <counter name="LeaderNotFound" summary="Total count of times leader not found for given slot" />
-    <counter name="LeaderContactNotFound" summary="Total count of times leader contact info not found" />
-    <counter name="LeaderContactNonroutable" summary="Total count of times leader contact is nonroutable" />
+
+    <counter name="LeaderNotFound" summary="Total number of times slot leader not found" />
+    <counter name="NewContactInfo" enum="NewContactOutcome" summary="Total number of contact infos received and handled" />
+    <counter name="ContactStale" summary="Total number of reconnects skipped due to stale contact info" />
+    <counter name="QuicSendResult" enum="TxnQuicSendResult" summary="Total number of transactions we attempted to send via QUIC" />
+    <counter name="QuicConnCreateFailed" summary="Total number of QUIC connection creation failures" />
+
+    <!-- QUIC packet metrics -->
+    <counter name="ReceivedPackets" summary="Total count of QUIC packets received" />
+    <counter name="ReceivedBytes" summary="Total bytes received via QUIC" />
+    <counter name="SentPackets" summary="Total count of QUIC packets sent" />
+    <counter name="SentBytes" summary="Total bytes sent via QUIC" />
+    <counter name="RetrySent" summary="Total count of QUIC retry packets sent" />
+
+    <!-- QUIC connection metrics -->
+    <gauge name="ConnectionsActive" summary="Number of active QUIC connections" />
+    <counter name="ConnectionsCreated" summary="Total count of QUIC connections created" />
+    <counter name="ConnectionsClosed" summary="Total count of QUIC connections closed" />
+    <counter name="ConnectionsAborted" summary="Total count of QUIC connections aborted" />
+    <counter name="ConnectionsTimedOut" summary="Total count of QUIC connections timed out" />
+    <counter name="ConnectionsRetried" summary="Total count of QUIC connections retried" />
+
+    <!-- QUIC connection error metrics -->
+    <counter name="ConnectionErrorNoSlots" summary="Total count of connection errors due to no slots" />
+    <counter name="ConnectionErrorRetryFail" summary="Total count of connection retry failures" />
+
+    <!-- QUIC packet error metrics -->
+    <counter name="PktCryptoFailed" enum="QuicEncLevel" summary="Total count of packets with crypto failures" />
+    <counter name="PktNoKey" enum="QuicEncLevel" summary="Total count of packets with no key" />
+    <counter name="PktNoConn" summary="Total count of packets with no connection" />
+    <counter name="PktTxAllocFail" summary="Total count of packet TX allocation failures" />
+    <counter name="PktNetHeaderInvalid" summary="Total count of packets with invalid network headers" />
+    <counter name="PktQuicHeaderInvalid" summary="Total count of packets with invalid QUIC headers" />
+    <counter name="PktUndersz" summary="Total count of undersized packets" />
+    <counter name="PktOversz" summary="Total count of oversized packets" />
+    <counter name="PktVerneg" summary="Total count of version negotiation packets" />
+    <counter name="PktRetransmissions" summary="Total count of packet retransmissions" />
+
+    <!-- QUIC handshake metrics -->
+    <counter name="HandshakesCreated" summary="Total count of QUIC handshakes created" />
+    <counter name="HandshakeErrorAllocFail" summary="Total count of handshake allocation failures" />
+    <counter name="HandshakeEvicted" summary="Total count of handshakes evicted" />
+
+    <!-- QUIC stream metrics -->
+    <counter name="StreamReceivedEvents" summary="Total count of stream events received" />
+    <counter name="StreamReceivedBytes" summary="Total bytes received via streams" />
+
+    <!-- QUIC frame metrics -->
+    <counter name="ReceivedFrames" enum="QuicFrameType" summary="Total count of QUIC frames received" />
+    <counter name="FrameFailParse" summary="Total count of frame parse failures" />
+    <counter name="FrameTxAlloc" enum="FrameTxAllocResult" summary="Results of attempts to acquire QUIC frame metadata." />
+
+    <!-- QUIC ACK metrics -->
+    <counter name="AckTx" enum="QuicAckTx" summary="Total count of ACK frames transmitted" />
+
+    <!-- QUIC timing metrics -->
+    <histogram name="ServiceDurationSeconds" min="0.00000001" max="0.1" converter="seconds">
+      <summary>Duration spent in service</summary>
+    </histogram>
+    <histogram name="ReceiveDurationSeconds" min="0.00000001" max="0.1" converter="seconds">
+      <summary>Duration spent receiving packets</summary>
+    </histogram>
 </tile>
 
 <enum name="BundleError">
@@ -250,6 +322,9 @@ metric introduced.
     <counter name="ShredstreamHeartbeats" summary="Number of ShredStream heartbeats successfully sent" />
     <counter name="Keepalives" summary="Number of HTTP/2 PINGs acknowledged by server" />
     <gauge name="Connected" summary="1 if connected to the bundle server, 0 if not" />
+    <gauge name="RttSample" summary="Latest RTT sample at scrape time (nanoseconds)" />
+    <gauge name="RttSmoothed" summary="RTT moving average (nanoseconds)" />
+    <gauge name="RttVar" summary="RTT variance (nanoseconds)" />
 </tile>
 
 <tile name="verify">
@@ -291,21 +366,26 @@ metric introduced.
 
 <enum name="PackTxnInsertReturn">
     <!-- Note: You must keep the list of return values in fd_pack.h in sync with this list -->
-    <int value="-11" name="BundleBlacklist" label="Transaction uses an account on the bundle blacklist" />
-    <int value="-10" name="WriteSysvar" label="Transaction tries to write to a sysvar" />
-    <int value="-9" name="EstimationFail" label="Estimating compute cost and/or fee failed" />
-    <int value="-8" name="DuplicateAccount" label="Transaction included an account address twice" />
-    <int value="-7" name="TooManyAccounts" label="Transaction tried to load too many accounts" />
-    <int value="-6" name="TooLarge" label="Transaction requests too many CUs" />
-    <int value="-5" name="Expired" label="Transaction already expired" />
-    <int value="-4" name="AddrLut" label="Transaction loaded accounts from a lookup table" />
-    <int value="-3" name="Unaffordable" label="Fee payer's balance below transaction fee" />
-    <int value="-2" name="Duplicate" label="Pack aware of transaction with same signature" />
+    <int value="-13" name="BundleBlacklist" label="Transaction uses an account on the bundle blacklist" />
+    <int value="-12" name="InvalidNonce" label="Transaction is an invalid durable nonce transaction" />
+    <int value="-11" name="WriteSysvar" label="Transaction tries to write to a sysvar" />
+    <int value="-10" name="EstimationFail" label="Estimating compute cost and/or fee failed" />
+    <int value="-9" name="DuplicateAccount" label="Transaction included an account address twice" />
+    <int value="-8" name="TooManyAccounts" label="Transaction tried to load too many accounts" />
+    <int value="-7" name="TooLarge" label="Transaction requests too many CUs" />
+    <int value="-6" name="Expired" label="Transaction already expired" />
+    <int value="-5" name="AddrLut" label="Transaction loaded accounts from a lookup table" />
+    <int value="-4" name="Unaffordable" label="Fee payer's balance below transaction fee" />
+    <int value="-3" name="Duplicate" label="Pack aware of transaction with same signature" />
+    <int value="-2" name="NoncePriority" label="Transaction's fee was too low given its compute unit requirement and another competing transactions that uses the same durable nonce" />
     <int value="-1" name="Priority" label="Transaction's fee was too low given its compute unit requirement and other competing transactions" />
     <int value="0" name="NonvoteAdd" label="Transaction that was not a simple vote added to pending transactions" />
     <int value="1" name="VoteAdd" label="Simple vote transaction was added to pending transactions" />
     <int value="2" name="NonvoteReplace" label="Transaction that was not a simple vote replaced a lower priority transaction" />
     <int value="3" name="VoteReplace" label="Simple vote transaction replaced a lower priority transaction" />
+    <int value="4" name="NonceNonvoteAdd" label="Durable nonce transaction added to pending transactions" />
+    <int value="5" name="Unused" label="Unused because durable nonce transactions can't be simple votes" />
+    <int value="6" name="NonceNonvoteReplace" label="Durable nonce transaction replaced a lower priority transaction, likely one that uses the same durable nonce" />
 </enum>
 
 <enum name="PackTxnSchedule">
@@ -467,7 +547,7 @@ metric introduced.
     <int value="36" name="ProgramExecutionTemporarilyRestricted" label="Program execution is temporarily restricted on an account." />
     <int value="37" name="UnbalancedTransaction" label="The total balance before the transaction does not equal the total balance after the transaction." />
     <int value="38" name="ProgramCacheHitMaxLimit" label="The total program cache size hit the maximum allowed limit." />
-    <int value="39" name="CommitCancelled" label="The process for comitting the transaction was cancelled internaly." />
+    <int value="39" name="CommitCancelled" label="The process for committing the transaction was cancelled internally." />
     <int value="40" name="BundlePeer" label="Transaction is part of a bundle and one of the peer transactions failed." />
 </enum>
 
@@ -534,9 +614,10 @@ metric introduced.
     </histogram>
     <counter name="ShredProcessed" enum="ShredProcessingResult" summary="The result of processing a thread from the network" />
     <counter name="FecSetSpilled" summary="The number of FEC sets that were spilled because they didn't complete in time and we needed space" />
-    <counter name="ShredRejectedInitial" summary="The number shreds that were rejected before any resources were allocated for the FEC set" />
+    <counter name="ShredRejectedInitial" summary="The number of shreds that were rejected before any resources were allocated for the FEC set" />
+    <counter name="ShredRejectedUnchained" summary="The number of shreds that were rejected because they're not chained merkle shreds" />
     <counter name="FecRejectedFatal" summary="The number of FEC sets that were rejected for reasons that cause the whole FEC set to become invalid" />
-    <counter name="ForceCompleteRequest" summary="The number of times we recieved a FEC force complete message" />
+    <counter name="ForceCompleteRequest" summary="The number of times we received a FEC force complete message" />
     <counter name="ForceCompleteFailure" summary="The number of times we failed to force complete a FEC set on request" />
     <counter name="ForceCompleteSuccess" summary="The number of times we successfully forced completed a FEC set on request" />
 </tile>

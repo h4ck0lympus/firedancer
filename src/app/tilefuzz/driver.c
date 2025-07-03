@@ -193,6 +193,31 @@ setup_topo_runtime_pub( fd_topo_t *  topo,
   return obj;
 }
 
+fd_topo_obj_t *
+setup_topo_funk( fd_topo_t *  topo,
+                 char const * wksp_name,
+                 ulong        max_account_records,
+                 ulong        max_database_transactions,
+                 ulong        heap_size_gib ) {
+  fd_topo_obj_t * obj = fd_topob_obj( topo, "funk", wksp_name );
+  FD_TEST( fd_pod_insert_ulong(  topo->props, "funk", obj->id ) );
+  FD_TEST( fd_pod_insertf_ulong( topo->props, max_account_records,       "obj.%lu.rec_max",  obj->id ) );
+  FD_TEST( fd_pod_insertf_ulong( topo->props, max_database_transactions, "obj.%lu.txn_max",  obj->id ) );
+  FD_TEST( fd_pod_insertf_ulong( topo->props, heap_size_gib*(1UL<<30),   "obj.%lu.heap_max", obj->id ) );
+  ulong funk_footprint = fd_funk_footprint( max_database_transactions, max_account_records );
+  if( FD_UNLIKELY( !funk_footprint ) ) FD_LOG_ERR(( "Invalid [funk] parameters" ));
+
+    /* Increase workspace partition count */
+  ulong wksp_idx = fd_topo_find_wksp( topo, wksp_name );
+  FD_TEST( wksp_idx!=ULONG_MAX );
+  fd_topo_wksp_t * wksp = &topo->workspaces[ wksp_idx ];
+  ulong part_max = fd_wksp_part_max_est( funk_footprint, 1U<<14U );
+  if( FD_UNLIKELY( !part_max ) ) FD_LOG_ERR(( "fd_wksp_part_max_est(%lu,16KiB) failed", funk_footprint ));
+  wksp->part_max += part_max;
+
+  return obj;
+}
+
 FD_FN_UNUSED static fd_topo_tile_t*
 init_replay_tile(fd_topo_t* topo, config_t* config) {
   fd_topo_tile_t* replay_tile = fd_topob_tile(topo, "replay", "replay", "metric_in", 0, 0, 0);
@@ -303,6 +328,9 @@ isolated_tower_topo(config_t* config, fd_topo_obj_callbacks_t* callbacks[])
   // create tower tile
   fd_topo_tile_t* tower_tile = fd_topob_tile(topo, "tower", "tower", "metric_in", 0, 0, 0);
 
+  //funk setup
+  strncpy(tower_tile->tower.funk_file, "/tmp/test_funk.db", sizeof(tower_tile->tower.funk_file));
+  
   // do necessary config required by tower
   strncpy(tower_tile->tower.funk_file, config->tiles.replay.funk_file, sizeof(tower_tile->tower.funk_file));
   strncpy(tower_tile->tower.identity_key_path, config->paths.identity_key, sizeof(tower_tile->tower.identity_key_path));
@@ -333,6 +361,12 @@ isolated_tower_topo(config_t* config, fd_topo_obj_callbacks_t* callbacks[])
   fd_topo_obj_t * turbine_slot_obj = fd_topob_obj( topo, "fseq", "slot_fseqs" );
   fd_topob_tile_uses( topo, replay_tile, turbine_slot_obj, FD_SHMEM_JOIN_MODE_READ_ONLY );
   FD_TEST( fd_pod_insertf_ulong( topo->props, turbine_slot_obj->id, "turbine_slot" ) );
+
+  fd_topo_obj_t * funk_obj = setup_topo_funk( topo, "funk",
+      config->firedancer.funk.max_account_records,
+      config->firedancer.funk.max_database_transactions,
+      config->firedancer.funk.heap_size_gib 
+    );
   
   fd_topob_finish(topo, callbacks);
 }
@@ -539,6 +573,32 @@ tile_topo_to_run( fd_drv_t * drv, fd_topo_tile_t * topo_tile ) {
   return find_run_tile( drv, topo_tile->name );
 }
 
+
+fd_topo_obj_t *
+setup_topo_funk( fd_topo_t *  topo,
+                 char const * wksp_name,
+                 ulong        max_account_records,
+                 ulong        max_database_transactions,
+                 ulong        heap_size_gib ) {
+  fd_topo_obj_t * obj = fd_topob_obj( topo, "funk", wksp_name );
+  FD_TEST( fd_pod_insert_ulong(  topo->props, "funk", obj->id ) );
+  FD_TEST( fd_pod_insertf_ulong( topo->props, max_account_records,       "obj.%lu.rec_max",  obj->id ) );
+  FD_TEST( fd_pod_insertf_ulong( topo->props, max_database_transactions, "obj.%lu.txn_max",  obj->id ) );
+  FD_TEST( fd_pod_insertf_ulong( topo->props, heap_size_gib*(1UL<<30),   "obj.%lu.heap_max", obj->id ) );
+  ulong funk_footprint = fd_funk_footprint( max_database_transactions, max_account_records );
+  if( FD_UNLIKELY( !funk_footprint ) ) FD_LOG_ERR(( "Invalid [funk] parameters" ));
+
+  /* Increase workspace partition count */
+  ulong wksp_idx = fd_topo_find_wksp( topo, wksp_name );
+  FD_TEST( wksp_idx!=ULONG_MAX );
+  fd_topo_wksp_t * wksp = &topo->workspaces[ wksp_idx ];
+  ulong part_max = fd_wksp_part_max_est( funk_footprint, 1U<<14U );
+  if( FD_UNLIKELY( !part_max ) ) FD_LOG_ERR(( "fd_wksp_part_max_est(%lu,16KiB) failed", funk_footprint ));
+  wksp->part_max += part_max;
+
+  return obj;
+}
+
 static void
 init_tiles( fd_drv_t * drv ) {
   for( ulong i=0UL; i<drv->config.topo.tile_cnt; i++ ) {
@@ -560,7 +620,23 @@ init_tiles( fd_drv_t * drv ) {
 
     fd_metrics_register( topo_tile->metrics ); // TODO check if this is correct in a one thread world
   }
-}
+
+  // create funk database . TODO: do this only if isolated tower is called
+ // char const* _page_sz = "gigantic";
+ // ulong page_cnt = 1UL;
+ // ulong near_cpu = fd_log_cpu_id();
+ // ulong txn_max = 32UL;
+ // ulong rec_max = 128;
+ // ulong wksp_tag = 1234UL;
+ // ulong seed = 5678UL;
+ // ulong iter_max = 1048576UL;
+
+ // fd_wksp_t* wksp = fd_wksp_new_anonymous( fd_cstr_to_shmem_page_sz( _page_sz ), page_cnt, near_cpu, "funk_wksp", 0UL );
+ // void * shfunk = fd_funk_new( fd_wksp_alloc_laddr(wksp, fd_funk_align(), fd_funk_footprint( txn_max, rec_max ), wksp_tag ), wksp_tag, seed, txn_max, rec_max );
+ // fd_funk_t tst_[1];
+ // fd_funk_t * tst = fd_funk_join( tst_, shfunk );
+ // if( FD_UNLIKELY( !tst ) ) FD_LOG_ERR(( "Unable to create tst" ));
+}//
 
 void
 fd_drv_init( fd_drv_t * drv,

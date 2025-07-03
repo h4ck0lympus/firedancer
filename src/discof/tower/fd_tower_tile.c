@@ -431,4 +431,8 @@ fd_topo_run_tile_t fd_tile_tower = {
     .scratch_footprint        = scratch_footprint,
     .unprivileged_init        = unprivileged_init,
     .run                      = stem_run,
+#ifdef FD_HAS_FUZZ
+  .during_frag              = (void (*)( void *, ulong, ulong, ulong, ulong, ulong, ulong ))during_frag,
+  .after_frag               = (void (*)( void *, ulong, ulong, ulong, ulong, ulong, ulong, fd_stem_context_t *))after_frag,
+#endif
 };

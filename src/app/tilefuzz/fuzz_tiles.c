@@ -98,6 +98,7 @@ init( int  *   argc,
       char *** argv,
       char * topo_name ) {
   (void)argc; (void)argv;
+  fd_boot(argc, argv);
   void * shmem = aligned_alloc( fd_drv_align(),  fd_drv_footprint() );
   if( FD_UNLIKELY( !shmem ) ) FD_LOG_ERR(( "malloc failed" ));
   drv = fd_drv_join( fd_drv_new( shmem, TILES, CALLBACKS ) );

@@ -332,6 +332,7 @@ static void
 unprivileged_init( fd_topo_t *      topo,
                    fd_topo_tile_t * tile ) {
   void * scratch = fd_topo_obj_laddr( topo, tile->tile_obj_id );
+  FD_LOG_NOTICE(( "scratch: %p", scratch));
 
   FD_SCRATCH_ALLOC_INIT( l, scratch );
   ctx_t * ctx        = FD_SCRATCH_ALLOC_APPEND( l, alignof(ctx_t), sizeof(ctx_t)        );
@@ -343,6 +344,7 @@ unprivileged_init( fd_topo_t *      topo,
   ulong scratch_top  = FD_SCRATCH_ALLOC_FINI  ( l, scratch_align()                                                  );
   FD_TEST( scratch_top == (ulong)scratch + scratch_footprint( tile ) );
 
+  FD_LOG_NOTICE(( "epoch_mem: %p", epoch_mem ));
   ctx->epoch   = fd_epoch_join( fd_epoch_new( epoch_mem, FD_VOTER_MAX       ) );
   ctx->ghost   = fd_ghost_join( fd_ghost_new( ghost_mem, 42UL, FD_BLOCK_MAX ) );
   ctx->tower   = fd_tower_join( fd_tower_new( tower_mem                     ) );

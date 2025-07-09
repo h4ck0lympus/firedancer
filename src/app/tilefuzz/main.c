@@ -2,6 +2,8 @@
 #include <stdlib.h>
 #include <string.h>
 #include "../shared/fd_action.h"
+#include "../shared/commands/configure/configure.h"
+
 
 char const * FD_APP_NAME    = "fd_tile_fuzz";
 char const * FD_BINARY_NAME = "fd_tile_fuzz";
@@ -17,10 +19,8 @@ extern fd_topo_obj_callbacks_t fd_obj_cb_neigh4_hmap;
 extern fd_topo_obj_callbacks_t fd_obj_cb_fib4;
 extern fd_topo_obj_callbacks_t fd_obj_cb_keyswitch;
 extern fd_topo_obj_callbacks_t fd_obj_cb_tile;
-extern fd_topo_obj_callbacks_t fd_obj_cb_runtime_pub;
 extern fd_topo_obj_callbacks_t fd_obj_cb_blockstore;
 extern fd_topo_obj_callbacks_t fd_obj_cb_txncache;
-extern fd_topo_obj_callbacks_t fd_obj_cb_exec_spad;
 extern fd_topo_obj_callbacks_t fd_obj_cb_funk;
 
 fd_topo_obj_callbacks_t * CALLBACKS[] = {
@@ -35,10 +35,8 @@ fd_topo_obj_callbacks_t * CALLBACKS[] = {
     &fd_obj_cb_fib4,
     &fd_obj_cb_keyswitch,
     &fd_obj_cb_tile,
-    &fd_obj_cb_runtime_pub,
     &fd_obj_cb_blockstore,
     &fd_obj_cb_txncache,
-    &fd_obj_cb_exec_spad,
     &fd_obj_cb_funk,
     NULL,
 };
@@ -59,8 +57,14 @@ fd_topo_run_tile_t * TILES[] = {
   &fd_tile_send,
   NULL
 };
+
 /* I have no clue why the linker fails if these aren't there. */
 action_t * ACTIONS[] = { NULL };
+
+configure_stage_t * STAGES[] = {
+  &fd_cfg_stage_hugetlbfs,
+  NULL
+};
 
 int
 main( int    argc,
@@ -69,7 +73,7 @@ main( int    argc,
   if( FD_UNLIKELY( argc!=2 ) ) FD_LOG_ERR(( "usage: %s <topo_name>", argv[0] ));
   void * shmem = aligned_alloc( fd_drv_align(), fd_drv_footprint() );
   if( FD_UNLIKELY( !shmem ) ) FD_LOG_ERR(( "malloc failed" ));
-  fd_drv_t * drv = fd_drv_join( fd_drv_new( shmem, TILES, CALLBACKS ) );
+  fd_drv_t * drv = fd_drv_join( fd_drv_new( shmem, TILES, CALLBACKS, STAGES ) );
   if( FD_UNLIKELY( !drv ) ) FD_LOG_ERR(( "creating tile fuzz driver failed" ));
   fd_drv_init( drv, argv[1] );
 

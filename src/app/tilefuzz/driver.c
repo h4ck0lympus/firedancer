@@ -2,13 +2,17 @@
 #include <unistd.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/mount.h>
 
 #include "../../disco/topo/fd_topob.h"
 #include "../../util/pod/fd_pod_format.h"
 #include "../../disco/metrics/fd_metrics.h"
+#include "../../disco/pack/fd_microblock.h"
 #include "driver.h"
 #include "../../disco/net/fd_net_tile.h" /* fd_topos_net_tiles */
 #include "../../flamenco/snapshot/fd_snapshot_loader.h" /* FD_SNAPSHOT_SRC_HTTP */
+#include "../shared/commands/run/run.h" /* initialize_workspaces */
+
 
 #include <sys/random.h>
 #include <sys/stat.h> /* mkdir */
@@ -22,6 +26,8 @@ extern fd_topo_run_tile_t fd_tile_replay;
 extern fd_topo_run_tile_t fd_tile_tower;
 extern fd_topo_run_tile_t fd_tile_send;
 
+#define FD_HAS_FUZZ 1
+
 FD_FN_CONST ulong
 fd_drv_footprint( void ) {
   return sizeof(fd_drv_t);
@@ -33,11 +39,12 @@ fd_drv_align( void ) {
 }
 
 void *
-fd_drv_new( void * shmem, fd_topo_run_tile_t ** tiles, fd_topo_obj_callbacks_t ** callbacks ) {
+fd_drv_new( void * shmem, fd_topo_run_tile_t ** tiles, fd_topo_obj_callbacks_t ** callbacks, configure_stage_t ** stages ) {
   fd_drv_t * drv = (fd_drv_t *)shmem;
   drv->tiles = tiles;
   drv->callbacks = callbacks;
   drv->config = (fd_config_t){0};
+  drv->stages = stages;
   return drv;
 }
 
@@ -463,6 +470,8 @@ isolated_tower_topo(config_t* config, fd_topo_obj_callbacks_t* callbacks[])
   fd_topob_tile_uses( topo, replay_tile,  funk_obj, FD_SHMEM_JOIN_MODE_READ_WRITE );
 
   fd_topob_finish(topo, callbacks);
+  fd_topo_print_log( /* stdout */ 1, topo );
+
 }
 
 
@@ -567,97 +576,6 @@ isolated_shred_topo( config_t * config, fd_topo_obj_callbacks_t * callbacks[] ) 
   fd_topob_finish( topo, callbacks );
 }
 
-/* Maybe similar to what initialize workspaces does, without
-   following it closely */
-// TODO: can we share wksp between different objects?
-static void
-back_wksps( fd_topo_t * topo, fd_topo_obj_callbacks_t * callbacks[] ) {
-  ulong keyswitch_obj_id = ULONG_MAX;
-  for( ulong i=0UL; i<topo->obj_cnt; i++ ) {
-    fd_topo_obj_t * obj = &topo->objs[ i ];
-    fd_topo_obj_callbacks_t * cb = NULL;
-    ulong loose_sz = 0UL;
-    for( ulong j=0UL; callbacks[ j ]; j++ ) {
-      if( FD_UNLIKELY( !strcmp( callbacks[ j ]->name, obj->name ) ) ) {
-        cb = callbacks[ j ];
-        break;
-      }
-    }
-
-    if( FD_UNLIKELY( cb->loose ) ) loose_sz += cb->loose( topo, obj );
-
-    ulong align = cb->align( topo, obj );
-    ulong page_cnt = 1;
-    char* _page_sz = "gigantic";
-    ulong numa_idx = fd_shmem_numa_idx(0);
-
-    FD_LOG_NOTICE( ( "Creating workspace (--page-cnt %lu, --page-sz %s, --numa-idx %lu)", page_cnt, _page_sz, numa_idx ) );
-
-    static int wksp_idx = 0;
-    char wksp_name[64];  
-    snprintf(wksp_name, sizeof(wksp_name), "wksp_%d", wksp_idx);
-    wksp_idx++;
-
-    fd_wksp_t * wksp = fd_wksp_new_anonymous( fd_cstr_to_shmem_page_sz( _page_sz ),
-                                            page_cnt,
-                                            fd_shmem_cpu_idx(numa_idx),
-                                            wksp_name,
-                                            0UL );
-    FD_TEST(wksp);
-    
-    ulong part_max = wksp->part_max;
-    if( !part_max ) part_max = (loose_sz / (64UL << 10));
-    part_max += 3; /* for initial alignment */
-
-    
-    ulong offset = fd_ulong_align_up( fd_wksp_private_data_off( part_max ), fd_topo_workspace_align() );
-    offset = fd_ulong_align_up( offset, align);
-    obj->offset = offset;
-    obj->wksp_id = obj->id;
-    topo->workspaces[ obj->wksp_id ].wksp = wksp; // aligned_alloc( align, obj->footprint );
-    // obj->offset = 0UL;
-    FD_LOG_NOTICE(( "obj %s %lu %lu %lu %lu", obj->name, obj->wksp_id, obj->footprint, obj->offset, align ));
-    FD_LOG_NOTICE(( "wksp pointer %p", (void*)topo->workspaces[ obj->wksp_id ].wksp ));
-    /* ~equivalent to fd_topo_wksp_new in a world of real workspaces */
-    if( FD_UNLIKELY( cb->new ) ) { /* only saw this null for tiles */
-      cb->new( topo, obj );
-    }
-    if( FD_UNLIKELY( 0== strcmp( obj->name, "keyswitch" ) ) ) {
-      keyswitch_obj_id = obj->id;
-    }
-    // TODO add ASAN and MSAN poisoned memory before and after
-  }
-
-  /* The rest of this function an adoption of fd_topo_wksp_fill without
-     the wksp id checks.  I haven't looked into why they are needed */
-  for( ulong i=0UL; i<topo->link_cnt; i++ ) {
-    fd_topo_link_t * link = &topo->links[ i ];
-    link->mcache = fd_mcache_join( fd_topo_obj_laddr( topo, link->mcache_obj_id ) );
-#ifdef FD_HAS_FUZZ /* TODO now basically everything needs FUZZ */
-    link->mcache->hook = fd_drv_publish_hook;
-#endif
-    FD_TEST( link->mcache );
-    /* only saw this false for tile code */
-    if( FD_LIKELY( link->mtu ) ) {
-      link->dcache = fd_dcache_join( fd_topo_obj_laddr( topo, link->dcache_obj_id ) );
-      FD_TEST( link->dcache );
-    }
-  }
-
-  for( ulong i=0UL; i<topo->tile_cnt; i++ ) {
-    fd_topo_tile_t * tile = &topo->tiles[ i ];
-    tile->keyswitch_obj_id = keyswitch_obj_id;
-
-    tile->metrics = fd_metrics_join( fd_topo_obj_laddr( topo, tile->metrics_obj_id ) );
-    FD_TEST( tile->metrics );
-
-    for( ulong j=0UL; j<tile->in_cnt; j++ ) {
-      tile->in_link_fseq[ j ] = fd_fseq_join( fd_topo_obj_laddr( topo, tile->in_link_fseq_obj_id[ j ] ) );
-      FD_TEST( tile->in_link_fseq[ j ] );
-    }
-  }
-}
-
 static void
 init_tiles( fd_drv_t * drv ) {
   for( ulong i=0UL; i<drv->config.topo.tile_cnt; i++ ) {
@@ -689,16 +607,24 @@ fd_drv_init( fd_drv_t * drv,
 
   strcpy( config->name, "tile_fuzz_driver" );
 
-  char * identity_path = "/tmp/keypair.json";
-  char * vote_account_path = "/tmp/vote_account_path.json";
+  char * identity_path = "./keypair.json";
+  char * vote_account_path = "./vote_account_path.json";
   create_tmp_file( identity_path, "[71,60,17,94,167,87,207,120,61,120,160,233,173,197,58,217,214,218,153,228,116,222,11,211,184,155,118,23,42,117,197,60,201,89,130,105,44,12,187,216,103,89,109,137,91,248,55,31,16,61,21,117,107,68,142,67,230,247,42,14,74,30,158,201]" );
   
   // TODO: can we keep this same ? @liam
   create_tmp_file( vote_account_path, "[71,60,17,94,167,87,207,120,61,120,160,233,173,197,58,217,214,218,153,228,116,222,11,211,184,155,118,23,42,117,197,60,201,89,130,105,44,12,187,216,103,89,109,137,91,248,55,31,16,61,21,117,107,68,142,67,230,247,42,14,74,30,158,201]" );
   strcpy( config->paths.identity_key, identity_path );
-  strcpy(config->paths.vote_account, vote_account_path);
+  strcpy( config->paths.vote_account, vote_account_path );
   config->consensus.expected_shred_version = 64475;
   config->net.ingress_buffer_size = 16384;
+
+  strcpy( config->hugetlbfs.huge_page_mount_path, "/mnt/.fd/.huge" );
+  strcpy( config->hugetlbfs.gigantic_page_mount_path, "/mnt/.fd/.gigantic" );
+
+  /* the umout is most certainly not the best way to do this (check if
+     the fd is dynamic with respect to topo/size changes */
+  umount( config->hugetlbfs.huge_page_mount_path );
+  umount( config->hugetlbfs.gigantic_page_mount_path );
 
   if( FD_LIKELY( 0==strcmp( topo_name, "isolated_gossip") ) ) {
     isolated_gossip_topo( config, drv->callbacks );
@@ -709,7 +635,13 @@ fd_drv_init( fd_drv_t * drv,
   } else {
     FD_LOG_ERR(( "unknown topology name %s", topo_name ));
   }
-  back_wksps( &config->topo, drv->callbacks );
+  // back_wksps( &config->topo, drv->callbacks );
+  STAGES[0]->init( config );
+  initialize_workspaces( config );
+  fd_topo_join_workspaces( &config->topo, FD_SHMEM_JOIN_MODE_READ_WRITE );
+  fd_topo_fill( &config->topo );
+
+
   FD_LOG_NOTICE(( "tile cnt: %lu", config->topo.tile_cnt ));
   init_tiles( drv );
 
@@ -755,7 +687,7 @@ fd_drv_send( fd_drv_t * drv,
   fd_topo_link_t * link = NULL;
 
   // TODO this is not quite correct, e.g. for rstart_gossi
-  for( ulong i = 0UL; i < topo->link_cnt; i++ ) {
+  for( ulong i = 0UL; i<topo->link_cnt; i++ ) {
     char *name = topo->links[i].name;
 
     char *underscore = strchr(name, '_');

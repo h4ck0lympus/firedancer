@@ -3,10 +3,12 @@
 
 #include "../../disco/topo/fd_topob.h"
 #include "../shared/fd_config.h"
+#include "../shared/commands/configure/configure.h"
 
 struct fd_drv_private {
   fd_topo_run_tile_t **      tiles;
   fd_topo_obj_callbacks_t ** callbacks;
+  configure_stage_t **       stages;
   fd_config_t                config;
 };
 typedef struct fd_drv_private fd_drv_t;
@@ -18,7 +20,7 @@ FD_FN_CONST ulong
 fd_drv_align( void );
 
 void *
-fd_drv_new( void * shmem, fd_topo_run_tile_t ** tiles, fd_topo_obj_callbacks_t ** callbacks );
+fd_drv_new( void * shmem, fd_topo_run_tile_t ** tiles, fd_topo_obj_callbacks_t ** callbacks, configure_stage_t ** stages );
 
 fd_drv_t *
 fd_drv_join( void * shmem );

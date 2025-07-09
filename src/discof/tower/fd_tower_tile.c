@@ -160,7 +160,7 @@ update_ghost( ctx_t * ctx, fd_funk_txn_t * txn ) {
       /* Check if it has crossed the equivocation safety and optimistic
          confirmation thresholds. */
 
-      fd_ghost_node_t const * node = fd_ghost_query( ghost, vote );
+      fd_ghost_ele_t const * ele = fd_ghost_query( ghost, vote );
 
       /* Error if the node's vote slot is not in ghost. This is an
          invariant violation, because we know their tower must be on the
@@ -168,18 +168,18 @@ update_ghost( ctx_t * ctx, fd_funk_txn_t * txn ) {
          definition their vote slot must be in our ghost (ie. we can't
          have rooted past it or be on a different fork). */
 
-      if( FD_UNLIKELY( !node ) ) FD_LOG_ERR(( "[%s] voter %s's vote slot %lu was not in ghost", __func__, FD_BASE58_ENC_32_ALLOCA(&voter->key), vote ));
+      if( FD_UNLIKELY( !ele ) ) FD_LOG_ERR(( "[%s] voter %s's vote slot %lu was not in ghost", __func__, FD_BASE58_ENC_32_ALLOCA(&voter->key), vote ));
 
       fd_ghost_replay_vote( ghost, voter, vote );
-      double pct = (double)node->replay_stake / (double)epoch->total_stake;
-      if( FD_UNLIKELY( pct > FD_CONFIRMED_PCT ) ) ctx->confirmed = fd_ulong_max( ctx->confirmed, node->slot );
+      double pct = (double)ele->replay_stake / (double)epoch->total_stake;
+      if( FD_UNLIKELY( pct > FD_CONFIRMED_PCT ) ) ctx->confirmed = fd_ulong_max( ctx->confirmed, ele->slot );
     }
 
     /* Check if this voter's root >= ghost root. We can't process
         other voters' roots that precede the ghost root. */
 
     if( FD_LIKELY( root != FD_SLOT_NULL && root >= fd_ghost_root( ghost )->slot ) ) {
-      fd_ghost_node_t const * node = fd_ghost_query( ghost, root );
+      fd_ghost_ele_t const * ele = fd_ghost_query( ghost, root );
 
       /* Error if the node's root slot is not in ghost. This is an
          invariant violation, because we know their tower must be on the
@@ -187,11 +187,11 @@ update_ghost( ctx_t * ctx, fd_funk_txn_t * txn ) {
          definition their root slot must be in our ghost (ie. we can't
          have rooted past it or be on a different fork). */
 
-      if( FD_UNLIKELY( !node ) ) FD_LOG_ERR(( "[%s] voter %s's root slot %lu was not in ghost", __func__, FD_BASE58_ENC_32_ALLOCA(&voter->key), root ));
+      if( FD_UNLIKELY( !ele ) ) FD_LOG_ERR(( "[%s] voter %s's root slot %lu was not in ghost", __func__, FD_BASE58_ENC_32_ALLOCA(&voter->key), root ));
 
       fd_ghost_rooted_vote( ghost, voter, root );
-      double pct = (double)node->rooted_stake / (double)epoch->total_stake;
-      if( FD_UNLIKELY( pct > FD_FINALIZED_PCT ) ) ctx->finalized = fd_ulong_max( ctx->finalized, node->slot );
+      double pct = (double)ele->rooted_stake / (double)epoch->total_stake;
+      if( FD_UNLIKELY( pct > FD_FINALIZED_PCT ) ) ctx->finalized = fd_ulong_max( ctx->finalized, ele->slot );
     }
   }
 }
@@ -316,8 +316,8 @@ after_frag( ctx_t *             ctx,
 
   if( FD_UNLIKELY( fd_tower_votes_empty( ctx->tower ) ) ) fd_tower_from_vote_acc( ctx->tower, ctx->funk, funk_txn, &ctx->funk_key );
 
-  fd_ghost_node_t const * ghost_node = fd_ghost_insert( ctx->ghost, parent_slot, slot );
-  FD_TEST( ghost_node );
+  fd_ghost_ele_t const * ghost_ele = fd_ghost_insert( ctx->ghost, parent_slot, slot );
+  FD_TEST( ghost_ele );
   update_ghost( ctx, funk_txn );
   
   ulong vote_slot = fd_tower_vote_slot( ctx->tower, ctx->epoch, ctx->funk, funk_txn, ctx->ghost, ctx->scratch );
@@ -338,7 +338,7 @@ after_frag( ctx_t *             ctx,
   FD_TEST( vote_txn->payload_sz > 0UL );
   fd_stem_publish( stem, ctx->send_out_idx, vote_slot, ctx->send_out_chunk, sizeof(fd_txn_p_t), 0UL, tsorig, fd_frag_meta_ts_comp( fd_tickcount() ) );
 
-  fd_ghost_print( ctx->ghost, ctx->epoch, fd_ghost_root( ctx->ghost ) );
+  fd_ghost_print( ctx->ghost, ctx->epoch->total_stake, fd_ghost_root( ctx->ghost ) );
   fd_tower_print( ctx->tower, ctx->root );
 }
 
@@ -362,12 +362,12 @@ unprivileged_init( fd_topo_t *      topo,
 
   FD_LOG_NOTICE(( "epoch_mem: %p", epoch_mem ));
   ctx->epoch   = fd_epoch_join( fd_epoch_new( epoch_mem, FD_VOTER_MAX       ) );
-  ctx->ghost   = fd_ghost_join( fd_ghost_new( ghost_mem, 42UL, FD_BLOCK_MAX ) );
 #ifdef FD_HAS_FUZZ
   ctx->ghost_mem = ghost_mem;
   ctx->scratch_mem = scratch_mem;
   ctx->tower_mem = tower_mem;
 #endif
+  ctx->ghost   = fd_ghost_join( fd_ghost_new( ghost_mem, FD_BLOCK_MAX, 42UL ) );
   ctx->tower   = fd_tower_join( fd_tower_new( tower_mem                     ) );
   ctx->scratch = fd_tower_join( fd_tower_new( scratch_mem                   ) );
   ctx->vote_ix_buf = vote_ix_mem;

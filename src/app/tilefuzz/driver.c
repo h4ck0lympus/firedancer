@@ -9,6 +9,7 @@
 #include "driver.h"
 #include "../../disco/net/fd_net_tile.h" /* fd_topos_net_tiles */
 #include "../../flamenco/snapshot/fd_snapshot_loader.h" /* FD_SNAPSHOT_SRC_HTTP */
+#include "../../funk/fd_funk_txn.h"
 
 #include <sys/random.h>
 #include <sys/stat.h> /* mkdir */
@@ -65,6 +66,28 @@ fd_drv_publish_hook( fd_frag_meta_t const * mcache ) {
      ignore */
 }
 
+
+
+static fd_topo_run_tile_t *
+find_run_tile( fd_drv_t * drv, char * name ) {
+  for( ulong i=0UL; drv->tiles[ i ]; i++ ) {
+    if( 0==strcmp( name, drv->tiles[ i ]->name ) ) return drv->tiles[ i ];
+  }
+  FD_LOG_ERR(( "tile %s not found", name ));
+}
+
+static fd_topo_tile_t *
+find_topo_tile( fd_drv_t * drv, char * name ) {
+  for( ulong i=0UL; i < drv->config.topo.tile_cnt; i++ ) {
+    if( 0==strcmp( name, drv->config.topo.tiles[ i ].name ) ) return &drv->config.topo.tiles[ i ];
+  }
+  FD_LOG_ERR(( "tile %s not found", name ));
+}
+
+static fd_topo_run_tile_t *
+tile_topo_to_run( fd_drv_t * drv, fd_topo_tile_t * topo_tile ) {
+  return find_run_tile( drv, topo_tile->name );
+}
 
 static void create_tmp_file( char const * path, char const * content ) {
   int fd = open( path, O_RDWR|O_CREAT|O_TRUNC, 0644 );
@@ -304,34 +327,40 @@ init_gossip_tile(fd_topo_t* topo, config_t* config) {
 FD_FN_UNUSED static fd_topo_tile_t*
 init_send_tile(fd_topo_t* topo, config_t* config) {
   fd_topob_wksp(topo, "send");
-  fd_topob_wksp(topo, "send_net");  
+  fd_topob_wksp(topo, "send_sign");
+  fd_topob_wksp(topo, "sign_send");
+  fd_topob_wksp(topo, "net_send");
+  fd_topob_wksp(topo, "send_net");
   fd_topob_wksp(topo, "send_txns");  
   fd_topob_wksp(topo, "tower_send");
   fd_topob_wksp(topo, "gossip_send");
-  fd_topob_wksp(topo, "send_sign");  
-  fd_topob_wksp(topo, "sign_send");
   fd_topob_wksp(topo, "stake_out");
+
   // ~imo we don't need tower send~  --- ok we needed tower send
   fd_topo_tile_t* send_tile = fd_topob_tile( topo, "send", "send", "metric_in", 0, 0, 0);
+  send_tile->send.send_src_port = config->tiles.send.send_src_port;
+  send_tile->send.ip_addr = config->net.ip_addr;
   strncpy(send_tile->send.identity_key_path, config->paths.identity_key, sizeof(send_tile->send.identity_key_path));
 
+  fd_topob_link(topo, "net_send", "net_send", 128UL, FD_NET_MTU, 1UL);  
+  fd_topob_link(topo, "send_sign", "send_sign", 128UL, FD_TXN_MTU, 1UL);  
+  fd_topob_link(topo, "sign_send", "sign_send", 128UL, 64UL, 1UL);  
+  fd_topob_link(topo, "send_net", "send_net", 128UL, FD_NET_MTU, 1UL);  
   fd_topob_link(topo, "gossip_send", "gossip_send", 128UL, 40200UL * 38UL, 1UL);
   fd_topob_link(topo, "tower_send", "tower_send", 65536UL, sizeof(fd_txn_p_t), 1UL);
-  fd_topob_link(topo, "send_net", "send_net", 128UL, 2048UL, 1UL);  
-  fd_topob_link(topo, "send_sign", "send_sign", 128UL, 64UL, 1UL);  
   fd_topob_link(topo, "send_txns", "send_txns",  128UL, FD_TXN_MTU, 1UL);
-  fd_topob_link(topo, "sign_send", "sign_send", 128UL, 64UL, 1UL);  
   fd_topob_link(topo, "stake_out", "stake_out", 128UL, 40UL + 40200UL * 40UL, 1UL);  
 
   fd_topob_tile_in(topo, "send", 0UL, "metric_in", "stake_out", 0UL, FD_TOPOB_UNRELIABLE, FD_TOPOB_POLLED);
   fd_topob_tile_in(topo, "send", 0UL, "metric_in", "gossip_send", 0UL, FD_TOPOB_RELIABLE, FD_TOPOB_POLLED);
   fd_topob_tile_in(topo, "send", 0UL, "metric_in", "tower_send", 0UL, FD_TOPOB_RELIABLE, FD_TOPOB_POLLED);  
-  fd_topob_tile_in(topo, "send", 0UL, "metric_in", "sign_send", 0UL, FD_TOPOB_UNRELIABLE, FD_TOPOB_UNPOLLED);
   fd_topob_tile_in(topo, "gossip",  0UL, "metric_in", "send_txns" , 0UL, FD_TOPOB_RELIABLE, FD_TOPOB_POLLED);
 
-  fd_topob_tile_out(topo, "gossip", 0UL, "gossip_send", 0UL);
+  fd_topob_tile_in(topo, "send", 0UL, "metric_in", "net_send", 0UL, FD_TOPOB_UNRELIABLE, FD_TOPOB_POLLED);  
+  fd_topob_tile_in(topo, "send", 0UL, "metric_in", "sign_send", 0UL, FD_TOPOB_UNRELIABLE, FD_TOPOB_UNPOLLED);  
   fd_topob_tile_out(topo, "send", 0UL, "send_net", 0UL);  
   fd_topob_tile_out(topo, "send", 0UL, "send_sign", 0UL);
+  fd_topob_tile_out(topo, "gossip", 0UL, "gossip_send", 0UL);
   fd_topob_tile_out(topo, "tower", 0UL, "tower_send",0UL);
   fd_topob_tile_out(topo, "send", 0UL, "send_txns",0UL);
 
@@ -364,7 +393,7 @@ isolated_tower_topo(config_t* config, fd_topo_obj_callbacks_t* callbacks[])
   config->firedancer.funk.max_database_transactions = 1024;  
   config->firedancer.funk.heap_size_gib = 1;
 
-  //TODO funk setup
+  // funk setup
   fd_topob_wksp(topo, "funk");
   fd_topo_obj_t * funk_obj = setup_topo_funk( topo, "funk",
       config->firedancer.funk.max_account_records,
@@ -407,6 +436,34 @@ isolated_tower_topo(config_t* config, fd_topo_obj_callbacks_t* callbacks[])
   fd_topob_tile_uses( topo, replay_tile,  funk_obj, FD_SHMEM_JOIN_MODE_READ_WRITE );
 
   fd_topob_finish(topo, callbacks);
+}
+
+static void
+mock_funk_txns(fd_drv_t* drv){
+  fd_topo_tile_t * tower_tile = find_topo_tile(drv, "tower");
+  fd_funk_t* funk = fd_topo_obj_laddr(&drv->config.topo, tower_tile->tower.funk_obj_id);
+
+  // parent slot txn
+  fd_funk_txn_xid_t parent_xid = {.ul = {1, 1}};  
+  fd_funk_txn_start_write(funk);  
+  fd_funk_txn_t* parent_txn = fd_funk_txn_prepare(funk, NULL, &parent_xid, 1);  
+  fd_funk_txn_end_write(funk);  
+    
+  if (!parent_txn) {  
+    FD_LOG_ERR(("Failed to create parent transaction"));  
+    return;  
+  }
+
+  for (uint slot=2; slot <= 0x1000; slot++) {
+    fd_funk_txn_xid_t xid = {.ul = {slot, slot}};
+    fd_funk_txn_start_write(funk);
+    fd_funk_txn_t* mock_txn = fd_funk_txn_prepare(funk, parent_txn, &xid, 1);
+    fd_funk_txn_end_write(funk);
+
+    if (!mock_txn) {
+      FD_LOG_WARNING(("Failed to prepare mock txn for slot %u", slot));
+    }
+  }
 }
 
 
@@ -512,20 +569,23 @@ isolated_shred_topo( config_t * config, fd_topo_obj_callbacks_t * callbacks[] ) 
 }
 
 /* Maybe similar to what initialize workspaces does, without
-   following it closely */
-// TODO: can we share wksp between different objects?
+   following it closely (from fd_topob_finish) */
 static void
 back_wksps( fd_topo_t * topo, fd_topo_obj_callbacks_t * callbacks[] ) {
   ulong keyswitch_obj_id = ULONG_MAX;
   for( ulong i=0UL; i<topo->obj_cnt; i++ ) {
     fd_topo_obj_t * obj = &topo->objs[ i ];
     fd_topo_obj_callbacks_t * cb = NULL;
+    ulong loose_sz = 0UL;
     for( ulong j=0UL; callbacks[ j ]; j++ ) {
       if( FD_UNLIKELY( !strcmp( callbacks[ j ]->name, obj->name ) ) ) {
         cb = callbacks[ j ];
         break;
       }
     }
+
+    if( FD_UNLIKELY( cb->loose ) ) loose_sz += cb->loose( topo, obj );
+
     ulong align = cb->align( topo, obj );
     ulong page_cnt = 1;
     char* _page_sz = "gigantic";
@@ -545,9 +605,14 @@ back_wksps( fd_topo_t * topo, fd_topo_obj_callbacks_t * callbacks[] ) {
                                             0UL );
     FD_TEST(wksp);
 
-    obj->wksp_id = obj->id;
+    ulong part_max = wksp->part_max;
+    if( !part_max ) part_max = (loose_sz / (64UL << 10)); /* alloc + residual padding */
+    part_max += 3; /* for initial alignment */
+
+    ulong offset = fd_ulong_align_up( fd_wksp_private_data_off( part_max ), fd_topo_workspace_align() );
+    offset = fd_ulong_align_up( offset, align);
+    obj->offset = offset;
     topo->workspaces[ obj->wksp_id ].wksp = wksp; // aligned_alloc( align, obj->footprint );
-    // obj->offset = 0UL;
     FD_LOG_NOTICE(( "obj %s %lu %lu %lu %lu", obj->name, obj->wksp_id, obj->footprint, obj->offset, align ));
     FD_LOG_NOTICE(( "wksp pointer %p", (void*)topo->workspaces[ obj->wksp_id ].wksp ));
     /* ~equivalent to fd_topo_wksp_new in a world of real workspaces */
@@ -590,28 +655,6 @@ back_wksps( fd_topo_t * topo, fd_topo_obj_callbacks_t * callbacks[] ) {
   }
 }
 
-
-static fd_topo_run_tile_t *
-find_run_tile( fd_drv_t * drv, char * name ) {
-  for( ulong i=0UL; drv->tiles[ i ]; i++ ) {
-    if( 0==strcmp( name, drv->tiles[ i ]->name ) ) return drv->tiles[ i ];
-  }
-  FD_LOG_ERR(( "tile %s not found", name ));
-}
-
-static fd_topo_tile_t *
-find_topo_tile( fd_drv_t * drv, char * name ) {
-  for( ulong i=0UL; i < drv->config.topo.tile_cnt; i++ ) {
-    if( 0==strcmp( name, drv->config.topo.tiles[ i ].name ) ) return &drv->config.topo.tiles[ i ];
-  }
-  FD_LOG_ERR(( "tile %s not found", name ));
-}
-
-static fd_topo_run_tile_t *
-tile_topo_to_run( fd_drv_t * drv, fd_topo_tile_t * topo_tile ) {
-  return find_run_tile( drv, topo_tile->name );
-}
-
 static void
 init_tiles( fd_drv_t * drv ) {
   for( ulong i=0UL; i<drv->config.topo.tile_cnt; i++ ) {
@@ -632,22 +675,6 @@ init_tiles( fd_drv_t * drv ) {
     }
     fd_metrics_register( topo_tile->metrics ); // TODO check if this is correct in a one thread world
   }
-
-  // create funk database . TODO: do this only if isolated tower is called
- // char const* _page_sz = "gigantic";
- // ulong page_cnt = 1UL;
- // ulong near_cpu = fd_log_cpu_id();
- // ulong txn_max = 32UL;
- // ulong rec_max = 128;
- // ulong wksp_tag = 1234UL;
- // ulong seed = 5678UL;
- // ulong iter_max = 1048576UL;
-
- // fd_wksp_t* wksp = fd_wksp_new_anonymous( fd_cstr_to_shmem_page_sz( _page_sz ), page_cnt, near_cpu, "funk_wksp", 0UL );
- // void * shfunk = fd_funk_new( fd_wksp_alloc_laddr(wksp, fd_funk_align(), fd_funk_footprint( txn_max, rec_max ), wksp_tag ), wksp_tag, seed, txn_max, rec_max );
- // fd_funk_t tst_[1];
- // fd_funk_t * tst = fd_funk_join( tst_, shfunk );
- // if( FD_UNLIKELY( !tst ) ) FD_LOG_ERR(( "Unable to create tst" ));
 }
 
 void
@@ -663,7 +690,6 @@ fd_drv_init( fd_drv_t * drv,
   char * vote_account_path = "/tmp/vote_account_path.json";
   create_tmp_file( identity_path, "[71,60,17,94,167,87,207,120,61,120,160,233,173,197,58,217,214,218,153,228,116,222,11,211,184,155,118,23,42,117,197,60,201,89,130,105,44,12,187,216,103,89,109,137,91,248,55,31,16,61,21,117,107,68,142,67,230,247,42,14,74,30,158,201]" );
   
-  // TODO: can we keep this same ? @liam
   create_tmp_file( vote_account_path, "[71,60,17,94,167,87,207,120,61,120,160,233,173,197,58,217,214,218,153,228,116,222,11,211,184,155,118,23,42,117,197,60,201,89,130,105,44,12,187,216,103,89,109,137,91,248,55,31,16,61,21,117,107,68,142,67,230,247,42,14,74,30,158,201]" );
   strcpy( config->paths.identity_key, identity_path );
   strcpy(config->paths.vote_account, vote_account_path);
@@ -682,6 +708,10 @@ fd_drv_init( fd_drv_t * drv,
   back_wksps( &config->topo, drv->callbacks );
   FD_LOG_NOTICE(( "tile cnt: %lu", config->topo.tile_cnt ));
   init_tiles( drv );
+
+  if (FD_LIKELY(0==strcmp( topo_name, "isolated_tower"))) {
+    mock_funk_txns(drv);
+  }
 }
 
 FD_FN_UNUSED void

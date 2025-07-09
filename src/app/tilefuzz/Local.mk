@@ -1,4 +1,3 @@
-
 $(call add-hdrs,driver.h)
 $(call add-objs,driver,fd_tilefuzz)
 # $(call make-bin,fd_tilefuzz,main,fd_firedancer_dev fd_firedancer fddev_share fdctl_shared fd_disco fd_flamenco fd_ballet fd_tango fd_util firedancer_version)

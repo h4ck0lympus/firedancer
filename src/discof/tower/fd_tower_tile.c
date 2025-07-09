@@ -283,6 +283,14 @@ after_frag( ctx_t *             ctx,
     return;
   }
 
+  // fd_funk_txn_xid_t mock_xid = { .ul = { slot, slot } };  
+  // fd_funk_txn_start_write(ctx->funk);  
+  // fd_funk_txn_t * mock_txn = fd_funk_txn_prepare(ctx->funk, NULL, &mock_xid, 1);  
+  // fd_funk_txn_end_write(ctx->funk);  
+  // if (!mock_txn) {  
+  //   FD_LOG_ERR(("Failed to create mock transaction for slot %lu", slot));  
+  // }
+
   fd_funk_txn_xid_t   txn_xid  = { .ul = { slot, slot } };
   fd_funk_txn_map_t * txn_map  = fd_funk_txn_map( ctx->funk );
   fd_funk_txn_start_read( ctx->funk );

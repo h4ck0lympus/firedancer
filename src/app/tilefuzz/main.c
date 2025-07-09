@@ -86,9 +86,25 @@ main( int    argc,
     fd_drv_housekeeping(drv, "tower", 0);
     uchar * data = (uchar *) malloc( 10 );
     strcpy((char *) data, "ABCDEFGH" );
+
+    // extract slot from fuzz data
+    // parent_slot < slot
+    // parent slot must exist in ghost_tree TODO
+
     ulong raw_slot; memcpy(&raw_slot, data, 8);
-    uint parent_slot = raw_slot & 0xffffffff;
-    uint slot = (raw_slot >> 16) & 0xffffffff;
+    uint parent_slot = (raw_slot & 0xffffffff);
+    uint slot = (raw_slot >> 32) & 0xffffffff;
+
+    // keeping everything in bounds -only initialize 0x1000 txn slots for performance
+    parent_slot %= 0x1000;
+    slot %= 0x1000;
+
+    if (parent_slot > slot)  {
+      uint tmp = parent_slot;
+      parent_slot = slot;
+      slot = tmp;
+    }
+
     ulong tower_slot_sig = ((ulong) slot << 32)  | parent_slot;
     fd_drv_send( drv, "gossip", "tower", 1, tower_slot_sig, data, 8 );
     free(data);

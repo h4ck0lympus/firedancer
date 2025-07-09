@@ -9,7 +9,6 @@
 #include "driver.h"
 #include "../../disco/net/fd_net_tile.h" /* fd_topos_net_tiles */
 #include "../../flamenco/snapshot/fd_snapshot_loader.h" /* FD_SNAPSHOT_SRC_HTTP */
-#include "../../funk/fd_funk_txn.h"
 
 #include <sys/random.h>
 #include <sys/stat.h> /* mkdir */
@@ -87,6 +86,34 @@ find_topo_tile( fd_drv_t * drv, char * name ) {
 static fd_topo_run_tile_t *
 tile_topo_to_run( fd_drv_t * drv, fd_topo_tile_t * topo_tile ) {
   return find_run_tile( drv, topo_tile->name );
+}
+
+static void
+mock_funk_txns(fd_drv_t* drv){
+  fd_topo_tile_t * tower_tile = find_topo_tile(drv, "tower");
+  fd_funk_t* funk = fd_topo_obj_laddr(&drv->config.topo, tower_tile->tower.funk_obj_id);
+
+  // parent slot txn
+  fd_funk_txn_xid_t parent_xid = {.ul = {1, 1}};  
+  fd_funk_txn_start_write(funk);  
+  fd_funk_txn_t* parent_txn = fd_funk_txn_prepare(funk, NULL, &parent_xid, 1);  
+  fd_funk_txn_end_write(funk);  
+    
+  if (!parent_txn) {  
+    FD_LOG_ERR(("Failed to create parent transaction"));  
+    return;  
+  }
+
+  for (uint slot=2; slot <= 0x1000; slot++) {
+    fd_funk_txn_xid_t xid = {.ul = {slot, slot}};
+    fd_funk_txn_start_write(funk);
+    fd_funk_txn_t* mock_txn = fd_funk_txn_prepare(funk, parent_txn, &xid, 1);
+    fd_funk_txn_end_write(funk);
+
+    if (!mock_txn) {
+      FD_LOG_WARNING(("Failed to prepare mock txn for slot %u", slot));
+    }
+  }
 }
 
 static void create_tmp_file( char const * path, char const * content ) {
@@ -389,7 +416,7 @@ isolated_tower_topo(config_t* config, fd_topo_obj_callbacks_t* callbacks[])
   // create tower tile
   fd_topo_tile_t* tower_tile = fd_topob_tile(topo, "tower", "tower", "metric_in", 0, 0, 0);
 
-  config->firedancer.funk.max_account_records = 1000000;  
+  config->firedancer.funk.max_account_records = 0x1000;  
   config->firedancer.funk.max_database_transactions = 1024;  
   config->firedancer.funk.heap_size_gib = 1;
 
@@ -436,34 +463,6 @@ isolated_tower_topo(config_t* config, fd_topo_obj_callbacks_t* callbacks[])
   fd_topob_tile_uses( topo, replay_tile,  funk_obj, FD_SHMEM_JOIN_MODE_READ_WRITE );
 
   fd_topob_finish(topo, callbacks);
-}
-
-static void
-mock_funk_txns(fd_drv_t* drv){
-  fd_topo_tile_t * tower_tile = find_topo_tile(drv, "tower");
-  fd_funk_t* funk = fd_topo_obj_laddr(&drv->config.topo, tower_tile->tower.funk_obj_id);
-
-  // parent slot txn
-  fd_funk_txn_xid_t parent_xid = {.ul = {1, 1}};  
-  fd_funk_txn_start_write(funk);  
-  fd_funk_txn_t* parent_txn = fd_funk_txn_prepare(funk, NULL, &parent_xid, 1);  
-  fd_funk_txn_end_write(funk);  
-    
-  if (!parent_txn) {  
-    FD_LOG_ERR(("Failed to create parent transaction"));  
-    return;  
-  }
-
-  for (uint slot=2; slot <= 0x1000; slot++) {
-    fd_funk_txn_xid_t xid = {.ul = {slot, slot}};
-    fd_funk_txn_start_write(funk);
-    fd_funk_txn_t* mock_txn = fd_funk_txn_prepare(funk, parent_txn, &xid, 1);
-    fd_funk_txn_end_write(funk);
-
-    if (!mock_txn) {
-      FD_LOG_WARNING(("Failed to prepare mock txn for slot %u", slot));
-    }
-  }
 }
 
 
@@ -569,7 +568,8 @@ isolated_shred_topo( config_t * config, fd_topo_obj_callbacks_t * callbacks[] ) 
 }
 
 /* Maybe similar to what initialize workspaces does, without
-   following it closely (from fd_topob_finish) */
+   following it closely */
+// TODO: can we share wksp between different objects?
 static void
 back_wksps( fd_topo_t * topo, fd_topo_obj_callbacks_t * callbacks[] ) {
   ulong keyswitch_obj_id = ULONG_MAX;
@@ -604,15 +604,18 @@ back_wksps( fd_topo_t * topo, fd_topo_obj_callbacks_t * callbacks[] ) {
                                             wksp_name,
                                             0UL );
     FD_TEST(wksp);
-
+    
     ulong part_max = wksp->part_max;
-    if( !part_max ) part_max = (loose_sz / (64UL << 10)); /* alloc + residual padding */
+    if( !part_max ) part_max = (loose_sz / (64UL << 10));
     part_max += 3; /* for initial alignment */
 
+    
     ulong offset = fd_ulong_align_up( fd_wksp_private_data_off( part_max ), fd_topo_workspace_align() );
     offset = fd_ulong_align_up( offset, align);
     obj->offset = offset;
+    obj->wksp_id = obj->id;
     topo->workspaces[ obj->wksp_id ].wksp = wksp; // aligned_alloc( align, obj->footprint );
+    // obj->offset = 0UL;
     FD_LOG_NOTICE(( "obj %s %lu %lu %lu %lu", obj->name, obj->wksp_id, obj->footprint, obj->offset, align ));
     FD_LOG_NOTICE(( "wksp pointer %p", (void*)topo->workspaces[ obj->wksp_id ].wksp ));
     /* ~equivalent to fd_topo_wksp_new in a world of real workspaces */
@@ -690,6 +693,7 @@ fd_drv_init( fd_drv_t * drv,
   char * vote_account_path = "/tmp/vote_account_path.json";
   create_tmp_file( identity_path, "[71,60,17,94,167,87,207,120,61,120,160,233,173,197,58,217,214,218,153,228,116,222,11,211,184,155,118,23,42,117,197,60,201,89,130,105,44,12,187,216,103,89,109,137,91,248,55,31,16,61,21,117,107,68,142,67,230,247,42,14,74,30,158,201]" );
   
+  // TODO: can we keep this same ? @liam
   create_tmp_file( vote_account_path, "[71,60,17,94,167,87,207,120,61,120,160,233,173,197,58,217,214,218,153,228,116,222,11,211,184,155,118,23,42,117,197,60,201,89,130,105,44,12,187,216,103,89,109,137,91,248,55,31,16,61,21,117,107,68,142,67,230,247,42,14,74,30,158,201]" );
   strcpy( config->paths.identity_key, identity_path );
   strcpy(config->paths.vote_account, vote_account_path);
@@ -709,7 +713,7 @@ fd_drv_init( fd_drv_t * drv,
   FD_LOG_NOTICE(( "tile cnt: %lu", config->topo.tile_cnt ));
   init_tiles( drv );
 
-  if (FD_LIKELY(0==strcmp( topo_name, "isolated_tower"))) {
+  if (strcmp(topo_name, "isolated_tower") == 0) {
     mock_funk_txns(drv);
   }
 }
@@ -736,7 +740,6 @@ fd_drv_housekeeping( fd_drv_t * drv,
   FD_LOG_ERR(( "requires compilation with FD_HAS_FUZZ" ));
 #endif
 }
-
 
 /* TODO wrong API design for stake_out, and links with multiple
         multiple consumers */

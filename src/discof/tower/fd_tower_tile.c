@@ -10,8 +10,9 @@
 #include "../../flamenco/fd_flamenco_base.h"
 #include "../../app/tilefuzz/driver.h"
 #include "../../funk/fd_funk.h"
-
 #define LOGGING 0
+#include "generated/fd_tower_tile_seccomp.h"
+#include "../../app/tilefuzz/driver.h"
 
 #define IN_KIND_GOSSIP ( 0)
 #define IN_KIND_REPLAY ( 1)

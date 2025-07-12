@@ -125,7 +125,6 @@ main( int    argc,
 
     sig = (1342UL << 32) | 1341; // parent_slot = 1341 slot = 1342
     fd_drv_send( drv, "replay", "tower", 0, sig, NULL, 0 );
-
   } else {
     FD_LOG_ERR(( "unknown topo name" ));
   }

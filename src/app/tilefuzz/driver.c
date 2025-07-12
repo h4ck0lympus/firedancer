@@ -97,8 +97,10 @@ tile_topo_to_run( fd_drv_t * drv, fd_topo_tile_t * topo_tile ) {
 
 static void
 mock_funk_txns(fd_drv_t* drv){
-  fd_topo_tile_t * tower_tile = find_topo_tile(drv, "tower");
-  fd_funk_t* funk = fd_topo_obj_laddr(&drv->config.topo, tower_tile->tower.funk_obj_id);
+  (void)drv;
+  fd_funk_t* funk = drv_funk;
+  // fd_topo_tile_t * tower_tile = find_topo_tile(drv, "tower");
+  // fd_funk_t* funk = fd_topo_obj_laddr(&drv->config.topo, tower_tile->tower.funk_obj_id);
 
   // parent slot txn
   fd_funk_txn_xid_t parent_xid = {.ul = {1, 1}};  
@@ -111,7 +113,7 @@ mock_funk_txns(fd_drv_t* drv){
     return;  
   }
 
-  for (uint slot=2; slot <= 0x1000; slot++) {
+  for (uint slot=2; slot <= MAX_FUNK_TXNS; slot++) {
     fd_funk_txn_xid_t xid = {.ul = {slot, slot}};
     fd_funk_txn_start_write(funk);
     fd_funk_txn_t* mock_txn = fd_funk_txn_prepare(funk, parent_txn, &xid, 1);
@@ -275,49 +277,6 @@ setup_topo_funk( fd_topo_t *  topo,
   return obj;
 }
 
-FD_FN_UNUSED static fd_topo_tile_t*
-init_replay_tile(fd_topo_t* topo, config_t* config) {
-  fd_topo_tile_t* replay_tile = fd_topob_tile(topo, "replay", "replay", "metric_in", 0, 0, 0);
-
-    replay_tile->replay.fec_max = config->tiles.shred.max_pending_shred_sets;
-    replay_tile->replay.max_vote_accounts = config->firedancer.runtime.limits.max_vote_accounts;
-
-    strncpy( replay_tile->replay.blockstore_file,    config->firedancer.blockstore.file,    sizeof(replay_tile->replay.blockstore_file) );
-    strncpy( replay_tile->replay.blockstore_checkpt, config->firedancer.blockstore.checkpt, sizeof(replay_tile->replay.blockstore_checkpt) );
-
-    replay_tile->replay.tx_metadata_storage = config->rpc.extended_tx_metadata_storage;
-    strncpy( replay_tile->replay.funk_checkpt, config->tiles.replay.funk_checkpt, sizeof(replay_tile->replay.funk_checkpt) );
-
-    replay_tile->replay.funk_obj_id = fd_pod_query_ulong( config->topo.props, "funk", ULONG_MAX );
-    replay_tile->replay.plugins_enabled = fd_topo_find_tile( &config->topo, "plugin", 0UL ) != ULONG_MAX;
-
-    if( FD_UNLIKELY( !strncmp( config->tiles.replay.genesis,  "", 1 )
-                  && !strncmp( config->tiles.replay.snapshot, "", 1 ) ) ) {
-      fd_cstr_printf_check( config->tiles.replay.genesis, PATH_MAX, NULL, "%s/genesis.bin", config->paths.ledger );
-    }
-    strncpy( replay_tile->replay.genesis, config->tiles.replay.genesis, sizeof(replay_tile->replay.genesis) );
-
-    strncpy( replay_tile->replay.slots_replayed, config->tiles.replay.slots_replayed, sizeof(replay_tile->replay.slots_replayed) );
-    strncpy( replay_tile->replay.status_cache, config->tiles.replay.status_cache, sizeof(replay_tile->replay.status_cache) );
-    strncpy( replay_tile->replay.cluster_version, config->tiles.replay.cluster_version, sizeof(replay_tile->replay.cluster_version) );
-    strncpy( replay_tile->replay.tower_checkpt, config->tiles.replay.tower_checkpt, sizeof(replay_tile->replay.tower_checkpt) );
-
-
-    strncpy( replay_tile->replay.identity_key_path, config->paths.identity_key, sizeof(replay_tile->replay.identity_key_path) );
-    replay_tile->replay.ip_addr = config->net.ip_addr;
-    strncpy( replay_tile->replay.vote_account_path, config->paths.vote_account, sizeof(replay_tile->replay.vote_account_path) );
-    replay_tile->replay.enable_bank_hash_cmp = 1;
-
-    replay_tile->replay.capture_start_slot = config->capture.capture_start_slot;
-    strncpy( replay_tile->replay.solcap_capture, config->capture.solcap_capture, sizeof(replay_tile->replay.solcap_capture) );
-    strncpy( replay_tile->replay.dump_proto_dir, config->capture.dump_proto_dir, sizeof(replay_tile->replay.dump_proto_dir) );
-    replay_tile->replay.dump_block_to_pb = config->capture.dump_block_to_pb;
-
-    FD_TEST( replay_tile->replay.funk_obj_id == fd_pod_query_ulong( config->topo.props, "funk", ULONG_MAX ) );
-
-  return replay_tile;
-}
-
 static fd_topo_tile_t*
 init_gossip_tile(fd_topo_t* topo, config_t* config) {
 
@@ -358,49 +317,6 @@ init_gossip_tile(fd_topo_t* topo, config_t* config) {
   return gossip_tile;
 }
 
-FD_FN_UNUSED static fd_topo_tile_t*
-init_send_tile(fd_topo_t* topo, config_t* config) {
-  fd_topob_wksp(topo, "send");
-  fd_topob_wksp(topo, "send_sign");
-  fd_topob_wksp(topo, "sign_send");
-  fd_topob_wksp(topo, "net_send");
-  fd_topob_wksp(topo, "send_net");
-  fd_topob_wksp(topo, "send_txns");  
-  fd_topob_wksp(topo, "tower_send");
-  fd_topob_wksp(topo, "gossip_send");
-  fd_topob_wksp(topo, "stake_out");
-
-  // ~imo we don't need tower send~  --- ok we needed tower send
-  fd_topo_tile_t* send_tile = fd_topob_tile( topo, "send", "send", "metric_in", 0, 0, 0);
-  send_tile->send.send_src_port = config->tiles.send.send_src_port;
-  send_tile->send.ip_addr = config->net.ip_addr;
-  strncpy(send_tile->send.identity_key_path, config->paths.identity_key, sizeof(send_tile->send.identity_key_path));
-
-  fd_topob_link(topo, "net_send", "net_send", 128UL, FD_NET_MTU, 1UL);  
-  fd_topob_link(topo, "send_sign", "send_sign", 128UL, FD_TXN_MTU, 1UL);  
-  fd_topob_link(topo, "sign_send", "sign_send", 128UL, 64UL, 1UL);  
-  fd_topob_link(topo, "send_net", "send_net", 128UL, FD_NET_MTU, 1UL);  
-  fd_topob_link(topo, "gossip_send", "gossip_send", 128UL, 40200UL * 38UL, 1UL);
-  fd_topob_link(topo, "tower_send", "tower_send", 65536UL, sizeof(fd_txn_p_t), 1UL);
-  fd_topob_link(topo, "send_txns", "send_txns",  128UL, FD_TXN_MTU, 1UL);
-  fd_topob_link(topo, "stake_out", "stake_out", 128UL, 40UL + 40200UL * 40UL, 1UL);  
-
-  fd_topob_tile_in(topo, "send", 0UL, "metric_in", "stake_out", 0UL, FD_TOPOB_UNRELIABLE, FD_TOPOB_POLLED);
-  fd_topob_tile_in(topo, "send", 0UL, "metric_in", "gossip_send", 0UL, FD_TOPOB_RELIABLE, FD_TOPOB_POLLED);
-  fd_topob_tile_in(topo, "send", 0UL, "metric_in", "tower_send", 0UL, FD_TOPOB_RELIABLE, FD_TOPOB_POLLED);  
-  fd_topob_tile_in(topo, "gossip",  0UL, "metric_in", "send_txns" , 0UL, FD_TOPOB_RELIABLE, FD_TOPOB_POLLED);
-
-  fd_topob_tile_in(topo, "send", 0UL, "metric_in", "net_send", 0UL, FD_TOPOB_UNRELIABLE, FD_TOPOB_POLLED);  
-  fd_topob_tile_in(topo, "send", 0UL, "metric_in", "sign_send", 0UL, FD_TOPOB_UNRELIABLE, FD_TOPOB_UNPOLLED);  
-  fd_topob_tile_out(topo, "send", 0UL, "send_net", 0UL);  
-  fd_topob_tile_out(topo, "send", 0UL, "send_sign", 0UL);
-  fd_topob_tile_out(topo, "gossip", 0UL, "gossip_send", 0UL);
-  fd_topob_tile_out(topo, "tower", 0UL, "tower_send",0UL);
-  fd_topob_tile_out(topo, "send", 0UL, "send_txns",0UL);
-
-  return send_tile;
-}
-
 static void
 isolated_tower_topo(config_t* config, fd_topo_obj_callbacks_t* callbacks[])
 {
@@ -409,11 +325,10 @@ isolated_tower_topo(config_t* config, fd_topo_obj_callbacks_t* callbacks[])
 
   // create necessary workspaces
   fd_topob_wksp(topo, "metric_in");
+  fd_topob_wksp(topo, "gossip");
   fd_topob_wksp(topo, "tower");
   fd_topob_wksp(topo, "gossip_tower");
-  fd_topob_wksp(topo, "gossip");
   fd_topob_wksp(topo, "replay_tower");
-  fd_topob_wksp(topo, "replay");
  
   // creating links
   fd_topob_link(topo, "gossip_tower", "gossip_tower", 128UL, FD_TPU_MTU, 1UL );
@@ -423,55 +338,70 @@ isolated_tower_topo(config_t* config, fd_topo_obj_callbacks_t* callbacks[])
   // create tower tile
   fd_topo_tile_t* tower_tile = fd_topob_tile(topo, "tower", "tower", "metric_in", 0, 0, 0);
 
-  config->firedancer.funk.max_account_records = 0x1000;  
-  config->firedancer.funk.max_database_transactions = 1024;  
+  // funk setup
+  config->firedancer.funk.max_account_records =  10000000;  
+  config->firedancer.funk.max_database_transactions = MAX_FUNK_TXNS;  
   config->firedancer.funk.heap_size_gib = 1;
 
-  // funk setup
   fd_topob_wksp(topo, "funk");
-  fd_topo_obj_t * funk_obj = setup_topo_funk( topo, "funk",
+  FD_PARAM_UNUSED fd_topo_obj_t * funk_obj = setup_topo_funk( topo, "funk",
       config->firedancer.funk.max_account_records,
       config->firedancer.funk.max_database_transactions,
       config->firedancer.funk.heap_size_gib 
     );
   
   // do necessary config required by tower
-  tower_tile->tower.funk_obj_id = fd_pod_query_ulong( config->topo.props, "funk", ULONG_MAX );
+  tower_tile->tower.funk_obj_id = funk_obj->id;
   strncpy(tower_tile->tower.identity_key_path, config->paths.identity_key, sizeof(tower_tile->tower.identity_key_path));
   strncpy(tower_tile->tower.vote_acc_path, config->paths.vote_account, sizeof(tower_tile->tower.vote_acc_path));
  
   // tower requires initialization of gossip tile and replay tile
-  init_gossip_tile(topo, config);
-  fd_topo_tile_t* replay_tile = init_replay_tile(topo, config);
-  
-  init_send_tile(topo, config);
+  fd_topo_tile_t* gossip_tile = fd_topob_tile(topo, "gossip", "gossip", "metric_in", 0, 0, 0);
+  strncpy( gossip_tile->gossip.identity_key_path, config->paths.identity_key, sizeof(gossip_tile->gossip.identity_key_path) );
+  gossip_tile->gossip.gossip_listen_port     = 42;
+  gossip_tile->gossip.ip_addr                = (uint)(1<<24 | 1<<16 | 1<<8 | 1);
+  gossip_tile->gossip.expected_shred_version = 50093UL;
+  gossip_tile->gossip.entrypoints_cnt = FD_TOPO_GOSSIP_ENTRYPOINTS_MAX;
+  FD_STATIC_ASSERT( FD_TOPO_GOSSIP_ENTRYPOINTS_MAX<256UL-2UL, "dummy address encoding scheme only works for 8-bit" );
+
+  for( uchar i=2; i<FD_TOPO_GOSSIP_ENTRYPOINTS_MAX; i++ ) {
+    gossip_tile->gossip.entrypoints[i].addr = (uint)(i<<24 | i<<16 | i<<8 | i);
+    gossip_tile->gossip.entrypoints[i].port = i;
+  }
+
+  fd_topob_wksp(topo, "tower_send");
+  fd_topob_link( topo, "tower_send",   "tower_send", 65536UL, sizeof(fd_txn_p_t), 1UL);
+  fd_topob_tile_out(topo, "tower", 0UL, "tower_send",0UL);
 
   fd_topob_tile_in(topo, "tower", 0UL, "metric_in", "gossip_tower", 0UL, FD_TOPOB_UNRELIABLE, FD_TOPOB_POLLED);
-  fd_topob_tile_in(topo, "tower",   0UL, "metric_in", "replay_tower", 0UL, FD_TOPOB_RELIABLE, FD_TOPOB_POLLED);
   fd_topob_tile_out(topo, "tower", 0UL, "tower_replay", 0UL);
-  fd_topob_tile_out(topo, "gossip", 0UL, "gossip_tower", 0UL);
 
-  fd_topob_tile_in(topo, "replay",  0UL, "metric_in", "tower_replay",  0UL, FD_TOPOB_RELIABLE, FD_TOPOB_POLLED);
-  fd_topob_tile_out(topo, "replay", 0UL, "replay_tower", 0UL);
+  fd_topob_wksp( topo, "sign" );
+  fd_topo_tile_t * sign_tile = fd_topob_tile( topo, "sign", "sign", "metric_in", 0UL, 0, 1 );
+  strncpy( sign_tile->sign.identity_key_path, config->paths.identity_key, sizeof(sign_tile->sign.identity_key_path) );
+
+  // sign is needed for working of gossip
+  fd_topob_wksp    ( topo, "gossip_sign" );
+  fd_topob_link    ( topo, "gossip_sign", "gossip_sign", 128UL, 2048UL, 1UL );
+  fd_topob_tile_in ( topo, "sign", 0UL, "metric_in", "gossip_sign", 0UL, FD_TOPOB_UNRELIABLE, FD_TOPOB_POLLED );
+  fd_topob_wksp    ( topo, "sign_gossip" );
+  fd_topob_link    ( topo, "sign_gossip", "sign_gossip", 128UL, 64UL, 1UL );
+  fd_topob_tile_out( topo, "sign", 0UL, "sign_gossip", 0UL );
+  fd_topob_tile_in ( topo, "gossip", 0UL, "metric_in", "sign_gossip",  0UL, FD_TOPOB_UNRELIABLE, FD_TOPOB_UNPOLLED );
+  fd_topob_tile_out( topo, "gossip", 0UL, "gossip_sign", 0UL );
+  fd_topob_tile_out( topo, "gossip",   0UL, "gossip_tower", 0UL);
+
+  fd_topo_obj_t * poh_shred_obj = fd_topob_obj( topo, "fseq", "gossip" );
+  FD_TEST( fd_pod_insertf_ulong( topo->props, poh_shred_obj->id, "poh_shred" ) );
+  fd_topob_tile_uses( topo, gossip_tile, poh_shred_obj, FD_SHMEM_JOIN_MODE_READ_WRITE );
 
   fd_topob_wksp(topo, "slot_fseqs");
   fd_topo_obj_t* root_slot_obj = fd_topob_obj(topo, "fseq", "slot_fseqs");
   fd_topob_tile_uses(topo, tower_tile, root_slot_obj, FD_SHMEM_JOIN_MODE_READ_WRITE);
   FD_TEST(fd_pod_insertf_ulong(topo->props, root_slot_obj->id, "root_slot"));
   
-  fd_topo_obj_t * turbine_slot0_obj = fd_topob_obj( topo, "fseq", "slot_fseqs" );
-  fd_topob_tile_uses( topo, replay_tile, turbine_slot0_obj, FD_SHMEM_JOIN_MODE_READ_ONLY );
-  FD_TEST( fd_pod_insertf_ulong( topo->props, turbine_slot0_obj->id, "turbine_slot0" ) );
-
-  fd_topo_obj_t * turbine_slot_obj = fd_topob_obj( topo, "fseq", "slot_fseqs" );
-  fd_topob_tile_uses( topo, replay_tile, turbine_slot_obj, FD_SHMEM_JOIN_MODE_READ_ONLY );
-  FD_TEST( fd_pod_insertf_ulong( topo->props, turbine_slot_obj->id, "turbine_slot" ) );
-
-  fd_topob_tile_uses( topo, replay_tile,  funk_obj, FD_SHMEM_JOIN_MODE_READ_WRITE );
-
   fd_topob_finish(topo, callbacks);
   fd_topo_print_log( /* stdout */ 1, topo );
-
 }
 
 
@@ -490,6 +420,7 @@ isolated_gossip_topo( config_t * config, fd_topo_obj_callbacks_t * callbacks[] )
   init_gossip_tile(topo, config);
 
   fd_topob_finish( topo, callbacks );
+  fd_topo_print_log( /* stdout */ 1, topo );
 }
 
 static void
@@ -722,6 +653,11 @@ fd_drv_send( fd_drv_t * drv,
   FD_PARAM_UNUSED int charge_busy_before = 0;
   fd_memcpy( link->dcache, data, data_sz );
 
+  // rather than statically send 4UL as chunk idx calculate correct chunk idx
+  void * base = fd_wksp_containing( link->dcache );
+  ulong chunk = fd_dcache_compact_chunk0( base, link->dcache );
+  FD_PARAM_UNUSED uchar * volatile dst = (uchar *)fd_chunk_to_laddr( base, chunk );
+
   #ifdef FD_HAS_FUZZ
   if( to_run_tile->before_credit ) {
     to_run_tile->before_credit( ctx, &fake_stem, &charge_busy_before );
@@ -736,7 +672,7 @@ fd_drv_send( fd_drv_t * drv,
     if( FD_UNLIKELY( filter ) ) return;
   }
   if( FD_LIKELY( to_run_tile->during_frag ) ) {
-    to_run_tile->during_frag( ctx, in_idx, fake_seq, sig, 4UL, data_sz, 0UL);
+    to_run_tile->during_frag( ctx, in_idx, fake_seq, sig, chunk, data_sz, 0UL);
   }
   if( FD_LIKELY( to_run_tile->after_frag ) ) {
     to_run_tile->after_frag( ctx, in_idx, fake_seq, sig, data_sz, 0UL, 0UL, &fake_stem );

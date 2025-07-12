@@ -9,6 +9,7 @@
 #include "../../funk/fd_funk.h"
 #include "../../funk/fd_funk_val.h"
 #include "generated/fd_tower_tile_seccomp.h"
+#include "../../app/tilefuzz/driver.h"
 
 #define IN_KIND_GOSSIP ( 0)
 #define IN_KIND_REPLAY ( 1)
@@ -66,6 +67,8 @@ typedef struct {
   fd_tower_t *                scratch;
   uchar *                     vote_ix_buf;
 } ctx_t;
+
+fd_funk_t* drv_funk = NULL;
 
 static void
 update_epoch( ctx_t * ctx, ulong sz ) {
@@ -353,6 +356,10 @@ unprivileged_init( fd_topo_t *      topo,
   if( FD_UNLIKELY( !fd_funk_join( ctx->funk, fd_topo_obj_laddr( topo, tile->tower.funk_obj_id ) ) ) ) {
     FD_LOG_ERR(( "Failed to join database cache" ));
   }
+
+#ifdef FD_HAS_FUZZ
+  drv_funk = ctx->funk;
+#endif
 
   ctx->epoch_voters_buf = voter_mem;
 

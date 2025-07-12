@@ -90,21 +90,7 @@ main( int    argc,
     fd_drv_housekeeping(drv, "tower", 0);
     uchar * data = (uchar *) malloc( 10 );
     strcpy((char *) data, "ABCDEFGH" );
-    ulong raw_slot; memcpy(&raw_slot, data, 8);
-    uint parent_slot = raw_slot & 0xffffffff;
-    uint slot = (raw_slot >> 32) & 0xffffffff;
-
-    parent_slot %= 0x1000;
-    slot %= 0x1000;
-
-    if (parent_slot > slot) {
-      uint tmp = parent_slot;
-      parent_slot = slot;
-      slot = tmp;
-    }
-
-    ulong tower_slot_sig = ((ulong) slot << 32)  | parent_slot;
-    fd_drv_send( drv, "gossip", "tower", 1, tower_slot_sig, data, 8 );
+    fd_drv_send( drv, "gossip", "tower", 0, 1, data, 8 );
     free(data);
   } else {
     FD_LOG_ERR(( "unknown topo name" ));

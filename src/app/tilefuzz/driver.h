@@ -4,6 +4,7 @@
 #include "../../disco/topo/fd_topob.h"
 #include "../shared/fd_config.h"
 #include "../shared/commands/configure/configure.h"
+#include "../../funk/fd_funk.h"
 
 struct fd_drv_private {
   fd_topo_run_tile_t **      tiles;
@@ -12,6 +13,10 @@ struct fd_drv_private {
   fd_config_t                config;
 };
 typedef struct fd_drv_private fd_drv_t;
+
+extern fd_funk_t* drv_funk;
+
+#define MAX_FUNK_TXNS 1024
 
 ulong
 fd_drv_footprint( void );

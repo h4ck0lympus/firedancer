@@ -552,8 +552,11 @@ initialize_numa_assignments( fd_topo_t * topo ) {
         if( FD_UNLIKELY( found_lazy ) ) break;
       }
     }
-
+    // for fuzzing purpose i think it's fine if no tile uses any object/workspace
+    // we are intializing some workspace just to pass some checks in the target tile
+#ifndef FD_HAS_FUZZ
     if( FD_UNLIKELY( !found_lazy ) ) FD_LOG_ERR(( "no tile uses object %s for workspace %s", topo->objs[ max_obj ].name, topo->workspaces[ i ].name ));
+#endif
   }
 }
 

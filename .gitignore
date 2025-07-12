@@ -81,3 +81,7 @@ local.toml
 # Python
 venv
 *.pyc
+
+keypair.json
+vote_account_path.json
+

@@ -197,6 +197,7 @@ scratch_footprint( fd_topo_tile_t const * tile FD_PARAM_UNUSED ) {
     FD_LAYOUT_APPEND(
     FD_LAYOUT_APPEND(
     FD_LAYOUT_APPEND(
+    FD_LAYOUT_APPEND(
     FD_LAYOUT_INIT,
       alignof(ctx_t),      sizeof(ctx_t)                      ),
       fd_epoch_align(),    fd_epoch_footprint( FD_VOTER_MAX ) ),
@@ -204,6 +205,7 @@ scratch_footprint( fd_topo_tile_t const * tile FD_PARAM_UNUSED ) {
       fd_tower_align(),    fd_tower_footprint()               ), /* our tower */
       fd_tower_align(),    fd_tower_footprint()               ), /* scratch */
       128UL,               VOTER_FOOTPRINT * VOTER_MAX        ), /* scratch */
+      128UL, FD_VOTER_MAX),
     scratch_align() );
 }
 
@@ -223,6 +225,8 @@ during_frag( ctx_t * ctx,
       uchar const * chunk_laddr = fd_chunk_to_laddr_const( in_ctx->mem, chunk );
       switch(sig) {
         case fd_crds_data_enum_vote: {
+          FD_LOG_NOTICE(("ctx->vote_ix_buf: %p", (void*)&ctx->vote_ix_buf));
+          // ctx->vote_ix_buf = malloc(10);
           memcpy( &ctx->vote_ix_buf[0], chunk_laddr, sz );
           break;
         }
@@ -339,11 +343,13 @@ unprivileged_init( fd_topo_t *      topo,
 
   FD_SCRATCH_ALLOC_INIT( l, scratch );
   ctx_t * ctx        = FD_SCRATCH_ALLOC_APPEND( l, alignof(ctx_t), sizeof(ctx_t)        );
+  FD_LOG_NOTICE(( "ctx in unprivileged_init: %p", scratch));
   void * epoch_mem   = FD_SCRATCH_ALLOC_APPEND( l, fd_epoch_align(),             fd_epoch_footprint( FD_VOTER_MAX ) );
   void * ghost_mem   = FD_SCRATCH_ALLOC_APPEND( l, fd_ghost_align(),             fd_ghost_footprint( FD_BLOCK_MAX ) );
   void * tower_mem   = FD_SCRATCH_ALLOC_APPEND( l, fd_tower_align(),             fd_tower_footprint()               );
   void * scratch_mem = FD_SCRATCH_ALLOC_APPEND( l, fd_tower_align(),             fd_tower_footprint()               );
   void * voter_mem   = FD_SCRATCH_ALLOC_APPEND( l, 128UL,                        VOTER_FOOTPRINT * VOTER_MAX        );
+  void * vote_ix_mem = FD_SCRATCH_ALLOC_APPEND( l, 128UL,                        FD_VOTER_MAX                          );
   ulong scratch_top  = FD_SCRATCH_ALLOC_FINI  ( l, scratch_align()                                                  );
   FD_TEST( scratch_top == (ulong)scratch + scratch_footprint( tile ) );
 
@@ -352,6 +358,8 @@ unprivileged_init( fd_topo_t *      topo,
   ctx->ghost   = fd_ghost_join( fd_ghost_new( ghost_mem, 42UL, FD_BLOCK_MAX ) );
   ctx->tower   = fd_tower_join( fd_tower_new( tower_mem                     ) );
   ctx->scratch = fd_tower_join( fd_tower_new( scratch_mem                   ) );
+  ctx->vote_ix_buf = vote_ix_mem;
+
 
   if( FD_UNLIKELY( !fd_funk_join( ctx->funk, fd_topo_obj_laddr( topo, tile->tower.funk_obj_id ) ) ) ) {
     FD_LOG_ERR(( "Failed to join database cache" ));

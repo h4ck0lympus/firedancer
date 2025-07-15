@@ -88,8 +88,8 @@ main( int    argc,
     fd_drv_housekeeping( drv, "shred", 0 );
   } else if (strcmp(argv[1], "isolated_tower") == 0)  {
     fd_drv_housekeeping(drv, "tower", 0);
-    uchar * data = (uchar *) malloc( 10 );
-    strcpy((char *) data, "ABCDEFGH" );
+    uchar * data = (uchar *) malloc( 8);
+    strcpy((char *) data, "ABCDEFG" );
     fd_drv_send( drv, "gossip", "tower", 0, 1, data, 8 );
     free(data);
   } else {

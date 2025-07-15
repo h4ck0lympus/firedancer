@@ -90,6 +90,7 @@ main( int    argc,
     fd_drv_housekeeping( drv, "shred", 0 );
   } else if (strcmp(argv[1], "isolated_tower") == 0)  {
     fd_drv_housekeeping(drv, "tower", 0);
+<<<<<<< HEAD
     
     // Create stake buffer with format: pubkey1 + stake1 + pubkey2 + stake2 + ...
     uchar stake_buffer[1024];

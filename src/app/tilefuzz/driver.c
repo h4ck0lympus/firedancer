@@ -136,122 +136,6 @@ static void create_tmp_file( char const * path, char const * content ) {
   close( fd );
 }
 
-// taken from firedancer/topology.c
-// technically can be made non static and well inluded but i don't want to break anything
-// so doing minimal changes in firedancer code
-FD_FN_UNUSED static void
-setup_snapshots( config_t *       config,
-                 fd_topo_tile_t * tile ) {
-  uchar incremental_is_file, incremental_is_url;
-  if( strnlen( config->tiles.replay.incremental, PATH_MAX )>0UL ) {
-    incremental_is_file = 1U;
-  } else {
-    incremental_is_file = 0U;
-  }
-  if( strnlen( config->tiles.replay.incremental_url, PATH_MAX )>0UL ) {
-    incremental_is_url = 1U;
-  } else {
-    incremental_is_url = 0U;
-  }
-  if( FD_UNLIKELY( incremental_is_file && incremental_is_url ) ) {
-    FD_LOG_ERR(( "At most one of the incremental snapshot source strings in the configuration file under [tiles.replay.incremental] and [tiles.replay.incremental_url] may be set." ));
-  }
-  tile->replay.incremental_src_type = INT_MAX;
-  if( FD_LIKELY( incremental_is_url ) ) {
-    strncpy( tile->replay.incremental, config->tiles.replay.incremental_url, sizeof(tile->replay.incremental) );
-    tile->replay.incremental_src_type = FD_SNAPSHOT_SRC_HTTP;
-  }
-  if( FD_UNLIKELY( incremental_is_file ) ) {
-    strncpy( tile->replay.incremental, config->tiles.replay.incremental, sizeof(tile->replay.incremental) );
-    tile->replay.incremental_src_type = FD_SNAPSHOT_SRC_FILE;
-  }
-  tile->replay.incremental[ sizeof(tile->replay.incremental)-1UL ] = '\0';
-
-  uchar snapshot_is_file, snapshot_is_url;
-  if( strnlen( config->tiles.replay.snapshot, PATH_MAX )>0UL ) {
-    snapshot_is_file = 1U;
-  } else {
-    snapshot_is_file = 0U;
-  }
-  if( strnlen( config->tiles.replay.snapshot_url, PATH_MAX )>0UL ) {
-    snapshot_is_url = 1U;
-  } else {
-    snapshot_is_url = 0U;
-  }
-  if( FD_UNLIKELY( snapshot_is_file && snapshot_is_url ) ) {
-    FD_LOG_ERR(( "At most one of the full snapshot source strings in the configuration file under [tiles.replay.snapshot] and [tiles.replay.snapshot_url] may be set." ));
-  }
-  tile->replay.snapshot_src_type = INT_MAX;
-  if( FD_LIKELY( snapshot_is_url ) ) {
-    strncpy( tile->replay.snapshot, config->tiles.replay.snapshot_url, sizeof(tile->replay.snapshot) );
-    tile->replay.snapshot_src_type = FD_SNAPSHOT_SRC_HTTP;
-  }
-  if( FD_UNLIKELY( snapshot_is_file ) ) {
-    strncpy( tile->replay.snapshot, config->tiles.replay.snapshot, sizeof(tile->replay.snapshot) );
-    tile->replay.snapshot_src_type = FD_SNAPSHOT_SRC_FILE;
-  }
-  tile->replay.snapshot[ sizeof(tile->replay.snapshot)-1UL ] = '\0';
-
-  strncpy( tile->replay.snapshot_dir, config->tiles.replay.snapshot_dir, sizeof(tile->replay.snapshot_dir) );
-  tile->replay.snapshot_dir[ sizeof(tile->replay.snapshot_dir)-1UL ] = '\0';
-}
-
-FD_FN_UNUSED static fd_topo_obj_t *
-setup_topo_txncache( fd_topo_t *  topo,
-                    char const * wksp_name,
-                    ulong        max_rooted_slots,
-                    ulong        max_live_slots,
-                    ulong        max_txn_per_slot,
-                    ulong        max_constipated_slots ) {
-  fd_topo_obj_t * obj = fd_topob_obj( topo, "txncache", wksp_name );
-
-  FD_TEST( fd_pod_insertf_ulong( topo->props, max_rooted_slots, "obj.%lu.max_rooted_slots", obj->id ) );
-  FD_TEST( fd_pod_insertf_ulong( topo->props, max_live_slots,   "obj.%lu.max_live_slots",   obj->id ) );
-  FD_TEST( fd_pod_insertf_ulong( topo->props, max_txn_per_slot, "obj.%lu.max_txn_per_slot", obj->id ) );
-  FD_TEST( fd_pod_insertf_ulong( topo->props, max_constipated_slots, "obj.%lu.max_constipated_slots", obj->id ) );
-
-  return obj;
-}
-
-FD_FN_UNUSED static fd_topo_obj_t *
-setup_topo_blockstore( fd_topo_t *  topo,
-                      char const * wksp_name,
-                      ulong        shred_max,
-                      ulong        block_max,
-                      ulong        idx_max,
-                      ulong        txn_max,
-                      ulong        alloc_max ) {
-  fd_topo_obj_t * obj = fd_topob_obj( topo, "blockstore", wksp_name );
-
-  ulong seed;
-  FD_TEST( sizeof(ulong) == getrandom( &seed, sizeof(ulong), 0 ) );
-
-  FD_TEST( fd_pod_insertf_ulong( topo->props, 1UL,        "obj.%lu.wksp_tag",   obj->id ) );
-  FD_TEST( fd_pod_insertf_ulong( topo->props, seed,       "obj.%lu.seed",       obj->id ) );
-  FD_TEST( fd_pod_insertf_ulong( topo->props, shred_max,  "obj.%lu.shred_max",  obj->id ) );
-  FD_TEST( fd_pod_insertf_ulong( topo->props, block_max,  "obj.%lu.block_max",  obj->id ) );
-  FD_TEST( fd_pod_insertf_ulong( topo->props, idx_max,    "obj.%lu.idx_max",    obj->id ) );
-  FD_TEST( fd_pod_insertf_ulong( topo->props, txn_max,    "obj.%lu.txn_max",    obj->id ) );
-  FD_TEST( fd_pod_insertf_ulong( topo->props, alloc_max,  "obj.%lu.alloc_max",  obj->id ) );
-
-  /* DO NOT MODIFY LOOSE WITHOUT CHANGING HOW BLOCKSTORE ALLOCATES INTERNAL STRUCTURES */
-
-  ulong blockstore_footprint = fd_blockstore_footprint( shred_max, block_max, idx_max, txn_max ) + alloc_max;
-  FD_TEST( fd_pod_insertf_ulong( topo->props, blockstore_footprint,  "obj.%lu.loose", obj->id ) );
-
-  return obj;
-}
-
-fd_topo_obj_t *
-setup_topo_runtime_pub( fd_topo_t *  topo,
-                        char const * wksp_name,
-                        ulong        mem_max ) {
-  fd_topo_obj_t * obj = fd_topob_obj( topo, "runtime_pub", wksp_name );
-  FD_TEST( fd_pod_insertf_ulong( topo->props, mem_max, "obj.%lu.mem_max",  obj->id ) );
-  FD_TEST( fd_pod_insertf_ulong( topo->props, 12UL,    "obj.%lu.wksp_tag", obj->id ) );
-  return obj;
-}
-
 fd_topo_obj_t *
 setup_topo_funk( fd_topo_t *  topo,
                  char const * wksp_name,
@@ -372,7 +256,7 @@ isolated_tower_topo(config_t* config, fd_topo_obj_callbacks_t* callbacks[])
   fd_topob_wksp(topo, "tower_send");
   fd_topob_link( topo, "tower_send",   "tower_send", 65536UL, sizeof(fd_txn_p_t), 1UL);
   fd_topob_tile_out(topo, "tower", 0UL, "tower_send",0UL);
-
+  fd_topob_tile_in(topo, "tower", 0UL, "metric_in", "replay_tower", 0UL, FD_TOPOB_RELIABLE, FD_TOPOB_POLLED);
   fd_topob_tile_in(topo, "tower", 0UL, "metric_in", "gossip_tower", 0UL, FD_TOPOB_UNRELIABLE, FD_TOPOB_POLLED);
   fd_topob_tile_out(topo, "tower", 0UL, "tower_replay", 0UL);
 
@@ -628,6 +512,7 @@ fd_drv_send( fd_drv_t * drv,
     if( FD_UNLIKELY( strncmp(from, name,           front_len) == 0 &&
                      strncmp(to,   underscore + 1, back_len)  == 0 ) ) {
       link = &topo->links[i];
+      FD_LOG_NOTICE(("link %s: %p", name, (void*)link));
       break;
     }
   }
@@ -641,7 +526,7 @@ fd_drv_send( fd_drv_t * drv,
   FD_PARAM_UNUSED fd_topo_run_tile_t * to_run_tile  = find_run_tile( drv, to );
   fd_topo_tile_t *     to_topo_tile = find_topo_tile( drv, to );
   FD_PARAM_UNUSED void * ctx = fd_topo_obj_laddr( &drv->config.topo, to_topo_tile->tile_obj_id );
-  FD_LOG_NOTICE(("ctx in driver.c: %p", ctx));
+  // FD_LOG_NOTICE(("ctx in driver.c: %p", ctx));
   ulong fake_seq=0UL;
   ulong fake_cr_avail=0UL;
   FD_PARAM_UNUSED fd_stem_context_t fake_stem = {
@@ -653,6 +538,7 @@ fd_drv_send( fd_drv_t * drv,
   };
   FD_PARAM_UNUSED int charge_busy_before = 0;
   fd_memcpy( link->dcache, data, data_sz );
+  FD_LOG_NOTICE(("link->dcache: %p", link->dcache));
 
   // rather than statically send 4UL as chunk idx calculate correct chunk idx
   void * base = fd_wksp_containing( link->dcache );
@@ -660,6 +546,7 @@ fd_drv_send( fd_drv_t * drv,
   FD_PARAM_UNUSED uchar * volatile dst = (uchar *)fd_chunk_to_laddr( base, chunk );
 
   #ifdef FD_HAS_FUZZ
+  link->mcache->hook = fd_drv_publish_hook;
   if( to_run_tile->before_credit ) {
     to_run_tile->before_credit( ctx, &fake_stem, &charge_busy_before );
   }

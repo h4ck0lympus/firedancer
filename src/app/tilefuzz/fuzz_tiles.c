@@ -20,6 +20,7 @@ extern fd_topo_obj_callbacks_t fd_obj_cb_runtime_pub;
 extern fd_topo_obj_callbacks_t fd_obj_cb_blockstore;
 extern fd_topo_obj_callbacks_t fd_obj_cb_txncache;
 extern fd_topo_obj_callbacks_t fd_obj_cb_exec_spad;
+extern fd_topo_obj_callbacks_t fd_obj_cb_funk;
 
 fd_topo_obj_callbacks_t * CALLBACKS[] = {
     &fd_obj_cb_mcache,
@@ -37,6 +38,7 @@ fd_topo_obj_callbacks_t * CALLBACKS[] = {
     &fd_obj_cb_blockstore,
     &fd_obj_cb_txncache,
     &fd_obj_cb_exec_spad,
+    &fd_obj_cb_funk,
     NULL,
 };
 
@@ -45,7 +47,6 @@ extern fd_topo_run_tile_t fd_tile_shred;
 extern fd_topo_run_tile_t fd_tile_sign;
 extern fd_topo_run_tile_t fd_tile_replay;
 extern fd_topo_run_tile_t fd_tile_tower;
-extern fd_topo_run_tile_t fd_tile_batch;
 extern fd_topo_run_tile_t fd_tile_send;
 
 fd_topo_run_tile_t * TILES[] = {
@@ -54,7 +55,6 @@ fd_topo_run_tile_t * TILES[] = {
   &fd_tile_shred,
   &fd_tile_replay,
   &fd_tile_tower,
-  &fd_tile_batch,
   &fd_tile_send,
   NULL
 };
@@ -62,8 +62,31 @@ fd_topo_run_tile_t * TILES[] = {
 /* I have no clue why the linker fails if these aren't there. */
 action_t * ACTIONS[] = { NULL };
 
+// bitmap to keep unique pair of slot and parent slot for tower fuzzing
+// one bit = one pair
+static uchar seen[(MAX_FUNK_TXNS*MAX_FUNK_TXNS) >> 3]; // 4096 * 4096 / 8 (>> 3)
+
+configure_stage_t * STAGES[] = {
+  &fd_cfg_stage_hugetlbfs,
+  NULL
+};
+
 fd_drv_t * drv;
 
+// pair x parent_slot = 2d -> pair * MAX_FUNK_TXNS  + parent_slot (2d -> 1d)
+static inline int pair_seen(ulong slot, ulong parent) {
+    size_t idx = ((slot-1UL) * MAX_FUNK_TXNS + (parent-1UL));
+    return seen[idx >> 3] &  (1u << (idx & 7));
+}
+
+static inline void mark_pair(ulong slot, ulong parent) {
+    size_t idx = ((slot-1UL) * MAX_FUNK_TXNS + (parent-1UL));
+    seen[idx >> 3] |= (1u << (idx & 7));
+}
+
+void reset_unique_pairs(void) {
+    memset(seen, 0, sizeof(seen));
+}
 
 /* From HERE(1) just copied from stake ci tests consider moving to
    common place */
@@ -98,10 +121,12 @@ init( int  *   argc,
       char *** argv,
       char * topo_name ) {
   (void)argc; (void)argv;
+  putenv( "FD_LOG_BACKTRACE=0" );
+  fd_log_level_core_set(3);
   fd_boot(argc, argv);
   void * shmem = aligned_alloc( fd_drv_align(),  fd_drv_footprint() );
   if( FD_UNLIKELY( !shmem ) ) FD_LOG_ERR(( "malloc failed" ));
-  drv = fd_drv_join( fd_drv_new( shmem, TILES, CALLBACKS ) );
+  drv = fd_drv_join( fd_drv_new( shmem, TILES, CALLBACKS, STAGES ) );
   fd_drv_init( drv, topo_name );
   /* setup stake ci for shred */
   if( 0==strcmp( "isolated_shred", topo_name ) ) {
@@ -163,6 +188,9 @@ fuzz_shred( uchar const * data,
 FD_FN_UNUSED static int
 fuzz_tower(uchar *data, 
            ulong size ) {
+  // TODO : proper grammar fuzzing
+  if (size < 2UL) return 1;
+
   uchar should_call_housekeeping = *CONSUME(1);
   /* These probabilities have no deeper meaning.  Just put here for
      testing */
@@ -172,15 +200,40 @@ fuzz_tower(uchar *data,
   }
   // sig carries metadata and will decide what to do with data and how data is being processed
   // we need to fuzz tower so we will set sig to value that will make sure tower is called
-  ulong raw_slot = *CONSUME(8);
-  uint parent_slot = raw_slot & 0xffffffff;
-  uint slot = (raw_slot << 32) & 0xffffffff;
-  ulong sig = slot | parent_slot;  // this is sig targetting after_frag stage
-  /* we want the smallest possible header, which is 42 */
-  if( FD_UNLIKELY( (size+42UL) > FD_NET_MTU ) ) {
+  uchar gossip_sig_raw = *CONSUME(1);
+  ulong gossip_sig = (gossip_sig_raw & 1U) ? fd_crds_data_enum_duplicate_shred /* 9 */
+    : fd_crds_data_enum_vote; /*1 */
+
+  ulong replay_sig_raw = *CONSUME(8);
+  ulong parent_slot = (replay_sig_raw & 0xffffffff);
+  ulong slot = replay_sig_raw >> 32;
+
+  parent_slot = (parent_slot % MAX_FUNK_TXNS) + 1 ;
+  slot = (slot % MAX_FUNK_TXNS) + 1;
+
+  if (slot <= parent_slot) {
+    slot = parent_slot + 1;
+    if (slot > MAX_FUNK_TXNS) {
+      slot = (slot % MAX_FUNK_TXNS) + 1;
+      if (slot <= parent_slot) { 
+        return 1; // no valid ordering found
+      }
+    }
+  }
+
+  if (pair_seen(slot, parent_slot)) {
     return 1;
   }
-  fd_drv_send( drv, "gossip", "tower", 1, sig, data, size );
+
+  mark_pair(slot, parent_slot);
+
+  ulong replay_sig = ( slot << 32 ) | parent_slot;
+  
+  uchar *payload = data;
+  ulong payload_sz = size;
+  fd_drv_send( drv, "gossip", "tower", 1, gossip_sig, payload, payload_sz );
+  fd_drv_send( drv, "gossip", "tower", 0, replay_sig, payload, payload_sz );
+
   return 0 /* Input succeeded.  Keep it if it found new coverage. */;
   
 }

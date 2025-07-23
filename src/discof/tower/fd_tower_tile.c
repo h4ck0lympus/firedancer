@@ -225,7 +225,7 @@ during_frag( ctx_t * ctx,
       uchar const * chunk_laddr = fd_chunk_to_laddr_const( in_ctx->mem, chunk );
       switch(sig) {
         case fd_crds_data_enum_vote: {
-          FD_LOG_NOTICE(("ctx->vote_ix_buf: %p", (void*)&ctx->vote_ix_buf));
+          // FD_LOG_NOTICE(("ctx->vote_ix_buf: %p", (void*)&ctx->vote_ix_buf));
           // ctx->vote_ix_buf = malloc(10);
           memcpy( &ctx->vote_ix_buf[0], chunk_laddr, sz );
           break;
@@ -281,6 +281,11 @@ after_frag( ctx_t *             ctx,
 
   ulong slot        = fd_ulong_extract( sig, 32, 63 );
   ulong parent_slot = fd_ulong_extract_lsb( sig, 32 );
+
+  // TODO:
+#ifdef FD_HAS_FUZZ
+  fd_ghost_init(ctx->ghost, parent_slot);
+#endif
 
   if( FD_UNLIKELY( (uint)parent_slot == UINT_MAX ) ) { /* snapshot slot */
     FD_TEST( ctx->funk );
@@ -384,10 +389,19 @@ unprivileged_init( fd_topo_t *      topo,
     fd_topo_link_t * link = &topo->links[ tile->in_link_id[ in_idx ] ];
     if(        0==strcmp( link->name, "gossip_tower" ) ) {
       ctx->in_kind[ in_idx ] = IN_KIND_GOSSIP;
+      #ifdef FD_HAS_FUZZ
+      FD_LOG_NOTICE(("gossip_tower in_idx: %d", in_idx));
+      #endif
     } else if( 0==strcmp( link->name, "replay_tower" ) ) {
       ctx->in_kind[ in_idx ] = IN_KIND_REPLAY;
+      #ifdef FD_HAS_FUZZ
+      FD_LOG_NOTICE(("replay_tower in_idx: %d", in_idx));
+      #endif
     } else if( 0==strcmp( link->name, "stake_out" ) ) {
       ctx->in_kind[ in_idx ] = IN_KIND_SHRED;
+      #ifdef FD_HAS_FUZZ
+      FD_LOG_NOTICE(("stake_out in_idx: %d", in_idx));
+      #endif
     } else {
       FD_LOG_ERR(( "tower tile has unexpected input link %s", link->name ));
     }

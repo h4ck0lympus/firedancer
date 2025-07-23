@@ -90,7 +90,10 @@ main( int    argc,
     fd_drv_housekeeping(drv, "tower", 0);
     uchar * data = (uchar *) malloc( 8);
     strcpy((char *) data, "ABCDEFG" );
-    fd_drv_send( drv, "gossip", "tower", 0, 1, data, 8 );
+    ulong sig = (1337UL << 32) | 1UL; // parent_slot = 1336 slot = 1337
+    // TODO: derive in_idx properly
+    fd_drv_send( drv, "gossip", "tower", 1, 1, data, 8 );
+    fd_drv_send( drv, "replay", "tower", 0, sig, data, 8 );
     free(data);
   } else {
     FD_LOG_ERR(( "unknown topo name" ));

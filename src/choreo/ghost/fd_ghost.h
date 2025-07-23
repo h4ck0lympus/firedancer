@@ -56,6 +56,7 @@
 #define FD_GHOST_USE_HANDHOLDING 1
 #endif
 
+
 /* fd_ghost_node_t implements a left-child, right-sibling n-ary tree.
    Each node maintains the `node_pool` index of its left-most child
    (`child_idx`), its immediate-right sibling (`sibling_idx`), and its

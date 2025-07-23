@@ -536,7 +536,7 @@ fd_drv_send( fd_drv_t * drv,
   FD_PARAM_UNUSED fd_topo_run_tile_t * to_run_tile  = find_run_tile( drv, to );
   fd_topo_tile_t *     to_topo_tile = find_topo_tile( drv, to );
   FD_PARAM_UNUSED void * ctx = fd_topo_obj_laddr( &drv->config.topo, to_topo_tile->tile_obj_id );
-  FD_LOG_NOTICE(("ctx in driver.c: %p", ctx));
+  // FD_LOG_NOTICE(("ctx in driver.c: %p", ctx));
   ulong fake_seq=0UL;
   ulong fake_cr_avail=0UL;
   FD_PARAM_UNUSED fd_stem_context_t fake_stem = {

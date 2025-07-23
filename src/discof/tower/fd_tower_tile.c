@@ -250,24 +250,13 @@ scratch_footprint( fd_topo_tile_t const * tile FD_PARAM_UNUSED ) {
     FD_LAYOUT_APPEND(
     FD_LAYOUT_APPEND(
     FD_LAYOUT_APPEND(
-    FD_LAYOUT_APPEND(
     FD_LAYOUT_INIT,
-<<<<<<< HEAD
-      alignof(ctx_t),      sizeof(ctx_t)                      ),
-      fd_epoch_align(),    fd_epoch_footprint( FD_VOTER_MAX ) ),
-      fd_ghost_align(),    fd_ghost_footprint( FD_BLOCK_MAX ) ),
-      fd_tower_align(),    fd_tower_footprint()               ), /* our tower */
-      fd_tower_align(),    fd_tower_footprint()               ), /* scratch */
-      128UL,               VOTER_FOOTPRINT * VOTER_MAX        ), /* scratch */
-      128UL, FD_VOTER_MAX),
-=======
-      alignof(ctx_t),   sizeof(ctx_t)                      ),
-      fd_epoch_align(), fd_epoch_footprint( FD_VOTER_MAX ) ),
-      fd_ghost_align(), fd_ghost_footprint( FD_BLOCK_MAX ) ),
-      fd_tower_align(), fd_tower_footprint()               ), /* our tower */
-      fd_tower_align(), fd_tower_footprint()               ), /* scratch */
-      128UL,            VOTER_FOOTPRINT * VOTER_MAX        ), /* scratch */
->>>>>>> 89082f972 (refactor(reasm): key reasm FECs by merkle root and rework tile root init)
+    alignof(ctx_t),   sizeof(ctx_t)                      ),
+    fd_epoch_align(), fd_epoch_footprint( FD_VOTER_MAX ) ),
+    fd_ghost_align(), fd_ghost_footprint( FD_BLOCK_MAX ) ),
+    fd_tower_align(), fd_tower_footprint()               ), /* our tower */
+    fd_tower_align(), fd_tower_footprint()               ), /* scratch */
+    128UL,            VOTER_FOOTPRINT * VOTER_MAX        ), /* scratch */
     scratch_align() );
 }
 
@@ -282,57 +271,6 @@ during_frag( ctx_t * ctx,
   uint          in_kind     = ctx->in_kind[in_idx];
   uchar const * chunk_laddr = fd_chunk_to_laddr( ctx->in_links[in_idx].mem, chunk );
   switch( in_kind ) {
-<<<<<<< HEAD
-
-    case IN_KIND_GOSSIP: {
-      uchar const * chunk_laddr = fd_chunk_to_laddr_const( in_ctx->mem, chunk );
-      switch(sig) {
-        case fd_crds_data_enum_vote: {
-          FD_LOG_NOTICE(( "Received vote message: sz=%lu", sz ));
-          // FD_LOG_NOTICE(("ctx->vote_ix_buf: %p", (void*)&ctx->vote_ix_buf));
-          // ctx->vote_ix_buf = malloc(10);
-          memcpy( &ctx->vote_ix_buf[0], chunk_laddr, sz );
-          break;
-        }
-        case fd_crds_data_enum_duplicate_shred: {
-          memcpy( &ctx->duplicate_shred, chunk_laddr, sizeof(fd_gossip_duplicate_shred_t) );
-          memcpy( ctx->duplicate_shred_chunk, chunk_laddr + sizeof(fd_gossip_duplicate_shred_t), FD_EQVOC_PROOF_CHUNK_SZ );
-          break;
-        }
-        default: {
-          FD_LOG_ERR(( "unexpected crds discriminant %lu", sig ));
-          break;
-        }
-      }
-      break;
-    }
-
-    case IN_KIND_REPLAY: {
-      in_ctx_t const * in_ctx = &ctx->in_links[ in_idx ];
-      ulong parent_slot = fd_ulong_extract_lsb( sig, 32 );
-      uchar const * chunk_laddr = fd_chunk_to_laddr_const( in_ctx->mem, chunk );
-      if( FD_UNLIKELY( parent_slot == UINT_MAX /* no parent, so snapshot slot */ ) ) {
-        memcpy   ( ctx->slot_hash.uc,     chunk_laddr,                     sizeof(fd_hash_t) );
-        fd_memcpy( ctx->epoch_voters_buf, chunk_laddr + sizeof(fd_hash_t), sz - sizeof(fd_hash_t) );
-      } else {
-        memcpy( ctx->bank_hash.uc,   chunk_laddr,                     sizeof(fd_hash_t) );
-        memcpy( ctx->block_hash.uc,  chunk_laddr+1*sizeof(fd_hash_t), sizeof(fd_hash_t) );
-        memcpy( ctx->slot_hash.uc,   chunk_laddr+2*sizeof(fd_hash_t), sizeof(fd_hash_t) );
-        memcpy( ctx->parent_hash.uc, chunk_laddr+3*sizeof(fd_hash_t), sizeof(fd_hash_t) );
-        /* FIXME: worth making a repair->replay packed msg to directly cast? */
-      }
-      break;
-    }
-
-    case IN_KIND_SHRED:
-      break;
-
-    case IN_KIND_SIGN:
-      break;
-
-    default:
-      FD_LOG_ERR(( "Unknown in_kind %u", in_kind ));
-=======
   case IN_KIND_GOSSIP: {                                                                                 break; }
   case IN_KIND_REPLAY: { memcpy( &ctx->replay_out,        chunk_laddr, sizeof(fd_replay_out_t)        ); break; }
   case IN_KIND_SNAP:   {
@@ -340,7 +278,6 @@ during_frag( ctx_t * ctx,
     break;
   }
   default: FD_LOG_ERR(( "unexpected input kind %u", in_kind ));
->>>>>>> 89082f972 (refactor(reasm): key reasm FECs by merkle root and rework tile root init)
   }
 }
 
@@ -466,10 +403,14 @@ unprivileged_init( fd_topo_t *      topo,
     if(        0==strcmp( link->name, "gossip_tower" ) ) {
       ctx->in_kind[ in_idx ] = IN_KIND_GOSSIP;
 <<<<<<< HEAD
+<<<<<<< HEAD
+=======
+>>>>>>> 97fbf12c2 (fuzz driver call ghost init)
       #ifdef FD_HAS_FUZZ
       FD_LOG_NOTICE(("gossip_tower in_idx: %d", in_idx));
       #endif
     } else if( 0==strcmp( link->name, "replay_tower" ) ) {
+<<<<<<< HEAD
       ctx->in_kind[ in_idx ] = IN_KIND_REPLAY;
       #ifdef FD_HAS_FUZZ
       FD_LOG_NOTICE(("replay_tower in_idx: %d", in_idx));
@@ -481,10 +422,21 @@ unprivileged_init( fd_topo_t *      topo,
       #endif
 =======
     } else if( 0==strcmp( link->name, "replay_out" ) ) {
+=======
+>>>>>>> 97fbf12c2 (fuzz driver call ghost init)
       ctx->in_kind[ in_idx ] = IN_KIND_REPLAY;
+      #ifdef FD_HAS_FUZZ
+      FD_LOG_NOTICE(("replay_tower in_idx: %d", in_idx));
+      #endif
     } else if( 0==strcmp( link->name, "snap_out" ) ) {
       ctx->in_kind[ in_idx ] = IN_KIND_SNAP;
+<<<<<<< HEAD
 >>>>>>> 89082f972 (refactor(reasm): key reasm FECs by merkle root and rework tile root init)
+=======
+      #ifdef FD_HAS_FUZZ
+      FD_LOG_NOTICE(("stake_out in_idx: %d", in_idx));
+      #endif
+>>>>>>> 97fbf12c2 (fuzz driver call ghost init)
     } else {
       FD_LOG_ERR(( "tower tile has unexpected input link %s", link->name ));
     }

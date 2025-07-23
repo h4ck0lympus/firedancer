@@ -90,7 +90,6 @@ main( int    argc,
     fd_drv_housekeeping( drv, "shred", 0 );
   } else if (strcmp(argv[1], "isolated_tower") == 0)  {
     fd_drv_housekeeping(drv, "tower", 0);
-<<<<<<< HEAD
     
     // Create stake buffer with format: pubkey1 + stake1 + pubkey2 + stake2 + ...
     uchar stake_buffer[1024];
@@ -126,6 +125,7 @@ main( int    argc,
 
     sig = (1342UL << 32) | 1341; // parent_slot = 1341 slot = 1342
     fd_drv_send( drv, "replay", "tower", 0, sig, NULL, 0 );
+
   } else {
     FD_LOG_ERR(( "unknown topo name" ));
   }

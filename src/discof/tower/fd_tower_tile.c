@@ -298,50 +298,6 @@ after_frag( ctx_t *             ctx,
   case IN_KIND_SNAP:   { after_frag_snap  ( ctx, sig, &ctx->snapshot_manifest        ); break; }
   default: FD_LOG_ERR(( "Unexpected input kind %u", in_kind ));
   }
-<<<<<<< HEAD
-
-  fd_funk_txn_xid_t   txn_xid  = { .ul = { slot, slot } };
-  fd_funk_txn_map_t * txn_map  = fd_funk_txn_map( ctx->funk );
-  fd_funk_txn_start_read( ctx->funk );
-  fd_funk_txn_t * funk_txn = fd_funk_txn_query( &txn_xid, txn_map );
-  if( FD_UNLIKELY( !funk_txn ) ) FD_LOG_ERR(( "Could not find valid funk transaction" ));
-  fd_funk_txn_end_read( ctx->funk );
-
-  /* Initialize the tower */
-
-  if( FD_UNLIKELY( fd_tower_votes_empty( ctx->tower ) ) ) fd_tower_from_vote_acc( ctx->tower, ctx->funk, funk_txn, &ctx->funk_key );
-
-  fd_ghost_ele_t const * ghost_ele  = fd_ghost_insert( ctx->ghost, &ctx->parent_hash, slot, &ctx->slot_hash, ctx->epoch->total_stake );
-  FD_TEST( ghost_ele );
-  update_ghost( ctx, funk_txn );
-  
-  ulong vote_slot = fd_tower_vote_slot( ctx->tower, ctx->epoch, ctx->funk, funk_txn, ctx->ghost, ctx->scratch );
-  if( FD_UNLIKELY( vote_slot == FD_SLOT_NULL ) ) return; /* nothing to vote on */
-
-  ulong root = fd_tower_vote( ctx->tower, vote_slot );
-  if( FD_LIKELY( root != FD_SLOT_NULL ) ) {
-    fd_hash_t const * root_bid = fd_ghost_hash( ctx->ghost, root );
-    if( FD_UNLIKELY( !root_bid ) ) {
-      FD_LOG_WARNING(( "Lowest vote slot %lu is not in ghost, skipping publish", root ));
-    } else {
-      fd_ghost_publish( ctx->ghost, root_bid );
-      fd_stem_publish( stem, ctx->replay_out_idx, root, 0UL, 0UL, 0UL, tsorig, fd_frag_meta_ts_comp( fd_tickcount() ) );
-    }
-    ctx->root = root;
-  }
-
-  /* Send our updated tower to the cluster. */
-
-  fd_txn_p_t * vote_txn = (fd_txn_p_t *)fd_chunk_to_laddr( ctx->send_out_mem, ctx->send_out_chunk );
-  fd_tower_to_vote_txn( ctx->tower, ctx->root, ctx->lockouts, &ctx->bank_hash, &ctx->block_hash, ctx->identity_key, ctx->identity_key, ctx->vote_acc, vote_txn );
-  FD_TEST( !fd_tower_votes_empty( ctx->tower ) );
-  FD_TEST( vote_txn->payload_sz > 0UL );
-  fd_stem_publish( stem, ctx->send_out_idx, vote_slot, ctx->send_out_chunk, sizeof(fd_txn_p_t), 0UL, tsorig, fd_frag_meta_ts_comp( fd_tickcount() ) );
-
-  fd_ghost_print( ctx->ghost, ctx->epoch->total_stake, fd_ghost_root( ctx->ghost ) );
-  fd_tower_print( ctx->tower, ctx->root );
-=======
->>>>>>> 89082f972 (refactor(reasm): key reasm FECs by merkle root and rework tile root init)
 }
 
 static void
@@ -402,41 +358,19 @@ unprivileged_init( fd_topo_t *      topo,
     fd_topo_link_t * link = &topo->links[ tile->in_link_id[ in_idx ] ];
     if(        0==strcmp( link->name, "gossip_tower" ) ) {
       ctx->in_kind[ in_idx ] = IN_KIND_GOSSIP;
-<<<<<<< HEAD
-<<<<<<< HEAD
-=======
->>>>>>> 97fbf12c2 (fuzz driver call ghost init)
       #ifdef FD_HAS_FUZZ
       FD_LOG_NOTICE(("gossip_tower in_idx: %d", in_idx));
       #endif
-    } else if( 0==strcmp( link->name, "replay_tower" ) ) {
-<<<<<<< HEAD
-      ctx->in_kind[ in_idx ] = IN_KIND_REPLAY;
-      #ifdef FD_HAS_FUZZ
-      FD_LOG_NOTICE(("replay_tower in_idx: %d", in_idx));
-      #endif
-    } else if( 0==strcmp( link->name, "stake_out" ) ) {
-      ctx->in_kind[ in_idx ] = IN_KIND_SHRED;
-      #ifdef FD_HAS_FUZZ
-      FD_LOG_NOTICE(("stake_out in_idx: %d", in_idx));
-      #endif
-=======
     } else if( 0==strcmp( link->name, "replay_out" ) ) {
-=======
->>>>>>> 97fbf12c2 (fuzz driver call ghost init)
       ctx->in_kind[ in_idx ] = IN_KIND_REPLAY;
       #ifdef FD_HAS_FUZZ
       FD_LOG_NOTICE(("replay_tower in_idx: %d", in_idx));
       #endif
     } else if( 0==strcmp( link->name, "snap_out" ) ) {
       ctx->in_kind[ in_idx ] = IN_KIND_SNAP;
-<<<<<<< HEAD
->>>>>>> 89082f972 (refactor(reasm): key reasm FECs by merkle root and rework tile root init)
-=======
       #ifdef FD_HAS_FUZZ
-      FD_LOG_NOTICE(("stake_out in_idx: %d", in_idx));
+      FD_LOG_NOTICE(("snap_out in_idx: %d", in_idx));
       #endif
->>>>>>> 97fbf12c2 (fuzz driver call ghost init)
     } else {
       FD_LOG_ERR(( "tower tile has unexpected input link %s", link->name ));
     }

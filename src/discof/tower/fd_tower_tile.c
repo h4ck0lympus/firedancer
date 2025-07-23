@@ -267,6 +267,7 @@ during_frag( ctx_t * ctx,
   }
 }
 
+extern ulong last_parent;
 static void
 after_frag( ctx_t *             ctx,
             ulong               in_idx,
@@ -282,10 +283,10 @@ after_frag( ctx_t *             ctx,
   ulong slot        = fd_ulong_extract( sig, 32, 63 );
   ulong parent_slot = fd_ulong_extract_lsb( sig, 32 );
 
-  // TODO:
-#ifdef FD_HAS_FUZZ
-  fd_ghost_init(ctx->ghost, parent_slot);
-#endif
+  // TODO: test for edge cases doesn't look completely right to me
+  if (last_parent == 0) { // if this is the first time we are calling it
+    fd_ghost_init(ctx->ghost, parent_slot);
+  }
 
   if( FD_UNLIKELY( (uint)parent_slot == UINT_MAX ) ) { /* snapshot slot */
     FD_TEST( ctx->funk );
@@ -336,8 +337,10 @@ after_frag( ctx_t *             ctx,
   FD_TEST( vote_txn->payload_sz > 0UL );
   fd_stem_publish( stem, ctx->send_out_idx, vote_slot, ctx->send_out_chunk, sizeof(fd_txn_p_t), 0UL, tsorig, fd_frag_meta_ts_comp( fd_tickcount() ) );
 
+#ifndef FD_HAS_FUZZ
   fd_ghost_print( ctx->ghost, ctx->epoch, fd_ghost_root( ctx->ghost ) );
   fd_tower_print( ctx->tower, ctx->root );
+#endif
 }
 
 static void

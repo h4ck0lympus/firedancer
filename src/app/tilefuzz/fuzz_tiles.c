@@ -185,13 +185,22 @@ fuzz_shred( uchar const * data,
   return 0 /* Input succeeded.  Keep it if it found new coverage. */;
 }
 
+ulong last_parent = 0;
+ulong last_slot = 0;
+// we want to create slots/forks and let tower handle this 
 FD_FN_UNUSED static int
 fuzz_tower(uchar *data, 
            ulong size ) {
-  // TODO : proper grammar fuzzing
+  // TODO: check if we should we do grammar fuzzing?
   if (size < 2UL) return 1;
 
   uchar should_call_housekeeping = *CONSUME(1);
+
+  // should we use last_parent as new parent making a fork OR
+  // should we make last_slot be the new parent, contuing to vote on same branch
+  uint should_use_last_parent = (uint)(*CONSUME(1)  > 127);
+  
+
   /* These probabilities have no deeper meaning.  Just put here for
      testing */
   uchar is_backpressured = !(should_call_housekeeping % 4);
@@ -203,12 +212,20 @@ fuzz_tower(uchar *data,
   uchar gossip_sig_raw = *CONSUME(1);
   ulong gossip_sig = (gossip_sig_raw & 1U) ? fd_crds_data_enum_duplicate_shred /* 9 */
     : fd_crds_data_enum_vote; /*1 */
-
+  
   ulong replay_sig_raw = *CONSUME(8);
-  ulong parent_slot = (replay_sig_raw & 0xffffffff);
-  ulong slot = replay_sig_raw >> 32;
+  ulong parent_slot, slot;
+  if (last_parent == 0UL) {
+    // running for the first time so initialize ghost with random slot value
+    parent_slot = (replay_sig_raw & 0xffffffff);
+    parent_slot = (parent_slot % MAX_FUNK_TXNS) + 1 ;
+  }  else if (should_use_last_parent) {
+    parent_slot = last_parent;
+  } else {
+    parent_slot = last_slot;
+  }
 
-  parent_slot = (parent_slot % MAX_FUNK_TXNS) + 1 ;
+  slot = replay_sig_raw >> 32;
   slot = (slot % MAX_FUNK_TXNS) + 1;
 
   if (slot <= parent_slot) {
@@ -233,9 +250,10 @@ fuzz_tower(uchar *data,
   ulong payload_sz = size;
   fd_drv_send( drv, "gossip", "tower", 1, gossip_sig, payload, payload_sz );
   fd_drv_send( drv, "gossip", "tower", 0, replay_sig, payload, payload_sz );
-
-  return 0 /* Input succeeded.  Keep it if it found new coverage. */;
   
+  last_parent = parent_slot;
+  last_slot = slot;
+  return 0 /* Input succeeded.  Keep it if it found new coverage. */;
 }
 
 int

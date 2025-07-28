@@ -73,11 +73,11 @@ expiration( fd_tower_vote_t const * vote ) {
 static inline ulong
 simulate_vote( fd_tower_t const * tower, ulong slot ) {
   ulong cnt = fd_tower_votes_cnt( tower );
-  while( cnt ) {
+  while( cnt > 0UL ) {
 
     /* Return early if we can't pop the top tower vote, even if votes
        below it are expired. */
-
+    
     if( FD_LIKELY( expiration( fd_tower_votes_peek_index_const( tower, cnt - 1 ) ) >= slot ) ) {
       break;
     }
@@ -108,6 +108,11 @@ fd_tower_lockout_check( fd_tower_t const * tower,
      we just assume it is on the same fork.
 
      FIXME discuss if it is safe to assume that? */
+
+  if( FD_UNLIKELY( cnt == 0UL ) ) {
+    // no votes remain after expiration, allow the vote 
+    return 1;
+  }
 
   fd_tower_vote_t const * vote = fd_tower_votes_peek_index_const( tower, cnt - 1 );
   fd_ghost_node_t const * root      = fd_ghost_root( ghost );

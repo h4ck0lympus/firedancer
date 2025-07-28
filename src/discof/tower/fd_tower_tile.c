@@ -66,6 +66,12 @@ typedef struct {
   fd_lockout_offset_t         lockouts[FD_TOWER_VOTE_MAX];
   fd_tower_t *                scratch;
   uchar *                     vote_ix_buf;
+  #ifdef FD_HAS_FUZZ
+  void* scratch_mem;
+  void* tower_mem;
+  void* ghost_mem;
+  #endif
+
 } ctx_t;
 
 fd_funk_t* drv_funk = NULL;
@@ -267,7 +273,7 @@ during_frag( ctx_t * ctx,
   }
 }
 
-extern ulong last_parent;
+extern int snapshot_slot_created;
 static void
 after_frag( ctx_t *             ctx,
             ulong               in_idx,
@@ -283,26 +289,33 @@ after_frag( ctx_t *             ctx,
   ulong slot        = fd_ulong_extract( sig, 32, 63 );
   ulong parent_slot = fd_ulong_extract_lsb( sig, 32 );
 
-  // TODO: test for edge cases doesn't look completely right to me
-  if (last_parent == 0) { // if this is the first time we are calling it
-    fd_ghost_init(ctx->ghost, parent_slot);
-  }
-
   if( FD_UNLIKELY( (uint)parent_slot == UINT_MAX ) ) { /* snapshot slot */
     FD_TEST( ctx->funk );
     FD_TEST( fd_funk_txn_map( ctx->funk ) );
     update_epoch( ctx, sz );
+#ifdef FD_HAS_FUZZ
+    if (snapshot_slot_created) {
+      // Force clean state by leaving and recreating ghost/tower
+      fd_ghost_leave(ctx->ghost);
+      fd_ghost_new(ctx->ghost_mem, ctx->ghost->seed, FD_BLOCK_MAX);
+      ctx->ghost = fd_ghost_join( ctx->ghost_mem );
+
+      fd_tower_leave(ctx->tower);
+      fd_tower_new(ctx->tower_mem);
+      ctx->tower = fd_tower_join(ctx->tower_mem);
+
+      fd_tower_leave(ctx->scratch);
+      fd_tower_new(ctx->scratch_mem);
+      ctx->scratch = fd_tower_join(ctx->scratch_mem);
+    }
+    
     fd_ghost_init( ctx->ghost, slot );
+    snapshot_slot_created = 0;
+#else
+    fd_ghost_init( ctx->ghost, slot );
+#endif
     return;
   }
-
-  // fd_funk_txn_xid_t mock_xid = { .ul = { slot, slot } };  
-  // fd_funk_txn_start_write(ctx->funk);  
-  // fd_funk_txn_t * mock_txn = fd_funk_txn_prepare(ctx->funk, NULL, &mock_xid, 1);  
-  // fd_funk_txn_end_write(ctx->funk);  
-  // if (!mock_txn) {  
-  //   FD_LOG_ERR(("Failed to create mock transaction for slot %lu", slot));  
-  // }
 
   fd_funk_txn_xid_t   txn_xid  = { .ul = { slot, slot } };
   fd_funk_txn_map_t * txn_map  = fd_funk_txn_map( ctx->funk );
@@ -337,10 +350,8 @@ after_frag( ctx_t *             ctx,
   FD_TEST( vote_txn->payload_sz > 0UL );
   fd_stem_publish( stem, ctx->send_out_idx, vote_slot, ctx->send_out_chunk, sizeof(fd_txn_p_t), 0UL, tsorig, fd_frag_meta_ts_comp( fd_tickcount() ) );
 
-#ifndef FD_HAS_FUZZ
   fd_ghost_print( ctx->ghost, ctx->epoch, fd_ghost_root( ctx->ghost ) );
   fd_tower_print( ctx->tower, ctx->root );
-#endif
 }
 
 static void
@@ -364,6 +375,11 @@ unprivileged_init( fd_topo_t *      topo,
   FD_LOG_NOTICE(( "epoch_mem: %p", epoch_mem ));
   ctx->epoch   = fd_epoch_join( fd_epoch_new( epoch_mem, FD_VOTER_MAX       ) );
   ctx->ghost   = fd_ghost_join( fd_ghost_new( ghost_mem, 42UL, FD_BLOCK_MAX ) );
+#ifdef FD_HAS_FUZZ
+  ctx->ghost_mem = ghost_mem;
+  ctx->scratch_mem = scratch_mem;
+  ctx->tower_mem = tower_mem;
+#endif
   ctx->tower   = fd_tower_join( fd_tower_new( tower_mem                     ) );
   ctx->scratch = fd_tower_join( fd_tower_new( scratch_mem                   ) );
   ctx->vote_ix_buf = vote_ix_mem;

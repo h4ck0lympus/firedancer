@@ -4,7 +4,6 @@
 #include "../shared/fd_action.h"
 #include "../../disco/shred/fd_stake_ci.h"
 
-
 extern fd_topo_obj_callbacks_t fd_obj_cb_mcache;
 extern fd_topo_obj_callbacks_t fd_obj_cb_dcache;
 extern fd_topo_obj_callbacks_t fd_obj_cb_cnc;
@@ -49,6 +48,7 @@ extern fd_topo_run_tile_t fd_tile_replay;
 extern fd_topo_run_tile_t fd_tile_tower;
 extern fd_topo_run_tile_t fd_tile_send;
 
+
 fd_topo_run_tile_t * TILES[] = {
   &fd_tile_gossip,
   &fd_tile_sign,
@@ -62,9 +62,6 @@ fd_topo_run_tile_t * TILES[] = {
 /* I have no clue why the linker fails if these aren't there. */
 action_t * ACTIONS[] = { NULL };
 
-// bitmap to keep unique pair of slot and parent slot for tower fuzzing
-// one bit = one pair
-static uchar seen[(MAX_FUNK_TXNS*MAX_FUNK_TXNS) >> 3]; // 4096 * 4096 / 8 (>> 3)
 
 configure_stage_t * STAGES[] = {
   &fd_cfg_stage_hugetlbfs,
@@ -72,21 +69,6 @@ configure_stage_t * STAGES[] = {
 };
 
 fd_drv_t * drv;
-
-// pair x parent_slot = 2d -> pair * MAX_FUNK_TXNS  + parent_slot (2d -> 1d)
-static inline int pair_seen(ulong slot, ulong parent) {
-    size_t idx = ((slot-1UL) * MAX_FUNK_TXNS + (parent-1UL));
-    return seen[idx >> 3] &  (1u << (idx & 7));
-}
-
-static inline void mark_pair(ulong slot, ulong parent) {
-    size_t idx = ((slot-1UL) * MAX_FUNK_TXNS + (parent-1UL));
-    seen[idx >> 3] |= (1u << (idx & 7));
-}
-
-void reset_unique_pairs(void) {
-    memset(seen, 0, sizeof(seen));
-}
 
 /* From HERE(1) just copied from stake ci tests consider moving to
    common place */
@@ -185,75 +167,111 @@ fuzz_shred( uchar const * data,
   return 0 /* Input succeeded.  Keep it if it found new coverage. */;
 }
 
-ulong last_parent = 0;
-ulong last_slot = 0;
+// TODO make a fuzz ctx
+static uint last_slot = UINT_MAX;
+
+#define MAX_RECENT_PARENTS 4
+
+static uchar used_slots[MAX_FUNK_TXNS];
+static uint recently_added[MAX_RECENT_PARENTS];
+static uchar num_recently_added = 0;
+
+static uint next_unused_after(uint slot_start){ 
+  for (uint s = slot_start; s < MAX_FUNK_TXNS; s++) {
+    if (!used_slots[s]) {
+      return s;
+    }
+  }
+  // no slot found
+  return UINT_MAX;
+}
+
+
+static void reset_state(void) {
+  memset(used_slots, 0, sizeof(used_slots));
+  memset(recently_added, 0, sizeof(recently_added));
+  last_slot = UINT_MAX;
+  num_recently_added = 0;
+  used_slots[0] = 1;
+}
+
+int snapshot_slot_created = 0;
+// rules: 
+// parent slot for a slot should exist
+// if a slot is used for voting, it cannot be used again unless ghost is reset or is used as a parent slot
+// snapshot slot (ghost reset) should be sent and also needs to be simulated
+// slot > parent slot
+// slot < MAX_FUNK_TXNS
 // we want to create slots/forks and let tower handle this 
 FD_FN_UNUSED static int
 fuzz_tower(uchar *data, 
            ulong size ) {
+  if (size <= 4) return 1;
+  reset_state();
   // TODO: check if we should we do grammar fuzzing?
-  if (size < 2UL) return 1;
-
-  uchar should_call_housekeeping = *CONSUME(1);
-
-  // should we use last_parent as new parent making a fork OR
-  // should we make last_slot be the new parent, contuing to vote on same branch
-  uint should_use_last_parent = (uint)(*CONSUME(1)  > 127);
-  
-
   /* These probabilities have no deeper meaning.  Just put here for
      testing */
+  uchar should_call_housekeeping = *CONSUME(1);
   uchar is_backpressured = !(should_call_housekeeping % 4);
   if( FD_UNLIKELY( should_call_housekeeping > 25 ) ) {
     fd_drv_housekeeping( drv, "tower", is_backpressured );
   }
+
   // sig carries metadata and will decide what to do with data and how data is being processed
   // we need to fuzz tower so we will set sig to value that will make sure tower is called
   uchar gossip_sig_raw = *CONSUME(1);
   ulong gossip_sig = (gossip_sig_raw & 1U) ? fd_crds_data_enum_duplicate_shred /* 9 */
     : fd_crds_data_enum_vote; /*1 */
+
+  // first send a snapshot slot to init ghost
+  uint parent_slot = UINT_MAX;
+  uint slot = (*CONSUME(2) & 0xfff) + 1;
+  if (slot >= MAX_FUNK_TXNS) slot = MAX_FUNK_TXNS - 1;
   
-  ulong replay_sig_raw = *CONSUME(8);
-  ulong parent_slot, slot;
-  if (last_parent == 0UL) {
-    // running for the first time so initialize ghost with random slot value
-    parent_slot = (replay_sig_raw & 0xffffffff);
-    parent_slot = (parent_slot % MAX_FUNK_TXNS) + 1 ;
-  }  else if (should_use_last_parent) {
-    parent_slot = last_parent;
-  } else {
-    parent_slot = last_slot;
-  }
-
-  slot = replay_sig_raw >> 32;
-  slot = (slot % MAX_FUNK_TXNS) + 1;
-
-  if (slot <= parent_slot) {
-    slot = parent_slot + 1;
-    if (slot > MAX_FUNK_TXNS) {
-      slot = (slot % MAX_FUNK_TXNS) + 1;
-      if (slot <= parent_slot) { 
-        return 1; // no valid ordering found
-      }
-    }
-  }
-
-  if (pair_seen(slot, parent_slot)) {
-    return 1;
-  }
-
-  mark_pair(slot, parent_slot);
-
-  ulong replay_sig = ( slot << 32 ) | parent_slot;
-  
-  uchar *payload = data;
+  ulong replay_sig = ((ulong) slot << 32) | parent_slot;
+  uchar* payload = data;
   ulong payload_sz = size;
-  fd_drv_send( drv, "gossip", "tower", 1, gossip_sig, payload, payload_sz );
-  fd_drv_send( drv, "gossip", "tower", 0, replay_sig, payload, payload_sz );
-  
-  last_parent = parent_slot;
+  fd_drv_send(drv, "gossip", "tower", 1, gossip_sig, payload, payload_sz);
+  fd_drv_send(drv, "replay", "tower", 0, replay_sig, NULL, 0);
+  used_slots[slot] = 1;
+  recently_added[num_recently_added % MAX_RECENT_PARENTS] = slot;
+  num_recently_added++;
   last_slot = slot;
-  return 0 /* Input succeeded.  Keep it if it found new coverage. */;
+  
+  snapshot_slot_created = 1;
+  FD_LOG_NOTICE(("parent_slot: SNAPSHOT slot: %u", slot));
+
+  while (size > 4) {
+    uint make_fork = (*CONSUME(1) < 64);
+
+    if (make_fork) {
+      if (!num_recently_added) break;
+      uint idx = (*CONSUME(1)) % num_recently_added;
+      parent_slot = recently_added[idx];
+      // ensure parent slot is still valid by using last_slot if parent is too old */
+      if (parent_slot < last_slot - 32) {
+        parent_slot = last_slot;
+      }
+    } else {
+      parent_slot = last_slot;
+    }
+
+    uint gap = *CONSUME(1) & 0xf + 1;
+    uint candidate = parent_slot + gap;
+    slot = next_unused_after(candidate);
+    if (slot == UINT_MAX || slot <= parent_slot) break;
+    if (used_slots[slot]) break;
+
+    FD_LOG_NOTICE(("parent_slot: %u slot: %u", parent_slot, slot));
+    replay_sig = ((ulong)slot << 32) | parent_slot;
+    fd_drv_send(drv, "gossip", "tower", 1, gossip_sig, payload, payload_sz);
+    fd_drv_send(drv, "replay", "tower", 0, replay_sig, payload, payload_sz);
+    used_slots[slot] = 1;
+    recently_added[num_recently_added % MAX_RECENT_PARENTS] = slot;
+    num_recently_added++;
+    last_slot = slot;
+  }
+  return 0;
 }
 
 int

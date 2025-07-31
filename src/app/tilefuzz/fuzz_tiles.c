@@ -175,6 +175,7 @@ static uint last_slot = UINT_MAX;
 static uchar used_slots[MAX_FUNK_TXNS];
 static uint recently_added[MAX_RECENT_PARENTS];
 static uchar num_recently_added = 0;
+static uint ghost_root_slot = 0;
 
 static uint next_unused_after(uint slot_start){ 
   for (uint s = slot_start; s < MAX_FUNK_TXNS; s++) {
@@ -192,6 +193,7 @@ static void reset_state(void) {
   memset(recently_added, 0, sizeof(recently_added));
   last_slot = UINT_MAX;
   num_recently_added = 0;
+  ghost_root_slot = 0;
   used_slots[0] = 1;
 }
 
@@ -207,7 +209,8 @@ FD_FN_UNUSED static int
 fuzz_tower(uchar *data, 
            ulong size ) {
   if (size <= 4) return 1;
-  reset_state();
+  
+  static int ghost_initialized = 0;
   // TODO: check if we should we do grammar fuzzing?
   /* These probabilities have no deeper meaning.  Just put here for
      testing */
@@ -223,23 +226,40 @@ fuzz_tower(uchar *data,
   ulong gossip_sig = (gossip_sig_raw & 1U) ? fd_crds_data_enum_duplicate_shred /* 9 */
     : fd_crds_data_enum_vote; /*1 */
 
-  // first send a snapshot slot to init ghost
-  uint parent_slot = UINT_MAX;
-  uint slot = (*CONSUME(2) & 0xfff) + 1;
-  if (slot >= MAX_FUNK_TXNS) slot = MAX_FUNK_TXNS - 1;
-  
-  ulong replay_sig = ((ulong) slot << 32) | parent_slot;
   uchar* payload = data;
   ulong payload_sz = size;
-  fd_drv_send(drv, "gossip", "tower", 1, gossip_sig, payload, payload_sz);
-  fd_drv_send(drv, "replay", "tower", 0, replay_sig, NULL, 0);
-  used_slots[slot] = 1;
-  recently_added[num_recently_added % MAX_RECENT_PARENTS] = slot;
-  num_recently_added++;
-  last_slot = slot;
+  uint parent_slot;
+  uint slot;
+
+  ulong replay_sig;
   
-  snapshot_slot_created = 1;
-  FD_LOG_NOTICE(("parent_slot: SNAPSHOT slot: %u", slot));
+  // Only send snapshot slot on first call to initialize ghost
+  if (!ghost_initialized) {
+    reset_state();
+    // first send a snapshot slot to init ghost
+    parent_slot = UINT_MAX;
+    slot = (*CONSUME(2) & 0xfff) + 1;
+    if (slot >= MAX_FUNK_TXNS) slot = MAX_FUNK_TXNS - 1;
+    
+    replay_sig = ((ulong) slot << 32) | parent_slot;
+    fd_drv_send(drv, "gossip", "tower", 1, gossip_sig, payload, payload_sz);
+    fd_drv_send(drv, "replay", "tower", 0, replay_sig, NULL, 0);
+
+    // reset fuzzer state after snapshot
+    memset(recently_added, 0, sizeof(recently_added));
+    num_recently_added = 0;
+    ghost_root_slot = slot;
+    last_slot = slot;
+    if (slot < MAX_FUNK_TXNS) {
+      used_slots[slot] = 1;
+    }
+    recently_added[0] = slot;
+    num_recently_added = 1;
+    
+    snapshot_slot_created = 1;
+    ghost_initialized = 1;
+    FD_LOG_NOTICE(("parent_slot: SNAPSHOT slot: %u", slot));
+  }
 
   while (size > 4) {
     uint make_fork = (*CONSUME(1) < 64);
@@ -248,19 +268,24 @@ fuzz_tower(uchar *data,
       if (!num_recently_added) break;
       uint idx = (*CONSUME(1)) % num_recently_added;
       parent_slot = recently_added[idx];
-      // ensure parent slot is still valid by using last_slot if parent is too old */
-      if (parent_slot < last_slot - 32) {
+      // ensure parent slot is valid - must be >= ghost_root_slot
+      if (parent_slot < ghost_root_slot) {
         parent_slot = last_slot;
       }
     } else {
       parent_slot = last_slot;
     }
+    
+    // ensure parent_slot is always >= ghost_root_slot
+    if (parent_slot < ghost_root_slot) {
+      parent_slot = ghost_root_slot;
+    }
 
     uint gap = *CONSUME(1) & 0xf + 1;
     uint candidate = parent_slot + gap;
     slot = next_unused_after(candidate);
-    if (slot == UINT_MAX || slot <= parent_slot) break;
-    if (used_slots[slot]) break;
+    if (slot == UINT_MAX || slot <= parent_slot) return 1;
+    if (used_slots[slot]) return 1;
 
     FD_LOG_NOTICE(("parent_slot: %u slot: %u", parent_slot, slot));
     replay_sig = ((ulong)slot << 32) | parent_slot;

@@ -213,12 +213,13 @@ isolated_tower_topo(config_t* config, fd_topo_obj_callbacks_t* callbacks[])
   fd_topob_wksp(topo, "tower");
   fd_topob_wksp(topo, "gossip_tower");
   fd_topob_wksp(topo, "replay_tower");
+  fd_topob_wksp(topo, "stake_out");
  
   // creating links
   fd_topob_link(topo, "gossip_tower", "gossip_tower", 128UL, FD_TPU_MTU, 1UL );
   fd_topob_link(topo, "replay_tower", "replay_tower", 128UL, 65536UL, 1UL );
   fd_topob_link(topo, "tower_replay", "replay_tower", 128UL, 0, 1UL );
-
+  fd_topob_link(topo, "stake_out", "stake_out", 128UL, 40UL + 40200UL * 40UL,  1UL);
   // create tower tile
   fd_topo_tile_t* tower_tile = fd_topob_tile(topo, "tower", "tower", "metric_in", 0, 0, 0);
 
@@ -283,6 +284,39 @@ isolated_tower_topo(config_t* config, fd_topo_obj_callbacks_t* callbacks[])
   fd_topo_obj_t* root_slot_obj = fd_topob_obj(topo, "fseq", "slot_fseqs");
   fd_topob_tile_uses(topo, tower_tile, root_slot_obj, FD_SHMEM_JOIN_MODE_READ_WRITE);
   FD_TEST(fd_pod_insertf_ulong(topo->props, root_slot_obj->id, "root_slot"));
+
+  fd_topob_wksp(topo, "shred");
+  fd_topo_tile_t* shred_tile = fd_topob_tile(topo, "shred", "shred", "metric_in", 0, 0, 1);
+  strncpy( shred_tile->shred.identity_key_path, config->paths.identity_key, sizeof(shred_tile->shred.identity_key_path) );
+  shred_tile->shred.depth = 1UL;
+  /* We might not need so much for testing, but this is the default.
+     If we ever want to save memory, then consider lowering it. */
+  config->tiles.shred.max_pending_shred_sets = 16384; // 2^14
+  shred_tile->shred.fec_resolver_depth = 16384;
+  shred_tile->shred.expected_shred_version = config->consensus.expected_shred_version;
+  shred_tile->shred.shred_listen_port = 123;
+  shred_tile->shred.larger_shred_limits_per_block = 0;
+  shred_tile->shred.adtl_dest.ip = 123;
+  shred_tile->shred.adtl_dest.port = 123;
+  shred_tile->shred.depth = 65536UL;
+
+  fd_topob_wksp    ( topo, "shred_store" );
+  fd_topob_link( topo, "shred_store",  "shred_store",  65536UL, 4UL*FD_SHRED_STORE_MTU, 4UL+config->tiles.shred.max_pending_shred_sets );
+  fd_topob_tile_out( topo, "shred", 0UL, "shred_store", 0UL );
+
+  fd_topob_wksp    ( topo, "shred_net" );
+  fd_topob_link    ( topo, "shred_net",  "shred_net", 128UL, 2048UL, 1UL );
+  fd_topob_tile_out( topo, "shred", 0UL, "shred_net", 0UL );
+
+  fd_topob_wksp    ( topo, "shred_sign" );
+  fd_topob_link    ( topo, "shred_sign", "shred_sign", 128UL, 32UL, 1UL );
+  fd_topob_tile_in ( topo, "sign", 0UL, "metric_in", "shred_sign", 0UL, FD_TOPOB_UNRELIABLE, FD_TOPOB_POLLED );
+
+  fd_topob_wksp    ( topo, "sign_shred" );
+  fd_topob_link    ( topo, "sign_shred", "sign_shred", 128UL, 64UL, 1UL );
+  fd_topob_tile_out( topo, "sign", 0UL, "sign_shred", 0UL );
+  fd_topob_tile_in ( topo, "shred", 0UL, "metric_in", "sign_shred",  0UL, FD_TOPOB_UNRELIABLE, FD_TOPOB_UNPOLLED );
+  fd_topob_tile_out( topo, "shred", 0UL, "shred_sign", 0UL );
   
   fd_topob_finish(topo, callbacks);
   fd_topo_print_log( /* stdout */ 1, topo );
@@ -313,7 +347,7 @@ isolated_shred_topo( config_t * config, fd_topo_obj_callbacks_t * callbacks[] ) 
   fd_topob_new( &config->topo, config->name );
   fd_topob_wksp( topo, "metric_in" );
   fd_topob_wksp( topo, "shred" );
-  fd_topo_tile_t * shred_tile = fd_topob_tile( topo, "shred", "shred", "metric_in", 0UL, 0, 0 );
+  fd_topo_tile_t * shred_tile = fd_topob_tile( topo, "shred", "shred", "metric_in", 0UL, 0, 1 );
 
   strncpy( shred_tile->shred.identity_key_path, config->paths.identity_key, sizeof(shred_tile->shred.identity_key_path) );
   shred_tile->shred.depth = 1UL;

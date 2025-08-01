@@ -293,27 +293,7 @@ after_frag( ctx_t *             ctx,
     FD_TEST( ctx->funk );
     FD_TEST( fd_funk_txn_map( ctx->funk ) );
     update_epoch( ctx, sz );
-#ifdef FD_HAS_FUZZ
-    if (snapshot_slot_created) {
-      // Force clean state by leaving and recreating ghost/tower
-      fd_ghost_leave(ctx->ghost);
-      fd_ghost_new(ctx->ghost_mem, ctx->ghost->seed, FD_BLOCK_MAX);
-      ctx->ghost = fd_ghost_join( ctx->ghost_mem );
-
-      fd_tower_leave(ctx->tower);
-      fd_tower_new(ctx->tower_mem);
-      ctx->tower = fd_tower_join(ctx->tower_mem);
-
-      fd_tower_leave(ctx->scratch);
-      fd_tower_new(ctx->scratch_mem);
-      ctx->scratch = fd_tower_join(ctx->scratch_mem);
-    }
-    
     fd_ghost_init( ctx->ghost, slot );
-    snapshot_slot_created = 0;
-#else
-    fd_ghost_init( ctx->ghost, slot );
-#endif
     return;
   }
 

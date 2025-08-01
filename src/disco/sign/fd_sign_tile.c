@@ -246,7 +246,9 @@ unprivileged_init_sensitive( fd_topo_t *      topo,
   FD_TEST( fd_sha512_join( fd_sha512_new( ctx->sha512 ) ) );
 
   FD_TEST( tile->in_cnt<=MAX_IN );
+#ifndef FD_HAS_FUZZ
   FD_TEST( tile->in_cnt==tile->out_cnt );
+#endif
 
   ctx->keyswitch = fd_keyswitch_join( fd_topo_obj_laddr( topo, tile->keyswitch_obj_id ) );
   derive_fields( ctx );

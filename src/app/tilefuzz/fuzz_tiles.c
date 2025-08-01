@@ -73,7 +73,7 @@ fd_drv_t * drv;
 /* From HERE(1) just copied from stake ci tests consider moving to
    common place */
 
-#define SLOTS_PER_EPOCH 1000 /* Just for testing */
+#define SLOTS_PER_EPOCH 4096 /* Just for testing */
 
 static fd_stake_weight_msg_t *
 generate_stake_msg( uchar *      _buf,
@@ -112,6 +112,13 @@ init( int  *   argc,
   fd_drv_init( drv, topo_name );
   /* setup stake ci for shred */
   if( 0==strcmp( "isolated_shred", topo_name ) ) {
+    /* ehh, the api is not nice for this link */
+    uchar stake_msg[ FD_STAKE_CI_STAKE_MSG_SZ ];
+    generate_stake_msg( stake_msg, 0UL, "ABCDEF" );
+    fd_drv_send( drv, "stake", "out", 2, 0UL, stake_msg, /* tight upper-bound okay */ FD_STAKE_CI_STAKE_MSG_SZ );
+  }
+
+  if( 0==strcmp( "isolated_tower", topo_name ) ) {
     /* ehh, the api is not nice for this link */
     uchar stake_msg[ FD_STAKE_CI_STAKE_MSG_SZ ];
     generate_stake_msg( stake_msg, 0UL, "ABCDEF" );
@@ -233,7 +240,7 @@ fuzz_tower(uchar *data,
 
   ulong replay_sig;
   
-  // Only send snapshot slot on first call to initialize ghost
+  // send snapshot slot on first call to initialize ghost
   if (!ghost_initialized) {
     reset_state();
     // first send a snapshot slot to init ghost

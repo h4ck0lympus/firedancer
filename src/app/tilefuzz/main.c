@@ -3,6 +3,8 @@
 #include <string.h>
 #include "../shared/fd_action.h"
 #include "../shared/commands/configure/configure.h"
+#include "../../flamenco/types/fd_types_custom.h"
+#include "../../flamenco/types/fd_types.h"
 
 
 char const * FD_APP_NAME    = "fd_tile_fuzz";
@@ -88,13 +90,42 @@ main( int    argc,
     fd_drv_housekeeping( drv, "shred", 0 );
   } else if (strcmp(argv[1], "isolated_tower") == 0)  {
     fd_drv_housekeeping(drv, "tower", 0);
-    uchar * data = (uchar *) malloc( 8);
-    strcpy((char *) data, "ABCDEFG" );
-    ulong sig = (1337UL << 32) | 1UL; // parent_slot = 1336 slot = 1337
-    // TODO: derive in_idx properly
-    fd_drv_send( drv, "gossip", "tower", 1, 1, data, 8 );
-    fd_drv_send( drv, "replay", "tower", 0, sig, data, 8 );
-    free(data);
+    
+    // Create stake buffer with format: pubkey1 + stake1 + pubkey2 + stake2 + ...
+    uchar stake_buffer[1024];
+    ulong stake_offset = 0;
+    
+    // Add 6 validators (ABCDEF) with different stakes
+    char stakers[] = "ABCDEF";
+    for (ulong i = 0UL; i < 6UL; i++) {
+      // Add pubkey (32 bytes filled with the character)
+      memset(stake_buffer + stake_offset, stakers[i], sizeof(fd_pubkey_t));
+      stake_offset += sizeof(fd_pubkey_t);
+      
+      // Add stake amount (8 bytes)
+      ulong stake = 1000UL / (i + 1UL);
+      memcpy(stake_buffer + stake_offset, &stake, sizeof(ulong));
+      stake_offset += sizeof(ulong);
+    }
+    
+    ulong sig = (1337UL << 32) | UINT_MAX; // parent_slot = SNAPSHOT_SLOT slot = 1337
+    fd_drv_send( drv, "replay", "tower", 0, sig, stake_buffer, stake_offset );
+
+    sig = (1338UL << 32) | 1337; // parent_slot = 1337 slot = 1338
+    fd_drv_send( drv, "replay", "tower", 0, sig, NULL, 0 );
+
+    sig = (1339UL << 32) | 1338; // parent_slot = 1338 slot = 1339
+    fd_drv_send( drv, "replay", "tower", 0, sig, NULL, 0 );
+
+    sig = (1340UL << 32) | 1338; // parent_slot = 1338 slot = 1340
+    fd_drv_send( drv, "replay", "tower", 0, sig, NULL, 0 );
+
+    sig = (1341UL << 32) | 1337; // parent_slot = 1337 slot = 1341
+    fd_drv_send( drv, "replay", "tower", 0, sig, NULL, 0 );
+
+    sig = (1342UL << 32) | 1341; // parent_slot = 1341 slot = 1342
+    fd_drv_send( drv, "replay", "tower", 0, sig, NULL, 0 );
+
   } else {
     FD_LOG_ERR(( "unknown topo name" ));
   }

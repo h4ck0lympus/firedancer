@@ -53,4 +53,5 @@ fd_drv_send( fd_drv_t * drv,
              ulong      sig,
              uchar    * data,
              ulong      data_sz );
+
 #endif /* HEADER_fd_src_app_tilefuzz_driver_h */

@@ -292,7 +292,7 @@ isolated_tower_topo(config_t* config, fd_topo_obj_callbacks_t* callbacks[])
   /* We might not need so much for testing, but this is the default.
      If we ever want to save memory, then consider lowering it. */
   config->tiles.shred.max_pending_shred_sets = 16384; // 2^14
-  shred_tile->shred.fec_resolver_depth = 16384;
+  shred_tile->shred.fec_resolver_depth = config->tiles.shred.max_pending_shred_sets;
   shred_tile->shred.expected_shred_version = config->consensus.expected_shred_version;
   shred_tile->shred.shred_listen_port = 123;
   shred_tile->shred.larger_shred_limits_per_block = 0;

@@ -317,7 +317,12 @@ isolated_tower_topo(config_t* config, fd_topo_obj_callbacks_t* callbacks[])
   fd_topob_tile_out( topo, "sign", 0UL, "sign_shred", 0UL );
   fd_topob_tile_in ( topo, "shred", 0UL, "metric_in", "sign_shred",  0UL, FD_TOPOB_UNRELIABLE, FD_TOPOB_UNPOLLED );
   fd_topob_tile_out( topo, "shred", 0UL, "shred_sign", 0UL );
+  fd_topob_tile_in ( topo, "shred", 0UL, "metric_in", "stake_out", 0UL, FD_TOPOB_RELIABLE, FD_TOPOB_POLLED );
   
+  fd_topob_wksp    ( topo, "crds_shred" );
+  fd_topob_link    ( topo, "crds_shred", "crds_shred", 128UL, 8UL + 40200UL * 38UL, 1UL );
+  fd_topob_tile_in ( topo, "shred", 0, "metric_in", "crds_shred", 0UL, FD_TOPOB_RELIABLE, FD_TOPOB_POLLED );
+
   fd_topob_finish(topo, callbacks);
   fd_topo_print_log( /* stdout */ 1, topo );
 }
@@ -578,6 +583,8 @@ fd_drv_send( fd_drv_t * drv,
   void * base = fd_wksp_containing( link->dcache );
   ulong chunk = fd_dcache_compact_chunk0( base, link->dcache );
   FD_PARAM_UNUSED uchar * volatile dst = (uchar *)fd_chunk_to_laddr( base, chunk );
+  FD_LOG_NOTICE(("chunk: %lu", chunk));
+  FD_LOG_NOTICE(("dst: %p", (void*)dst));
 
   #ifdef FD_HAS_FUZZ
   link->mcache->hook = fd_drv_publish_hook;

@@ -277,6 +277,7 @@ fd_tower_threshold_check( fd_tower_t const *    tower,
     }
   }
 
+  FD_LOG_NOTICE(("threshold_stake: %lu epoch->total_stake: %lu", threshold_stake, epoch->total_stake));
   double threshold_pct = (double)threshold_stake / (double)epoch->total_stake;
   FD_LOG_NOTICE(( "[%s] ok? %d. top: %lu. threshold: %lu. stake: %.0lf%%.", __func__, threshold_pct > THRESHOLD_PCT, fd_tower_votes_peek_tail_const( tower )->slot, threshold_slot, threshold_pct * 100.0 ));
   return threshold_pct > THRESHOLD_PCT;

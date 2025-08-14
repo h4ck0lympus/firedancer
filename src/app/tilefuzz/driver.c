@@ -8,6 +8,7 @@
 #include "../../util/pod/fd_pod_format.h"
 #include "../../disco/metrics/fd_metrics.h"
 #include "../../disco/pack/fd_microblock.h"
+#include "../../flamenco/runtime/fd_acc_mgr.h" // fd_funk_acc_key
 #include "driver.h"
 #include "../../disco/net/fd_net_tile.h" /* fd_topos_net_tiles */
 #include "../../flamenco/snapshot/fd_snapshot_loader.h" /* FD_SNAPSHOT_SRC_HTTP */
@@ -101,6 +102,8 @@ mock_funk_txns(fd_drv_t* drv){
   fd_funk_t* funk = drv_funk;
   // fd_topo_tile_t * tower_tile = find_topo_tile(drv, "tower");
   // fd_funk_t* funk = fd_topo_obj_laddr(&drv->config.topo, tower_tile->tower.funk_obj_id);
+  
+  char stakers[] = "ABCDEF"; // 6 validators
 
   // parent slot txn
   fd_funk_txn_xid_t parent_xid = {.ul = {1, 1}};  
@@ -111,6 +114,38 @@ mock_funk_txns(fd_drv_t* drv){
   if (!parent_txn) {  
     FD_LOG_ERR(("Failed to create parent transaction"));  
     return;  
+  }
+
+  // mock account record for 6 mock validators
+  
+  for (ulong i=0; i < 6UL; i++) {
+    fd_pubkey_t pubkey;
+    memset(pubkey.uc, stakers[i], sizeof(fd_pubkey_t));
+    fd_funk_rec_key_t vote_account_key = fd_funk_acc_key(&pubkey);
+    fd_funk_rec_prepare_t prepare[1];
+    fd_funk_rec_t* account_record = fd_funk_rec_prepare(funk, parent_txn, &vote_account_key, prepare, NULL);
+
+    // test_snapshot_restore
+    if (account_record) {
+      fd_account_meta_t * meta = fd_funk_val_truncate(
+          account_record,
+          fd_funk_alloc( funk ),
+          fd_funk_wksp(funk),
+          0UL,
+          sizeof(fd_account_meta_t)+4,
+          0);
+
+      if (meta) {
+        fd_account_meta_init(meta);
+        meta->dlen = 4;
+        meta->info.lamports = 90UL;
+        fd_funk_rec_publish(funk, prepare);
+      } else {
+        FD_LOG_ERR(("[%s] failed to create account metadata", __func__));
+      }
+    } else {
+      FD_LOG_ERR(("[%s] failed to create account record", __func__));
+    }
   }
 
   for (uint slot=2; slot <= MAX_FUNK_TXNS; slot++) {

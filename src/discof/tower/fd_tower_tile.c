@@ -123,8 +123,11 @@ update_ghost( ctx_t * ctx, fd_funk_txn_t * txn ) {
   fd_ghost_t * ghost = ctx->ghost;
 
   fd_voter_t * epoch_voters = fd_epoch_voters( epoch );
+
   for( ulong i = 0; i < fd_epoch_voters_slot_cnt( epoch_voters ); i++ ) {
+
     if( FD_LIKELY( fd_epoch_voters_key_inval( epoch_voters[i].key ) ) ) continue /* most slots are empty */;
+
 
     /* TODO we can optimize this funk query to only check through the
        last slot on this fork this function was called on. currently
@@ -152,7 +155,10 @@ update_ghost( ctx_t * ctx, fd_funk_txn_t * txn ) {
     /* Only process votes for slots >= root. Ghost requires vote slot
         to already exist in the ghost tree. */
 
+    FD_LOG_NOTICE(("vote is %lu", vote));
+
     if( FD_LIKELY( vote != FD_SLOT_NULL && vote >= fd_ghost_root( ghost )->slot ) ) {
+      FD_LOG_INFO(("fd_ghost_replay_vote: vote=%lu", vote));
       fd_ghost_replay_vote( ghost, voter, vote );
 
       /* Check if it has crossed the equivocation safety and optimistic

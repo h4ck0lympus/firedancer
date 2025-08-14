@@ -1,4 +1,5 @@
 #include <stdlib.h>
+#include <string.h>
 #include "../../util/fd_util_base.h"
 #include "driver.h"
 #include "../shared/fd_action.h"
@@ -103,9 +104,11 @@ init( int  *   argc,
       char *** argv,
       char * topo_name ) {
   (void)argc; (void)argv;
-  putenv( "FD_LOG_BACKTRACE=0" );
-  fd_log_level_core_set(3);
+  //putenv( "FD_LOG_BACKTRACE=0" );
   fd_boot(argc, argv);
+  fd_log_level_logfile_set(0);
+  fd_log_level_core_set(0);
+  fd_log_level_stderr_set(0);
   void * shmem = aligned_alloc( fd_drv_align(),  fd_drv_footprint() );
   if( FD_UNLIKELY( !shmem ) ) FD_LOG_ERR(( "malloc failed" ));
   drv = fd_drv_join( fd_drv_new( shmem, TILES, CALLBACKS, STAGES ) );
@@ -118,12 +121,13 @@ init( int  *   argc,
     fd_drv_send( drv, "stake", "out", 2, 0UL, stake_msg, /* tight upper-bound okay */ FD_STAKE_CI_STAKE_MSG_SZ );
   }
 
-  if( 0==strcmp( "isolated_tower", topo_name ) ) {
-    /* ehh, the api is not nice for this link */
-    uchar stake_msg[ FD_STAKE_CI_STAKE_MSG_SZ ];
-    generate_stake_msg( stake_msg, 0UL, "ABCDEF" );
-    fd_drv_send( drv, "stake", "out", 2, 0UL, stake_msg, /* tight upper-bound okay */ FD_STAKE_CI_STAKE_MSG_SZ );
-  }
+  // if( 0==strcmp( "isolated_tower", topo_name ) ) {
+  //   /* ehh, the api is not nice for this link */
+  //   uchar stake_msg[ FD_STAKE_CI_STAKE_MSG_SZ ];
+  //   generate_stake_msg( stake_msg, 0UL, "ABCDEF" );
+  //   fd_drv_send( drv, "stake", "out", 2, 0UL, stake_msg, /* tight upper-bound okay */ FD_STAKE_CI_STAKE_MSG_SZ );
+  // }
+  
   return 0;
 }
 
@@ -246,11 +250,43 @@ fuzz_tower(uchar *data,
     // first send a snapshot slot to init ghost
     parent_slot = UINT_MAX;
     slot = (*CONSUME(2) & 0xfff) + 1;
-    if (slot >= MAX_FUNK_TXNS) slot = MAX_FUNK_TXNS - 1;
-    
+    if (slot >= MAX_FUNK_TXNS) slot %= MAX_FUNK_TXNS;
     replay_sig = ((ulong) slot << 32) | parent_slot;
-    fd_drv_send(drv, "gossip", "tower", 1, gossip_sig, payload, payload_sz);
-    fd_drv_send(drv, "replay", "tower", 0, replay_sig, NULL, 0);
+ 
+    // add 6 validators with random stake
+    ulong total_stake = *(CONSUME(8));
+    uchar stake_buffer[280]; // 32(pubkey) + 8(stake)
+    ulong stake_offset = 0;
+    uchar stake_msg[FD_STAKE_CI_STAKE_MSG_SZ];
+    
+    char stakers[] = "ABCDEF"; // 6 validators
+
+    fd_stake_weight_msg_t *buf = fd_type_pun(stake_msg);
+
+    buf->epoch = 0UL;
+    buf->start_slot = 0;
+    buf->slot_cnt = SLOTS_PER_EPOCH;
+    buf->staked_cnt = strlen(stakers);
+    buf->excluded_stake = 0UL;
+    
+    for (ulong i=0UL; i < 6UL; i++) {
+      ulong stake = total_stake / (i + 1UL);
+
+      // TODO: do we need to send message over link ? can't we just set the stake ?
+      memset(buf->weights[i].key.uc, stakers[i], sizeof(fd_pubkey_t)); // pubkey bytearray
+      buf->weights[i].stake = stake; // set validator stake
+
+      memset(stake_buffer + stake_offset, stakers[i], sizeof(fd_pubkey_t));
+      stake_offset += sizeof(fd_pubkey_t); // 32
+
+      memcpy(stake_buffer + stake_offset, &stake, sizeof(ulong)); // set validator stake for stake out link
+      stake_offset += sizeof(ulong);
+    }
+
+    fd_drv_send( drv, "stake", "out", 2, 0UL, stake_msg, /* tight upper-bound okay */ FD_STAKE_CI_STAKE_MSG_SZ );
+
+    // fd_drv_send(drv, "gossip", "tower", 1, gossip_sig, payload, payload_sz);
+    fd_drv_send(drv, "replay", "tower", 0, replay_sig, stake_buffer, stake_offset);
 
     // reset fuzzer state after snapshot
     memset(recently_added, 0, sizeof(recently_added));

@@ -120,6 +120,8 @@ update_ghost( ctx_t * ctx, fd_funk_txn_t * txn ) {
 
     /* Only process votes for slots >= root. */
 
+    FD_LOG_NOTICE(("vote is %lu", vote));
+
     if( FD_LIKELY( vote != FD_SLOT_NULL && vote >= fd_ghost_root( ghost )->slot ) ) {
       fd_ghost_ele_t const * ele = fd_ghost_query_const( ghost, fd_ghost_hash( ghost, vote ) );
 

@@ -96,70 +96,6 @@ tile_topo_to_run( fd_drv_t * drv, fd_topo_tile_t * topo_tile ) {
   return find_run_tile( drv, topo_tile->name );
 }
 
-static void
-mock_funk_txns(fd_drv_t* drv){
-  (void)drv;
-  fd_funk_t* funk = drv_funk;
-  // fd_topo_tile_t * tower_tile = find_topo_tile(drv, "tower");
-  // fd_funk_t* funk = fd_topo_obj_laddr(&drv->config.topo, tower_tile->tower.funk_obj_id);
-  
-  char stakers[] = "ABCDEF"; // 6 validators
-
-  // parent slot txn
-  fd_funk_txn_xid_t parent_xid = {.ul = {1, 1}};  
-  fd_funk_txn_start_write(funk);  
-  fd_funk_txn_t* parent_txn = fd_funk_txn_prepare(funk, NULL, &parent_xid, 1);  
-  fd_funk_txn_end_write(funk);  
-    
-  if (!parent_txn) {  
-    FD_LOG_ERR(("Failed to create parent transaction"));  
-    return;  
-  }
-
-  // mock account record for 6 mock validators
-  
-  for (ulong i=0; i < 6UL; i++) {
-    fd_pubkey_t pubkey;
-    memset(pubkey.uc, stakers[i], sizeof(fd_pubkey_t));
-    fd_funk_rec_key_t vote_account_key = fd_funk_acc_key(&pubkey);
-    fd_funk_rec_prepare_t prepare[1];
-    fd_funk_rec_t* account_record = fd_funk_rec_prepare(funk, parent_txn, &vote_account_key, prepare, NULL);
-
-    // test_snapshot_restore
-    if (account_record) {
-      fd_account_meta_t * meta = fd_funk_val_truncate(
-          account_record,
-          fd_funk_alloc( funk ),
-          fd_funk_wksp(funk),
-          0UL,
-          sizeof(fd_account_meta_t)+4,
-          0);
-
-      if (meta) {
-        fd_account_meta_init(meta);
-        meta->dlen = 4;
-        meta->info.lamports = 90UL;
-        fd_funk_rec_publish(funk, prepare);
-      } else {
-        FD_LOG_ERR(("[%s] failed to create account metadata", __func__));
-      }
-    } else {
-      FD_LOG_ERR(("[%s] failed to create account record", __func__));
-    }
-  }
-
-  for (uint slot=2; slot <= MAX_FUNK_TXNS; slot++) {
-    fd_funk_txn_xid_t xid = {.ul = {slot, slot}};
-    fd_funk_txn_start_write(funk);
-    fd_funk_txn_t* mock_txn = fd_funk_txn_prepare(funk, parent_txn, &xid, 1);
-    fd_funk_txn_end_write(funk);
-
-    if (!mock_txn) {
-      FD_LOG_WARNING(("Failed to prepare mock txn for slot %u", slot));
-    }
-  }
-}
-
 static void create_tmp_file( char const * path, char const * content ) {
   int fd = open( path, O_RDWR|O_CREAT|O_TRUNC, 0644 );
   if( FD_UNLIKELY( fd<0 ) ) FD_LOG_ERR(( "open failed" ));
@@ -534,9 +470,9 @@ fd_drv_init( fd_drv_t * drv,
   FD_LOG_NOTICE(( "tile cnt: %lu", config->topo.tile_cnt ));
   init_tiles( drv );
 
-  if (strcmp(topo_name, "isolated_tower") == 0) {
-    mock_funk_txns(drv);
-  }
+  // if (strcmp(topo_name, "isolated_tower") == 0) {
+  //   mock_funk_txns(drv);
+  // }
 }
 
 FD_FN_UNUSED void

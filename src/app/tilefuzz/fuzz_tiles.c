@@ -4,6 +4,8 @@
 #include "driver.h"
 #include "../shared/fd_action.h"
 #include "../../disco/shred/fd_stake_ci.h"
+#include "../../flamenco/runtime/fd_acc_mgr.h" // fd_funk_acc_key
+#include "../../choreo/voter/fd_voter.h" // fd_voter_state_t
 
 extern fd_topo_obj_callbacks_t fd_obj_cb_mcache;
 extern fd_topo_obj_callbacks_t fd_obj_cb_dcache;
@@ -70,6 +72,7 @@ configure_stage_t * STAGES[] = {
 };
 
 fd_drv_t * drv;
+extern fd_funk_t* drv_funk;
 
 /* From HERE(1) just copied from stake ci tests consider moving to
    common place */
@@ -242,7 +245,11 @@ fuzz_tower(uchar *data,
   uint parent_slot;
   uint slot;
 
+  fd_funk_t* funk = drv_funk;
+  fd_funk_txn_t* parent_txn;
   ulong replay_sig;
+  
+  char stakers[] = "ABCDEF"; // 6 validators
   
   // send snapshot slot on first call to initialize ghost
   if (!ghost_initialized) {
@@ -252,6 +259,19 @@ fuzz_tower(uchar *data,
     slot = (*CONSUME(2) & 0xfff) + 1;
     if (slot >= MAX_FUNK_TXNS) slot %= MAX_FUNK_TXNS;
     replay_sig = ((ulong) slot << 32) | parent_slot;
+
+    fd_funk_txn_xid_t parent_xid = {.ul = {slot, slot}};
+
+    fd_funk_txn_start_write(funk);
+    parent_txn = fd_funk_txn_query(&parent_xid, fd_funk_txn_map(funk));
+    if (!parent_txn) parent_txn = fd_funk_txn_prepare(funk, NULL, &parent_xid, 1);  
+    fd_funk_txn_end_write(funk);  
+
+    if (!parent_txn) {
+      FD_LOG_ERR(("failed to create parent txn"));
+      return 1;
+    }
+
  
     // add 6 validators with random stake
     ulong total_stake = *(CONSUME(8));
@@ -259,8 +279,7 @@ fuzz_tower(uchar *data,
     ulong stake_offset = 0;
     uchar stake_msg[FD_STAKE_CI_STAKE_MSG_SZ];
     
-    char stakers[] = "ABCDEF"; // 6 validators
-
+    
     fd_stake_weight_msg_t *buf = fd_type_pun(stake_msg);
 
     buf->epoch = 0UL;
@@ -284,6 +303,75 @@ fuzz_tower(uchar *data,
     }
 
     fd_drv_send( drv, "stake", "out", 2, 0UL, stake_msg, /* tight upper-bound okay */ FD_STAKE_CI_STAKE_MSG_SZ );
+    // mock account record for 6 mock validators
+    for (ulong i=0; i < 6UL; i++) {
+      fd_pubkey_t pubkey;
+      memset(pubkey.uc, stakers[i], sizeof(fd_pubkey_t));
+      fd_funk_rec_key_t vote_account_key = fd_funk_acc_key(&pubkey);
+      fd_funk_rec_prepare_t prepare[1];
+      fd_funk_rec_t* account_record = fd_funk_rec_prepare(funk, parent_txn, &vote_account_key, prepare, NULL);
+
+      // test_snapshot_restore 
+      // hlen = offset where account metadata ends and real account data starts
+      // dlen = length of account data
+      if (account_record) {
+        ulong vote_slot, root_slot;
+        vote_slot = (*CONSUME(2) % (MAX_FUNK_TXNS - 1)) + 1; // [1, MAX_FUN_TXNS]
+        root_slot = (*CONSUME(2) % vote_slot);
+
+        // account metadata
+        fd_account_meta_t * meta = fd_funk_val_truncate(
+            account_record,
+            fd_funk_alloc(funk),
+            fd_funk_wksp(funk),
+            0UL,
+            sizeof(fd_account_meta_t),
+            0);
+
+        // TODO: test account and voter metadata
+        if (meta) {
+          fd_account_meta_init(meta);
+          fd_voter_state_t state;
+          memset(&state, 0, sizeof(fd_voter_state_t));
+          state.discriminant = FD_VOTER_STATE_CURRENT;
+          // voter metadata
+          memset(state.meta.node_pubkey.uc, stakers[i], sizeof(fd_pubkey_t));
+          memset(state.meta.authorized_withdrawer.uc, stakers[i], sizeof(fd_pubkey_t));
+          state.meta.commission = 0;
+          state.meta.cnt = 1; // TODO: one vote in tower ?
+          
+          // setting the vote
+          state.votes[0].latency = 0;
+          state.votes[0].slot = vote_slot;
+          state.votes[0].conf = 1;
+
+          // fd_voter.h
+          ulong vote_data_size = sizeof(uint) + sizeof(fd_voter_meta_t) + sizeof(fd_voter_vote_t) * state.meta.cnt + 1; // discriminant + metadata + votes + root option + 1 for None root
+          meta->dlen = vote_data_size;
+
+          uchar* account_data = (uchar*) meta + meta->hlen;
+          ulong offset = 0;
+
+          memcpy(account_data + offset, &state.discriminant, sizeof(uint));
+          offset += sizeof(uint);
+
+          memcpy(account_data + offset, &state.meta, sizeof(fd_voter_meta_t));
+          offset += sizeof(fd_voter_meta_t);
+
+          memcpy(account_data + offset, &state.votes[0], sizeof(fd_voter_vote_t));
+          offset += sizeof(fd_voter_vote_t);
+
+          account_data[offset] = 0; // no root
+          
+          fd_funk_rec_publish(funk, prepare);
+          FD_LOG_NOTICE(("validator %lu: vote_slot=%lu, root_slot=%lu", i, vote_slot, root_slot));
+        } else {
+          FD_LOG_ERR(("[%s] failed to create account metadata", __func__));
+        }
+      } else {
+        FD_LOG_ERR(("[%s] failed to create account record", __func__));
+      }
+    }
 
     // fd_drv_send(drv, "gossip", "tower", 1, gossip_sig, payload, payload_sz);
     fd_drv_send(drv, "replay", "tower", 0, replay_sig, stake_buffer, stake_offset);
@@ -329,6 +417,84 @@ fuzz_tower(uchar *data,
     slot = next_unused_after(candidate);
     if (slot == UINT_MAX || slot <= parent_slot) return 1;
     if (used_slots[slot]) return 1;
+
+    fd_funk_txn_xid_t xid = {.ul = {slot, slot}};
+    fd_funk_txn_start_write(funk);
+    fd_funk_txn_t* mock_txn = fd_funk_txn_query(&xid, fd_funk_txn_map(funk));
+    if (!mock_txn) mock_txn = fd_funk_txn_prepare(funk, parent_txn, &xid, 1);
+    fd_funk_txn_end_write(funk);
+
+    if (!mock_txn) {
+      FD_LOG_WARNING(("Failed to prepare mock txn for slot %u", slot));
+    }
+
+    uint num_voters = (*CONSUME(1) % 6) + 1; // 1-6 validators can vote
+
+    for (ulong i=0; i < num_voters; i++) {
+      fd_pubkey_t pubkey;
+      memset(pubkey.uc, stakers[i], sizeof(fd_pubkey_t));
+      fd_funk_rec_key_t vote_account_key = fd_funk_acc_key(&pubkey);
+      fd_funk_rec_prepare_t prepare[1];
+      fd_funk_rec_t* account_record = fd_funk_rec_prepare(funk, mock_txn, &vote_account_key, prepare, NULL);
+
+      if (account_record) {
+        ulong vote_slot, root_slot;
+        vote_slot = slot;
+        root_slot = parent_slot;
+
+        // account metadata
+        fd_account_meta_t * meta = fd_funk_val_truncate(
+            account_record,
+            fd_funk_alloc(funk),
+            fd_funk_wksp(funk),
+            0UL,
+            sizeof(fd_account_meta_t),
+            0);
+
+        // TODO: test account and voter metadata
+        if (meta) {
+          fd_account_meta_init(meta);
+          fd_voter_state_t state;
+          memset(&state, 0, sizeof(fd_voter_state_t));
+          state.discriminant = FD_VOTER_STATE_CURRENT;
+          // voter metadata
+          memset(state.meta.node_pubkey.uc, stakers[i], sizeof(fd_pubkey_t));
+          memset(state.meta.authorized_withdrawer.uc, stakers[i], sizeof(fd_pubkey_t));
+          state.meta.commission = 0;
+          state.meta.cnt = 1; // TODO: one vote in tower ?
+          
+          // setting the vote
+          state.votes[0].latency = 0;
+          state.votes[0].slot = vote_slot;
+          state.votes[0].conf = 1;
+
+          // fd_voter.h
+          ulong vote_data_size = sizeof(uint) + sizeof(fd_voter_meta_t) + sizeof(fd_voter_vote_t) * state.meta.cnt + 1; // discriminant + metadata + votes + root option + 1 for None root
+          meta->dlen = vote_data_size;
+
+          uchar* account_data = (uchar*) meta + meta->hlen;
+          ulong offset = 0;
+
+          memcpy(account_data + offset, &state.discriminant, sizeof(uint));
+          offset += sizeof(uint);
+
+          memcpy(account_data + offset, &state.meta, sizeof(fd_voter_meta_t));
+          offset += sizeof(fd_voter_meta_t);
+
+          memcpy(account_data + offset, &state.votes[0], sizeof(fd_voter_vote_t));
+          offset += sizeof(fd_voter_vote_t);
+
+          account_data[offset] = 0; // no root
+          
+          fd_funk_rec_publish(funk, prepare);
+          FD_LOG_NOTICE(("validator %lu: vote_slot=%lu, root_slot=%lu", i, vote_slot, root_slot));
+        } else {
+          FD_LOG_ERR(("[%s] failed to create account metadata", __func__));
+        }
+      } else {
+        FD_LOG_ERR(("[%s] failed to create account record", __func__));
+      }
+    }
 
     FD_LOG_NOTICE(("parent_slot: %u slot: %u", parent_slot, slot));
     replay_sig = ((ulong)slot << 32) | parent_slot;

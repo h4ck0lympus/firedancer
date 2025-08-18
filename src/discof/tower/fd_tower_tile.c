@@ -324,30 +324,6 @@ after_frag( ctx_t *             ctx,
   FD_TEST( ghost_node );
   update_ghost( ctx, funk_txn );
   
-  #ifdef FD_HAS_FUZZ
-  // Demonstrate stake-weighted voting after ghost nodes are created
-  if( slot == 1340 ) { // Do voting demo when we reach slot 1340
-    
-    fd_voter_t * epoch_voters = fd_epoch_voters( ctx->epoch );
-    FD_LOG_NOTICE(( "Demonstrating stake-weighted voting on existing ghost nodes" ));
-    
-    ulong voter_count = 0;
-    for( ulong i = 0; i < fd_epoch_voters_slot_cnt( epoch_voters ); i++ ) {
-      if( FD_LIKELY( fd_epoch_voters_key_inval( epoch_voters[i].key ) ) ) continue;
-      
-      fd_voter_t * voter = &epoch_voters[i];
-      voter_count++;
-      
-      // First 3 validators vote for slot 1339, rest vote for 1340
-      ulong vote_slot = (voter_count <= 3) ? 1339 : 1340;
-      
-      FD_LOG_NOTICE(( "Validator %lu (stake %lu) voting for slot %lu", voter_count, voter->stake, vote_slot ));
-      fd_ghost_replay_vote( ctx->ghost, voter, vote_slot );
-    }
-    FD_LOG_NOTICE(( "Voting demonstration completed for %lu validators", voter_count ));
-  }
-  #endif
-
   ulong vote_slot = fd_tower_vote_slot( ctx->tower, ctx->epoch, ctx->funk, funk_txn, ctx->ghost, ctx->scratch );
   if( FD_UNLIKELY( vote_slot == FD_SLOT_NULL ) ) return; /* nothing to vote on */
 

@@ -14,8 +14,6 @@ struct fd_drv_private {
 };
 typedef struct fd_drv_private fd_drv_t;
 
-extern fd_funk_t* drv_funk;
-
 #define MAX_FUNK_TXNS 4096
 
 ulong

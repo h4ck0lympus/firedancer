@@ -215,6 +215,11 @@ after_frag_snap( ctx_t                  * ctx,
   fd_hash_t null = { 0 };
   fd_ghost_init( ctx->ghost, manifest->slot, &null );
 
+  /* If we receive another snapshot manifest within the same run, clear
+     any previously populated epoch voter state before re-populating to
+     avoid duplicate insert assertions in handholding mode. */
+  fd_epoch_fini( ctx->epoch );
+
   fd_voter_t * epoch_voters = fd_epoch_voters( ctx->epoch );
   for(ulong i = 0; i< manifest->vote_accounts_len; i++) {
     if( FD_UNLIKELY( manifest->vote_accounts[i].stake == 0 ) ) continue;
